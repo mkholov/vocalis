@@ -1,0 +1,15 @@
+[package]
+name = "vocalis-student"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "vocalis-student"
+path = "src/main.rs"
+
+[dependencies]
+vocalis = { path = "../app" }
+eframe = "0.29"
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"

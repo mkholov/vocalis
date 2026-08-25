@@ -1,0 +1,15 @@
+[package]
+name = "vocalis-launcher"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "vocalis"
+path = "src/main.rs"
+
+[dependencies]
+vocalis = { path = "../app" }
+eframe = "0.29"
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"

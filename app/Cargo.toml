@@ -1,0 +1,29 @@
+[package]
+name = "vocalis"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "vocalis"
+path = "src/lib.rs"
+
+# Shared library only — no binaries here. The three user-facing .exe live in their own
+# packages (bin-launcher, bin-teacher, bin-student) so each can embed its own distinct
+# icon via a per-package build.rs; a single package's build script can't vary by which
+# binary is being linked.
+
+[dependencies]
+lingua-common = { path = "../common" }
+tokio = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+eframe = "0.29"
+egui = "0.29"
+cpal = "0.15"
+xcap = "0.0.14"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+rfd = "0.15"

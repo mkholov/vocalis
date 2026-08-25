@@ -1,0 +1,56 @@
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use image::imageops::FilterType;
+use lingua_common::ClientToServer;
+use tokio::sync::mpsc;
+
+const THUMBNAIL_WIDTH: u32 = 320;
+const CAPTURE_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Periodically captures the primary monitor, downsizes it to a thumbnail and
+/// sends it to the teacher over the control channel. Exits once `to_server` is closed
+/// (i.e. the control connection dropped).
+pub async fn run_screen_capture(to_server: mpsc::UnboundedSender<ClientToServer>) -> Result<()> {
+    loop {
+        if to_server.is_closed() {
+            return Ok(());
+        }
+        match capture_thumbnail_jpeg() {
+            Ok(jpeg) => {
+                if to_server.send(ClientToServer::ScreenFrame { jpeg }).is_err() {
+                    return Ok(());
+                }
+            }
+            Err(e) => tracing::warn!("screen capture failed: {e:#}"),
+        }
+        tokio::time::sleep(CAPTURE_INTERVAL).await;
+    }
+}
+
+fn capture_thumbnail_jpeg() -> Result<Vec<u8>> {
+    let monitors = xcap::Monitor::all().context("listing monitors")?;
+    let monitor = monitors
+        .iter()
+        .find(|m| m.is_primary())
+        .or_else(|| monitors.first())
+        .context("no monitor found")?;
+    let image = monitor.capture_image().context("capturing monitor image")?;
+
+    let scale = THUMBNAIL_WIDTH as f32 / image.width() as f32;
+    let height = ((image.height() as f32) * scale).round().max(1.0) as u32;
+    let resized = image::imageops::resize(&image, THUMBNAIL_WIDTH, height, FilterType::Triangle);
+    // JPEG has no alpha channel, so drop it before encoding.
+    let rgb = image::DynamicImage::ImageRgba8(resized).to_rgb8();
+
+    let mut jpeg_bytes = Vec::new();
+    let mut encoder =
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_bytes, 55);
+    encoder.encode(
+        rgb.as_raw(),
+        rgb.width(),
+        rgb.height(),
+        image::ExtendedColorType::Rgb8,
+    )?;
+    Ok(jpeg_bytes)
+}

@@ -1,0 +1,253 @@
+use std::collections::{HashMap, HashSet};
+use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use lingua_common::{AssignmentId, AssignmentKind, ServerToClient, StudentId};
+use tokio::sync::mpsc;
+
+pub struct ChatEntry {
+    pub from: String,
+    pub text: String,
+}
+
+pub struct AssignmentInstance {
+    pub id: AssignmentId,
+    pub title: String,
+    pub kind: AssignmentKind,
+    pub done: bool,
+}
+
+/// A student's live status, in the priority order the grid should show it in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Presence {
+    Empty,
+    NeedsHelp,
+    Speaking,
+    Connected,
+}
+
+/// How recent a mic-level reading must be to still count as "currently speaking".
+const SPEAKING_TIMEOUT: Duration = Duration::from_millis(900);
+/// RMS level (fixed-point *1000) above which we consider a student to be talking.
+const SPEAKING_THRESHOLD: i32 = 120;
+
+/// Everything the GUI needs to know about one connected student.
+pub struct Student {
+    pub name: String,
+    pub ip: IpAddr,
+    pub seat: usize,
+    /// Sends control messages to this student's TCP writer task.
+    pub to_client: mpsc::UnboundedSender<ServerToClient>,
+    /// Latest screen snapshot, JPEG-encoded, as received over the control channel.
+    pub last_frame_jpeg: Option<Vec<u8>>,
+    /// Bumped every time `last_frame_jpeg` changes, so the GUI knows to re-upload the texture.
+    pub frame_version: u64,
+    pub locked: bool,
+    pub group: Option<usize>,
+    pub needs_help: bool,
+    pub last_level: i32,
+    pub last_level_at: Option<Instant>,
+    pub assignments: Vec<AssignmentInstance>,
+    pub score: Option<u32>,
+}
+
+impl Student {
+    pub fn presence(&self) -> Presence {
+        if self.needs_help {
+            Presence::NeedsHelp
+        } else if self.last_level >= SPEAKING_THRESHOLD
+            && self
+                .last_level_at
+                .is_some_and(|t| t.elapsed() < SPEAKING_TIMEOUT)
+        {
+            Presence::Speaking
+        } else {
+            Presence::Connected
+        }
+    }
+
+    pub fn assignments_done(&self) -> usize {
+        self.assignments.iter().filter(|a| a.done).count()
+    }
+}
+
+pub struct SharedState {
+    pub students: HashMap<StudentId, Student>,
+    pub mic_broadcasting: bool,
+    /// Conversation groups, keyed by an ever-increasing id (never reused, so a stale
+    /// `Student::group` index can never silently point at the wrong group).
+    pub groups: HashMap<usize, Vec<StudentId>>,
+    pub next_group_id: usize,
+    pub listening_to: Option<StudentId>,
+    pub chat_log: Vec<ChatEntry>,
+    pub class_name: String,
+    pub class_size: usize,
+    pub mics_locked: bool,
+    /// Seats that have had at least one student connect this session, for attendance.
+    pub ever_connected_seats: HashSet<usize>,
+    next_seat: usize,
+    pub lesson_started_at: Instant,
+}
+
+pub type AppState = Arc<std::sync::Mutex<SharedState>>;
+
+impl SharedState {
+    pub fn new(class_name: String, class_size: usize) -> Self {
+        Self {
+            students: HashMap::new(),
+            mic_broadcasting: false,
+            groups: HashMap::new(),
+            next_group_id: 0,
+            listening_to: None,
+            chat_log: Vec::new(),
+            class_name,
+            class_size,
+            mics_locked: false,
+            ever_connected_seats: HashSet::new(),
+            next_seat: 1,
+            lesson_started_at: Instant::now(),
+        }
+    }
+
+    pub fn assign_seat(&mut self) -> usize {
+        let seat = self.next_seat;
+        self.next_seat += 1;
+        self.ever_connected_seats.insert(seat);
+        seat
+    }
+
+    pub fn student_addrs(&self) -> Vec<SocketAddr> {
+        self.students
+            .values()
+            .map(|s| SocketAddr::new(s.ip, lingua_common::MIC_PORT))
+            .collect()
+    }
+
+    /// Puts `members` into a brand new group, notifying each member of the others.
+    pub fn create_group(&mut self, members: &[StudentId]) {
+        if members.len() < 2 {
+            return;
+        }
+        // Leave any group a selected student was already in.
+        for &id in members {
+            self.leave_group(id);
+        }
+        let group_id = self.next_group_id;
+        self.next_group_id += 1;
+        self.groups.insert(group_id, members.to_vec());
+        for &id in members {
+            if let Some(s) = self.students.get_mut(&id) {
+                s.group = Some(group_id);
+            }
+        }
+        self.notify_group(group_id);
+    }
+
+    /// Removes `id` from whatever group it's in, if any, and tells every remaining
+    /// member (and `id` itself) about the change.
+    pub fn leave_group(&mut self, id: StudentId) {
+        let Some(group_id) = self.students.get(&id).and_then(|s| s.group) else {
+            return;
+        };
+        if let Some(members) = self.groups.get_mut(&group_id) {
+            members.retain(|&m| m != id);
+            let remaining = members.clone();
+            if remaining.len() < 2 {
+                for &m in &remaining {
+                    if let Some(s) = self.students.get_mut(&m) {
+                        s.group = None;
+                    }
+                    if let Some(s) = self.students.get(&m) {
+                        let _ = s.to_client.send(ServerToClient::LeaveGroup);
+                    }
+                }
+                self.groups.remove(&group_id);
+            } else {
+                self.notify_group(group_id);
+            }
+        }
+        if let Some(s) = self.students.get_mut(&id) {
+            s.group = None;
+        }
+        if let Some(s) = self.students.get(&id) {
+            let _ = s.to_client.send(ServerToClient::LeaveGroup);
+        }
+    }
+
+    /// Moves `a` into whatever group `b` is currently in (creating a fresh pair if `b`
+    /// is ungrouped). Used by the drag-and-drop grouping UI.
+    pub fn group_with(&mut self, a: StudentId, b: StudentId) {
+        if a == b {
+            return;
+        }
+        self.leave_group(a);
+        if let Some(group_id) = self.students.get(&b).and_then(|s| s.group) {
+            if let Some(members) = self.groups.get_mut(&group_id) {
+                if !members.contains(&a) {
+                    members.push(a);
+                }
+            }
+            if let Some(s) = self.students.get_mut(&a) {
+                s.group = Some(group_id);
+            }
+            self.notify_group(group_id);
+        } else {
+            self.create_group(&[a, b]);
+        }
+    }
+
+    pub fn leave_all_groups(&mut self) {
+        let ids: Vec<StudentId> = self.students.keys().copied().collect();
+        for id in ids {
+            self.leave_group(id);
+        }
+    }
+
+    fn notify_group(&self, group_id: usize) {
+        let Some(members) = self.groups.get(&group_id) else {
+            return;
+        };
+        for &id in members {
+            let Some(student) = self.students.get(&id) else {
+                continue;
+            };
+            let peers = members
+                .iter()
+                .filter(|&&other| other != id)
+                .filter_map(|other| self.students.get(other))
+                .map(|s| lingua_common::GroupPeer {
+                    addr: SocketAddr::new(s.ip, lingua_common::PEER_PORT),
+                    name: s.name.clone(),
+                })
+                .collect();
+            let _ = student
+                .to_client
+                .send(ServerToClient::JoinGroup { peers });
+        }
+    }
+
+    pub fn set_mics_locked(&mut self, locked: bool) {
+        self.mics_locked = locked;
+        for s in self.students.values() {
+            let _ = s.to_client.send(ServerToClient::SetMicLocked(locked));
+        }
+    }
+
+    /// Average of every manually-entered score (0-100), if any have been entered.
+    pub fn average_score(&self) -> Option<f32> {
+        let scores: Vec<u32> = self.students.values().filter_map(|s| s.score).collect();
+        if scores.is_empty() {
+            return None;
+        }
+        Some(scores.iter().sum::<u32>() as f32 / scores.len() as f32)
+    }
+
+    pub fn assignments_completed_total(&self) -> usize {
+        self.students.values().map(|s| s.assignments_done()).sum()
+    }
+
+    pub fn connected_count(&self) -> usize {
+        self.students.len()
+    }
+}
