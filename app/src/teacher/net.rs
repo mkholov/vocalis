@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use super::db;
 use super::state::{AppState, ChatEntry, Student};
 
 pub async fn run_control_server(state: AppState, teacher_name: Arc<str>) -> Result<()> {
@@ -70,6 +71,7 @@ async fn handle_student(
         if guard.mics_locked {
             let _ = tx.send(ServerToClient::SetMicLocked(true));
         }
+        let db_id = db::insert_student(&guard.db, guard.lesson_row_id, &name, seat).ok();
         guard.students.insert(
             student_id,
             Student {
@@ -86,6 +88,7 @@ async fn handle_student(
                 last_level_at: None,
                 assignments: Vec::new(),
                 score: None,
+                db_id,
             },
         );
     }
@@ -130,10 +133,16 @@ async fn handle_student(
             }
             Ok(ClientToServer::AssignmentDone { id }) => {
                 let mut guard = state.lock().unwrap();
+                let assignment_db_id = guard.students.get(&student_id).and_then(|student| {
+                    student.assignments.iter().find(|a| a.id == id).and_then(|a| a.db_id)
+                });
                 if let Some(student) = guard.students.get_mut(&student_id) {
                     if let Some(a) = student.assignments.iter_mut().find(|a| a.id == id) {
                         a.done = true;
                     }
+                }
+                if let Some(assignment_db_id) = assignment_db_id {
+                    let _ = db::mark_assignment_done(&guard.db, assignment_db_id);
                 }
             }
             Ok(ClientToServer::Hello { .. }) => {}

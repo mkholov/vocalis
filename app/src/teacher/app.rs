@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::theme;
 
 use super::state::{self, AppState, Presence, SharedState};
-use super::{listen, mic, net};
+use super::{db, listen, mic, net};
 
 const ASSIGNMENT_TEMPLATES: &[(&str, AssignmentKind)] = &[
     ("Аудирование: заказ в кафе", AssignmentKind::Listening),
@@ -179,6 +179,13 @@ impl TeacherApp {
         let mut guard = self.state.lock().unwrap();
         let targets = self.action_targets(&guard);
         for id in targets {
+            let student_db_id = match guard.students.get(&id) {
+                Some(s) => s.db_id,
+                None => continue,
+            };
+            let assignment_db_id = student_db_id
+                .and_then(|row_id| db::insert_assignment(&guard.db, row_id, title, kind).ok());
+
             let Some(s) = guard.students.get_mut(&id) else { continue };
             let assignment_id = Uuid::new_v4();
             s.assignments.push(state::AssignmentInstance {
@@ -186,6 +193,7 @@ impl TeacherApp {
                 title: title.to_string(),
                 kind,
                 done: false,
+                db_id: assignment_db_id,
             });
             let _ = s.to_client.send(ServerToClient::AssignmentOffer {
                 id: assignment_id,
@@ -750,7 +758,7 @@ impl TeacherApp {
 
     fn stats_tab(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            let (avg_score, done_total, connected, class_size, attendance) = {
+            let (avg_score, done_total, connected, class_size, attendance, history) = {
                 let guard = self.state.lock().unwrap();
                 (
                     guard.average_score(),
@@ -758,6 +766,7 @@ impl TeacherApp {
                     guard.connected_count(),
                     guard.class_size.max(1),
                     guard.ever_connected_seats.len(),
+                    guard.history,
                 )
             };
 
@@ -766,6 +775,19 @@ impl TeacherApp {
                 stat_tile(ui, "ЗАДАНИЙ ВЫПОЛНЕНО", &done_total.to_string());
                 stat_tile(ui, "АКТИВНЫ СЕЙЧАС", &format!("{connected} / {class_size}"));
                 stat_tile(ui, "ПОСЕЩАЕМОСТЬ", &format!("{:.0}%", attendance as f32 / class_size as f32 * 100.0));
+            });
+
+            ui.add_space(10.0);
+            ui.colored_label(theme::MUTED, "ЗА ВСЁ ВРЕМЯ (сохранено локально)");
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                stat_tile(ui, "УРОКОВ ПРОВЕДЕНО", &history.lessons_count.to_string());
+                stat_tile(
+                    ui,
+                    "СРЕДНИЙ БАЛЛ ЗА ВСЁ ВРЕМЯ",
+                    &history.avg_score.map(|v| format!("{v:.0}%")).unwrap_or_else(|| "—".to_string()),
+                );
+                stat_tile(ui, "ЗАДАНИЙ ВЫПОЛНЕНО ЗА ВСЁ ВРЕМЯ", &history.assignments_done.to_string());
             });
 
             ui.add_space(16.0);
@@ -830,7 +852,15 @@ impl TeacherApp {
                             let resp = ui.add(egui::TextEdit::singleline(buf).desired_width(50.0));
                             if resp.lost_focus() {
                                 if let Ok(v) = buf.parse::<u32>() {
-                                    self.state.lock().unwrap().students.get_mut(&id).map(|s| s.score = Some(v.min(100)));
+                                    let score = v.min(100);
+                                    let mut guard = self.state.lock().unwrap();
+                                    let db_id = guard.students.get(&id).and_then(|s| s.db_id);
+                                    if let Some(s) = guard.students.get_mut(&id) {
+                                        s.score = Some(score);
+                                    }
+                                    if let Some(db_id) = db_id {
+                                        let _ = db::update_score(&guard.db, db_id, score);
+                                    }
                                 }
                                 self.score_edit = None;
                             }
@@ -873,7 +903,19 @@ impl TeacherApp {
             .ok()
             .filter(|p| !p.trim().is_empty())
             .unwrap_or_else(state::generate_pin);
-        let state: AppState = Arc::new(Mutex::new(SharedState::new(class_name, class_size, lesson_pin)));
+
+        let db_conn = db::open().expect("failed to open Vocalis database");
+        let history = db::load_history_summary(&db_conn).unwrap_or_default();
+        let lesson_row_id = db::insert_lesson(&db_conn, &class_name).expect("failed to record lesson start");
+
+        let state: AppState = Arc::new(Mutex::new(SharedState::new(
+            class_name,
+            class_size,
+            lesson_pin,
+            db_conn,
+            lesson_row_id,
+            history,
+        )));
         let teacher_name: Arc<str> = Arc::from(teacher_name);
 
         {

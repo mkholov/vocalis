@@ -4,8 +4,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use lingua_common::{AssignmentId, AssignmentKind, ServerToClient, StudentId};
+use rusqlite::Connection;
 use tokio::sync::mpsc;
 use uuid::Uuid;
+
+use super::db;
 
 /// Generates a random 6-digit lesson PIN (`"000000"`-`"999999"`), used unless the
 /// teacher overrides it via `VOCALIS_LESSON_PIN` or edits it in the UI.
@@ -24,6 +27,9 @@ pub struct AssignmentInstance {
     pub title: String,
     pub kind: AssignmentKind,
     pub done: bool,
+    /// Row id in the `assignments` table, if the DB write succeeded — `None` just
+    /// means this particular assignment won't be persisted, not a hard failure.
+    pub db_id: Option<i64>,
 }
 
 /// A student's live status, in the priority order the grid should show it in.
@@ -58,6 +64,8 @@ pub struct Student {
     pub last_level_at: Option<Instant>,
     pub assignments: Vec<AssignmentInstance>,
     pub score: Option<u32>,
+    /// Row id in the `students` table, if the DB write succeeded when they connected.
+    pub db_id: Option<i64>,
 }
 
 impl Student {
@@ -99,12 +107,26 @@ pub struct SharedState {
     pub ever_connected_seats: HashSet<usize>,
     next_seat: usize,
     pub lesson_started_at: Instant,
+    /// Local SQLite connection backing lesson/student/grade/assignment history —
+    /// guarded by the same mutex as everything else here, so no separate lock needed.
+    pub db: Connection,
+    /// Row id of the `lessons` entry created for this run of the teacher console.
+    pub lesson_row_id: i64,
+    /// Snapshot of history from before this lesson, loaded once at startup.
+    pub history: db::HistorySummary,
 }
 
 pub type AppState = Arc<std::sync::Mutex<SharedState>>;
 
 impl SharedState {
-    pub fn new(class_name: String, class_size: usize, lesson_pin: String) -> Self {
+    pub fn new(
+        class_name: String,
+        class_size: usize,
+        lesson_pin: String,
+        db: Connection,
+        lesson_row_id: i64,
+        history: db::HistorySummary,
+    ) -> Self {
         Self {
             students: HashMap::new(),
             mic_broadcasting: false,
@@ -117,6 +139,9 @@ impl SharedState {
             lesson_pin,
             mics_locked: false,
             ever_connected_seats: HashSet::new(),
+            db,
+            lesson_row_id,
+            history,
             next_seat: 1,
             lesson_started_at: Instant::now(),
         }
