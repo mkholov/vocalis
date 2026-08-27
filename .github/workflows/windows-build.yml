@@ -1,0 +1,73 @@
+name: Windows build
+
+# Builds the three user-facing .exe on a real Windows host, so the winres
+# build.rs (see bin-launcher/bin-teacher/bin-student) actually finds rc.exe and
+# embeds the app icon, and audiopus_sys links its MSVC-prebuilt static Opus
+# libs — neither of which happens correctly when cross-compiled from macOS/Linux.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable, MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build output
+        uses: Swatinem/rust-cache@v2
+
+      # No extra system packages to install here on purpose:
+      # - audiopus (Opus codec) ships prebuilt static libs for the MSVC target
+      #   inside the audiopus_sys crate itself (msvc/x64/opus.lib) and links
+      #   them directly — no libopus install, no pkg-config, no vcpkg.
+      # - xcap (screen capture) is pure `windows`-crate bindings against APIs
+      #   already present in Windows/the SDK that ships with windows-latest.
+      # - rusqlite's "bundled" feature compiles SQLite from source via `cc`,
+      #   which just needs the MSVC toolchain that's already on this runner.
+      # - cpal (audio I/O) talks to WASAPI, built into Windows.
+      # - winres needs rc.exe, which ships with the VS Build Tools already
+      #   installed on windows-latest.
+      # If a future dependency needs something the runner doesn't have, add
+      # its install step here (e.g. via `choco install <package>`).
+
+      - name: cargo build --workspace --release
+        run: cargo build --workspace --release --locked
+
+      # bin-launcher's crate is named "vocalis-launcher" but its [[bin]] is
+      # named "vocalis", so the built file is vocalis.exe — the artifact
+      # below is named vocalis-launcher to match the other two, the .exe
+      # inside keeps its real name.
+      - name: Upload vocalis-launcher.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: vocalis-launcher
+          path: target/release/vocalis.exe
+          if-no-files-found: error
+
+      - name: Upload vocalis-teacher.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: vocalis-teacher
+          path: target/release/vocalis-teacher.exe
+          if-no-files-found: error
+
+      - name: Upload vocalis-student.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: vocalis-student
+          path: target/release/vocalis-student.exe
+          if-no-files-found: error
