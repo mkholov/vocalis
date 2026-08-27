@@ -32,7 +32,7 @@ fn capture_thumbnail_jpeg() -> Result<Vec<u8>> {
     let monitors = xcap::Monitor::all().context("listing monitors")?;
     let monitor = monitors
         .iter()
-        .find(|m| m.is_primary())
+        .find(|m| m.is_primary().unwrap_or(false))
         .or_else(|| monitors.first())
         .context("no monitor found")?;
     let image = monitor.capture_image().context("capturing monitor image")?;

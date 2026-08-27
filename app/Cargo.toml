@@ -24,6 +24,6 @@ uuid = { workspace = true }
 eframe = "0.29"
 egui = "0.29"
 cpal = "0.15"
-xcap = "0.0.14"
+xcap = "0.9"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 rfd = "0.15"
