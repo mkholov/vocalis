@@ -53,7 +53,9 @@ impl AssignmentKind {
 /// Messages sent from a student client to the teacher console over the TCP control channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientToServer {
-    Hello { name: String },
+    /// `pin` must match the teacher's current lesson PIN or the connection is
+    /// rejected — see [`ServerToClient::Rejected`].
+    Hello { name: String, pin: String },
     /// A downsized JPEG snapshot of the student's screen, sent periodically for monitoring.
     ScreenFrame { jpeg: Vec<u8> },
     ChatMessage { text: String },
@@ -72,6 +74,11 @@ pub enum ServerToClient {
     Welcome {
         student_id: StudentId,
         teacher_name: String,
+    },
+    /// Sent instead of `Welcome` when `Hello.pin` didn't match the lesson PIN; the
+    /// control connection is closed by the teacher right after.
+    Rejected {
+        reason: String,
     },
     /// Join a conversation group with the given peers: mic audio should be sent to,
     /// and mixed in from, every one of them.

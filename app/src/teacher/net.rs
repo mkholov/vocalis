@@ -34,10 +34,23 @@ async fn handle_student(
     let (mut read_half, mut write_half) = socket.into_split();
 
     let hello: ClientToServer = read_message(&mut read_half).await?;
-    let name = match hello {
-        ClientToServer::Hello { name } => name,
+    let (name, pin) = match hello {
+        ClientToServer::Hello { name, pin } => (name, pin),
         _ => anyhow::bail!("expected Hello as first message"),
     };
+
+    let expected_pin = state.lock().unwrap().lesson_pin.clone();
+    if pin.trim() != expected_pin {
+        write_message(
+            &mut write_half,
+            &ServerToClient::Rejected {
+                reason: "Неверный PIN-код урока".to_string(),
+            },
+        )
+        .await?;
+        warn!("student '{name}' from {ip} rejected: wrong PIN");
+        return Ok(());
+    }
 
     let student_id = Uuid::new_v4();
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerToClient>();

@@ -355,6 +355,28 @@ impl TeacherApp {
                         );
                     });
 
+                ui.add_space(8.0);
+                ui.colored_label(theme::MUTED, "PIN урока:");
+                egui::Frame::none()
+                    .fill(egui::Color32::from_rgb(41, 46, 54))
+                    .rounding(egui::Rounding::same(14.0))
+                    .inner_margin(egui::Margin::symmetric(10.0, 4.0))
+                    .show(ui, |ui| {
+                        let mut guard = self.state.lock().unwrap();
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut guard.lesson_pin)
+                                .frame(false)
+                                .font(egui::TextStyle::Monospace)
+                                .desired_width(70.0),
+                        );
+                        if resp.changed() {
+                            guard.lesson_pin.retain(|c| c.is_ascii_digit());
+                            guard.lesson_pin.truncate(6);
+                        }
+                    })
+                    .response
+                    .on_hover_text("Сообщите этот код ученикам — он понадобится при подключении");
+
                 let elapsed = self.state.lock().unwrap().lesson_started_at.elapsed();
                 ui.label(format_timer(elapsed));
 
@@ -847,7 +869,11 @@ impl TeacherApp {
 
         let class_name = std::env::var("VOCALIS_CLASS_NAME").unwrap_or_else(|_| "9А · Английский язык".to_string());
         let class_size: usize = std::env::var("VOCALIS_CLASS_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(16);
-        let state: AppState = Arc::new(Mutex::new(SharedState::new(class_name, class_size)));
+        let lesson_pin = std::env::var("VOCALIS_LESSON_PIN")
+            .ok()
+            .filter(|p| !p.trim().is_empty())
+            .unwrap_or_else(state::generate_pin);
+        let state: AppState = Arc::new(Mutex::new(SharedState::new(class_name, class_size, lesson_pin)));
         let teacher_name: Arc<str> = Arc::from(teacher_name);
 
         {

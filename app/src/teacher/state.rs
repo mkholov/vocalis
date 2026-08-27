@@ -5,6 +5,14 @@ use std::time::{Duration, Instant};
 
 use lingua_common::{AssignmentId, AssignmentKind, ServerToClient, StudentId};
 use tokio::sync::mpsc;
+use uuid::Uuid;
+
+/// Generates a random 6-digit lesson PIN (`"000000"`-`"999999"`), used unless the
+/// teacher overrides it via `VOCALIS_LESSON_PIN` or edits it in the UI.
+pub fn generate_pin() -> String {
+    let n = (Uuid::new_v4().as_u128() % 1_000_000) as u32;
+    format!("{n:06}")
+}
 
 pub struct ChatEntry {
     pub from: String,
@@ -83,6 +91,9 @@ pub struct SharedState {
     pub chat_log: Vec<ChatEntry>,
     pub class_name: String,
     pub class_size: usize,
+    /// PIN a student's `Hello.pin` must match to be admitted; shown on the teacher's
+    /// screen and read out to the class. Editable at runtime from the top bar.
+    pub lesson_pin: String,
     pub mics_locked: bool,
     /// Seats that have had at least one student connect this session, for attendance.
     pub ever_connected_seats: HashSet<usize>,
@@ -93,7 +104,7 @@ pub struct SharedState {
 pub type AppState = Arc<std::sync::Mutex<SharedState>>;
 
 impl SharedState {
-    pub fn new(class_name: String, class_size: usize) -> Self {
+    pub fn new(class_name: String, class_size: usize, lesson_pin: String) -> Self {
         Self {
             students: HashMap::new(),
             mic_broadcasting: false,
@@ -103,6 +114,7 @@ impl SharedState {
             chat_log: Vec::new(),
             class_name,
             class_size,
+            lesson_pin,
             mics_locked: false,
             ever_connected_seats: HashSet::new(),
             next_seat: 1,

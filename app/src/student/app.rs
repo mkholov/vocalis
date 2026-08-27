@@ -16,6 +16,7 @@ pub struct StudentApp {
     _rt: tokio::runtime::Runtime,
     _mic_capture: mic::MicCapture,
     student_name: String,
+    pin_input: String,
     connect_task: Option<tokio::task::JoinHandle<()>>,
     was_locked: bool,
     chat_input: String,
@@ -29,8 +30,9 @@ impl StudentApp {
         self.state.lock().unwrap().connecting = true;
         let state = self.state.clone();
         let name = self.student_name.clone();
+        let pin = self.pin_input.trim().to_string();
         let handle = self._rt.spawn(async move {
-            if let Err(e) = net::connect_to_teacher(state.clone(), addr, name).await {
+            if let Err(e) = net::connect_to_teacher(state.clone(), addr, name, pin).await {
                 tracing::warn!("connection to {addr} failed: {e:#}");
                 let mut guard = state.lock().unwrap();
                 guard.connecting = false;
@@ -242,9 +244,19 @@ impl eframe::App for StudentApp {
                 ui.add(egui::TextEdit::singleline(&mut self.student_name).desired_width(280.0));
                 ui.add_space(8.0);
 
+                ui.label("PIN-код урока (сообщит преподаватель):");
+                ui.add(egui::TextEdit::singleline(&mut self.pin_input).desired_width(120.0));
+                ui.add_space(8.0);
+
                 let name_ready = !self.student_name.trim().is_empty();
+                let pin_trimmed = self.pin_input.trim();
+                let pin_ready = (4..=6).contains(&pin_trimmed.len())
+                    && pin_trimmed.chars().all(|c| c.is_ascii_digit());
                 if !name_ready {
                     ui.colored_label(theme::WARN, "Введите имя, чтобы можно было подключиться");
+                }
+                if !pin_ready {
+                    ui.colored_label(theme::WARN, "Введите PIN-код урока (4-6 цифр)");
                 }
 
                 ui.separator();
@@ -274,7 +286,7 @@ impl eframe::App for StudentApp {
                     ui.horizontal(|ui| {
                         ui.label(format!("{name} ({})", addr.ip()));
                         if ui
-                            .add_enabled(name_ready, egui::Button::new("Подключиться"))
+                            .add_enabled(name_ready && pin_ready, egui::Button::new("Подключиться"))
                             .clicked()
                         {
                             to_connect = Some(*addr);
@@ -357,6 +369,7 @@ impl StudentApp {
             _rt: rt,
             _mic_capture: mic_capture,
             student_name: default_student_name(),
+            pin_input: String::new(),
             connect_task: None,
             was_locked: false,
             chat_input: String::new(),

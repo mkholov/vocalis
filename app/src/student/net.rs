@@ -67,14 +67,24 @@ pub async fn run_discovery_pruner(state: AppState) {
 /// reader loop that reacts to `ServerToClient` messages (grouping, lock/unlock, chat,
 /// files, listen-in). Also starts the screen-capture task for as long as the
 /// connection is alive.
-pub async fn connect_to_teacher(state: AppState, addr: SocketAddr, student_name: String) -> Result<()> {
+pub async fn connect_to_teacher(
+    state: AppState,
+    addr: SocketAddr,
+    student_name: String,
+    pin: String,
+) -> Result<()> {
     let socket = tokio::net::TcpStream::connect(addr).await?;
     let (mut read_half, mut write_half) = socket.into_split();
 
-    write_message(&mut write_half, &ClientToServer::Hello { name: student_name }).await?;
+    write_message(
+        &mut write_half,
+        &ClientToServer::Hello { name: student_name, pin },
+    )
+    .await?;
     let welcome: ServerToClient = read_message(&mut read_half).await?;
     let teacher_name = match welcome {
         ServerToClient::Welcome { teacher_name, .. } => teacher_name,
+        ServerToClient::Rejected { reason } => anyhow::bail!(reason),
         _ => anyhow::bail!("expected Welcome as first server message"),
     };
 
@@ -101,6 +111,9 @@ pub async fn connect_to_teacher(state: AppState, addr: SocketAddr, student_name:
     loop {
         match read_message::<ServerToClient, _>(&mut read_half).await {
             Ok(ServerToClient::Welcome { .. }) => {}
+            // Only ever sent as the very first reply, handled above during the
+            // handshake — present here only so this match stays exhaustive.
+            Ok(ServerToClient::Rejected { .. }) => {}
             Ok(ServerToClient::JoinGroup { peers }) => {
                 let mut guard = state.lock().unwrap();
                 guard.peer_addrs = peers.iter().map(|p| p.addr).collect();
