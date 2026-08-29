@@ -29,3 +29,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 rfd = "0.15"
 open = "5"
 rusqlite = { version = "0.40", features = ["bundled"] }
+# Pinned to the 0.5 series deliberately: 0.6 reworked the public API significantly
+# (moved/renamed most of what we need — Hint, SampleBuffer, decoder construction —
+# and is only a few months old), while 0.5's API is the long-stable, widely-used one.
+# default-features off to skip formats we don't need (flac/ogg/vorbis/mkv/adpcm).
+symphonia = { version = "0.5", default-features = false, features = ["wav", "pcm", "mp3"] }

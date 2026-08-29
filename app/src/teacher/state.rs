@@ -118,6 +118,22 @@ pub struct SharedState {
     pub lesson_row_id: i64,
     /// Snapshot of history from before this lesson, loaded once at startup.
     pub history: db::HistorySummary,
+    /// The audio materials library, loaded once at startup and appended to as the
+    /// teacher uploads more — the file itself stays on disk wherever it was picked
+    /// from, this is just title + path.
+    pub materials: Vec<db::MaterialRow>,
+    /// The material currently being broadcast, if any (progress for the "now
+    /// playing" bar in the Materials tab).
+    pub playing: Option<PlayingMaterial>,
+}
+
+/// Live playback progress for the Materials tab, updated a few times a second by
+/// the playback task itself.
+pub struct PlayingMaterial {
+    pub material_id: i64,
+    pub title: String,
+    pub total_ms: u64,
+    pub elapsed_ms: u64,
 }
 
 pub type AppState = Arc<std::sync::Mutex<SharedState>>;
@@ -130,6 +146,7 @@ impl SharedState {
         db: Connection,
         lesson_row_id: i64,
         history: db::HistorySummary,
+        materials: Vec<db::MaterialRow>,
     ) -> Self {
         Self {
             students: HashMap::new(),
@@ -147,6 +164,8 @@ impl SharedState {
             db,
             lesson_row_id,
             history,
+            materials,
+            playing: None,
             next_seat: 1,
             lesson_started_at: Instant::now(),
         }

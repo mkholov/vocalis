@@ -43,6 +43,12 @@ pub fn open() -> Result<Connection> {
             kind TEXT NOT NULL,
             done INTEGER NOT NULL DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS materials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            added_at INTEGER NOT NULL
+        );
         ",
     )
     .context("creating Vocalis tables")?;
@@ -150,4 +156,35 @@ pub fn mark_assignment_done(conn: &Connection, assignment_row_id: i64) -> Result
         params![assignment_row_id],
     )?;
     Ok(())
+}
+
+/// One row of the audio materials library — the file itself stays wherever the
+/// teacher originally picked it from (just like the existing "send file" flow);
+/// only its title and path are persisted, matching what was asked for.
+pub struct MaterialRow {
+    pub id: i64,
+    pub title: String,
+    pub file_path: String,
+}
+
+pub fn insert_material(conn: &Connection, title: &str, file_path: &str) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO materials (title, file_path, added_at) VALUES (?1, ?2, ?3)",
+        params![title, file_path, now_epoch()],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn list_materials(conn: &Connection) -> Result<Vec<MaterialRow>> {
+    let mut stmt = conn.prepare("SELECT id, title, file_path FROM materials ORDER BY added_at DESC")?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(MaterialRow {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                file_path: row.get(2)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }

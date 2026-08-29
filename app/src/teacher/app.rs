@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::theme;
 
 use super::state::{self, AppState, Presence, SharedState};
-use super::{db, listen, mic, net};
+use super::{db, listen, materials, mic, net};
 
 const ASSIGNMENT_TEMPLATES: &[(&str, AssignmentKind)] = &[
     ("Аудирование: заказ в кафе", AssignmentKind::Listening),
@@ -57,6 +57,7 @@ fn avatar_color(name: &str) -> egui::Color32 {
 enum Tab {
     Class,
     Stats,
+    Materials,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -81,6 +82,11 @@ pub struct TeacherApp {
     /// independent of `mic` (a second, concurrent `cpal` input stream) so a
     /// class-wide broadcast and a private word with one student can run at once.
     intercom: Option<MicHandle>,
+    /// The materials-playback send task, if a material is currently playing.
+    /// Unlike `mic`/`intercom` there's no live device capture to own here — just
+    /// the task streaming pre-decoded samples out — so `.abort()` on stop is the
+    /// only way to end it early (dropping the handle alone would not).
+    playback: Option<tokio::task::JoinHandle<()>>,
     textures: HashMap<StudentId, (u64, egui::TextureHandle)>,
     selected: HashSet<StudentId>,
     dragging: Option<StudentId>,
@@ -99,6 +105,7 @@ impl TeacherApp {
             _rt: rt,
             mic: None,
             intercom: None,
+            playback: None,
             textures: HashMap::new(),
             selected: HashSet::new(),
             dragging: None,
@@ -116,6 +123,11 @@ impl TeacherApp {
             self.state.lock().unwrap().mic_broadcasting = false;
             return;
         }
+        // Live mic broadcast and materials playback both go out over MIC_PORT as a
+        // single Opus stream — can't have two independent streams on one port (see
+        // `materials::run_playback`'s doc comment), so starting one stops the other.
+        self.stop_playback();
+
         let (tx, rx) = mpsc::unbounded_channel::<Vec<i16>>();
         match mic::start_mic_capture(tx, &mic::MIC_LEVEL_MILLIS) {
             Ok((capture, sample_rate)) => {
@@ -133,6 +145,87 @@ impl TeacherApp {
                 tracing::warn!("failed to start microphone capture: {e:#}");
             }
         }
+    }
+
+    /// Opens a file picker for an mp3/wav, decodes it, and adds it to the library
+    /// (persisted immediately so it survives a restart).
+    fn upload_material(&mut self) {
+        let Some(path) = rfd::FileDialog::new().add_filter("Аудио", &["mp3", "wav"]).pick_file() else {
+            return;
+        };
+        let title = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Материал".to_string());
+        let path_str = path.display().to_string();
+
+        let mut guard = self.state.lock().unwrap();
+        match db::insert_material(&guard.db, &title, &path_str) {
+            Ok(id) => guard.materials.insert(0, db::MaterialRow { id, title, file_path: path_str }),
+            Err(e) => tracing::warn!("failed to save material '{title}': {e:#}"),
+        }
+    }
+
+    /// Decodes and streams `material_id` to the current selection (or the whole
+    /// class if nothing's selected — the same `action_targets` rule used for
+    /// assignments/files), over MIC_PORT exactly like a live broadcast. Stops
+    /// whatever was playing before, and stops a live mic broadcast if one is running.
+    fn play_material(&mut self, material_id: i64) {
+        self.stop_playback();
+        if self.mic.is_some() {
+            self.toggle_mic();
+        }
+
+        let (title, path) = {
+            let guard = self.state.lock().unwrap();
+            match guard.materials.iter().find(|m| m.id == material_id) {
+                Some(m) => (m.title.clone(), m.file_path.clone()),
+                None => return,
+            }
+        };
+
+        let (samples, native_rate) = match materials::decode_to_mono_pcm(std::path::Path::new(&path)) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("failed to decode material '{title}' at {path}: {e:#}");
+                return;
+            }
+        };
+        let total_ms = (samples.len() as u64 * 1000) / native_rate.max(1) as u64;
+
+        let targets: Vec<std::net::SocketAddr> = {
+            let guard = self.state.lock().unwrap();
+            self.action_targets(&guard)
+                .into_iter()
+                .filter_map(|id| guard.students.get(&id))
+                .map(|s| std::net::SocketAddr::new(s.ip, lingua_common::MIC_PORT))
+                .collect()
+        };
+        if targets.is_empty() {
+            return;
+        }
+
+        self.state.lock().unwrap().playing = Some(state::PlayingMaterial {
+            material_id,
+            title,
+            total_ms,
+            elapsed_ms: 0,
+        });
+
+        let state = self.state.clone();
+        let task = self
+            ._rt
+            .spawn(async move { let _ = materials::run_playback(state, samples, native_rate, targets).await; });
+        self.playback = Some(task);
+    }
+
+    /// Stops whatever material is currently playing, if any. Safe to call when
+    /// nothing is playing.
+    fn stop_playback(&mut self) {
+        if let Some(task) = self.playback.take() {
+            task.abort();
+        }
+        self.state.lock().unwrap().playing = None;
     }
 
     fn set_locked(&mut self, id: StudentId, locked: bool) {
@@ -394,6 +487,8 @@ impl eframe::App for TeacherApp {
 
         if self.tab == Tab::Stats {
             self.stats_tab(ctx);
+        } else if self.tab == Tab::Materials {
+            self.materials_tab(ctx);
         } else if self.focus {
             self.focus_view(ctx);
         } else {
@@ -457,6 +552,7 @@ impl TeacherApp {
                 ui.add_space(12.0);
                 ui.selectable_value(&mut self.tab, Tab::Class, "Класс");
                 ui.selectable_value(&mut self.tab, Tab::Stats, "Статистика");
+                ui.selectable_value(&mut self.tab, Tab::Materials, "Материалы");
 
                 ui.add_space(12.0);
                 let locked = self.state.lock().unwrap().mics_locked;
@@ -964,6 +1060,83 @@ impl TeacherApp {
             });
         });
     }
+
+    fn materials_tab(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.heading("Аудиоматериалы");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("📂 Загрузить файл (mp3/wav)").clicked() {
+                        self.upload_material();
+                    }
+                });
+            });
+            ui.add_space(6.0);
+            ui.colored_label(
+                theme::MUTED,
+                "Воспроизведение идёт по тому же каналу, что и живой микрофон: выберите учеников в разделе «Класс», чтобы включить только им — иначе прозвучит всему классу.",
+            );
+            ui.add_space(12.0);
+
+            let (materials, playing): (Vec<(i64, String)>, Option<(i64, String, u64, u64)>) = {
+                let guard = self.state.lock().unwrap();
+                (
+                    guard.materials.iter().map(|m| (m.id, m.title.clone())).collect(),
+                    guard
+                        .playing
+                        .as_ref()
+                        .map(|p| (p.material_id, p.title.clone(), p.elapsed_ms, p.total_ms)),
+                )
+            };
+
+            if let Some((_, title, elapsed_ms, total_ms)) = &playing {
+                egui::Frame::group(ui.style()).rounding(egui::Rounding::same(10.0)).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(theme::ACCENT, format!("▶ Сейчас играет: {title}"));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("⏹ Остановить").clicked() {
+                                self.stop_playback();
+                            }
+                        });
+                    });
+                    let progress = if *total_ms > 0 {
+                        (*elapsed_ms as f32 / *total_ms as f32).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    ui.add(
+                        egui::ProgressBar::new(progress)
+                            .text(format!("{} / {}", format_timer(Duration::from_millis(*elapsed_ms)), format_timer(Duration::from_millis(*total_ms)))),
+                    );
+                });
+                ui.add_space(12.0);
+            }
+
+            if materials.is_empty() {
+                ui.colored_label(theme::MUTED, "Материалов пока нет — загрузите mp3 или wav файл.");
+            }
+
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for (id, title) in materials {
+                    ui.horizontal(|ui| {
+                        ui.label(&title);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let is_playing = playing.as_ref().map(|p| p.0) == Some(id);
+                            let label = if is_playing { "⏹ Остановить" } else { "▶ Воспроизвести" };
+                            if ui.button(label).clicked() {
+                                if is_playing {
+                                    self.stop_playback();
+                                } else {
+                                    self.play_material(id);
+                                }
+                            }
+                        });
+                    });
+                    ui.separator();
+                }
+            });
+        });
+    }
 }
 
 fn stat_tile(ui: &mut egui::Ui, label: &str, value: &str) {
@@ -995,6 +1168,7 @@ impl TeacherApp {
         let db_conn = db::open().expect("failed to open Vocalis database");
         let history = db::load_history_summary(&db_conn).unwrap_or_default();
         let lesson_row_id = db::insert_lesson(&db_conn, &class_name).expect("failed to record lesson start");
+        let materials = db::list_materials(&db_conn).unwrap_or_default();
 
         let state: AppState = Arc::new(Mutex::new(SharedState::new(
             class_name,
@@ -1003,6 +1177,7 @@ impl TeacherApp {
             db_conn,
             lesson_row_id,
             history,
+            materials,
         )));
         let teacher_name: Arc<str> = Arc::from(teacher_name);
 
