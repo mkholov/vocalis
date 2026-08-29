@@ -46,6 +46,10 @@ pub struct SharedState {
     pub mic_locked: bool,
     pub needs_help: bool,
     pub assignments: Vec<AssignmentEntry>,
+    /// Set while the teacher has opened a private two-way intercom with this
+    /// student specifically — drives a distinct "teacher is talking to you
+    /// personally" banner, separate from the general class broadcast.
+    pub intercom_active: bool,
 }
 
 pub type AppState = Arc<Mutex<SharedState>>;

@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use anyhow::{Context, Result};
@@ -9,8 +10,13 @@ use tracing::warn;
 
 use super::state::AppState;
 
-/// Current mic input level (RMS, fixed-point *1000), read by the GUI for a VU meter.
+/// Current mic input level (RMS, fixed-point *1000) for the class-wide broadcast,
+/// read by the GUI for the top-bar VU meter.
 pub static MIC_LEVEL_MILLIS: AtomicI32 = AtomicI32::new(0);
+/// Same, but for the private intercom mic — kept as a separate atomic (rather than
+/// reusing `MIC_LEVEL_MILLIS`) so the two VU meters don't stomp on each other when
+/// a class broadcast and a private intercom are both live at once.
+pub static INTERCOM_MIC_LEVEL_MILLIS: AtomicI32 = AtomicI32::new(0);
 
 /// Owns the live cpal input stream. Must stay alive (and on the thread that created it)
 /// for as long as the microphone should be capturing; dropping it stops the stream.
@@ -19,8 +25,14 @@ pub struct MicCapture {
 }
 
 /// Opens the default microphone and starts pushing mono i16 chunks to `tx` as they
-/// arrive. Returns the capture handle (keep it alive) and the device's native sample rate.
-pub fn start_mic_capture(tx: mpsc::UnboundedSender<Vec<i16>>) -> Result<(MicCapture, u32)> {
+/// arrive, reporting RMS level into `level` as it goes (pass `&MIC_LEVEL_MILLIS` or
+/// `&INTERCOM_MIC_LEVEL_MILLIS` depending on which pipeline is capturing — the two
+/// can run concurrently, each with its own independent `cpal` input stream). Returns
+/// the capture handle (keep it alive) and the device's native sample rate.
+pub fn start_mic_capture(
+    tx: mpsc::UnboundedSender<Vec<i16>>,
+    level: &'static AtomicI32,
+) -> Result<(MicCapture, u32)> {
     let host = cpal::default_host();
     let device = host
         .default_input_device()
@@ -43,7 +55,7 @@ pub fn start_mic_capture(tx: mpsc::UnboundedSender<Vec<i16>>) -> Result<(MicCapt
                         (avg.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
                     })
                     .collect();
-                MIC_LEVEL_MILLIS.store(rms_millis(&mono), Ordering::Relaxed);
+                level.store(rms_millis(&mono), Ordering::Relaxed);
                 let _ = tx.send(mono);
             },
             err_fn,
@@ -59,7 +71,7 @@ pub fn start_mic_capture(tx: mpsc::UnboundedSender<Vec<i16>>) -> Result<(MicCapt
                         (sum / channels as i32) as i16
                     })
                     .collect();
-                MIC_LEVEL_MILLIS.store(rms_millis(&mono), Ordering::Relaxed);
+                level.store(rms_millis(&mono), Ordering::Relaxed);
                 let _ = tx.send(mono);
             },
             err_fn,
@@ -108,6 +120,39 @@ pub async fn run_mic_broadcast(
             for addr in addrs {
                 let _ = socket.send_to(&packet, addr).await;
             }
+        }
+    }
+    Ok(())
+}
+
+/// Resamples to 16kHz, Opus-encodes, and sends each frame to exactly one student —
+/// the outbound leg of the private teacher<->student intercom. Structurally the
+/// same pipeline as `run_mic_broadcast`, just addressed to a single fixed target
+/// instead of fanned out to the whole class, and driven by its own independent mic
+/// capture so it doesn't interfere with a concurrent class-wide broadcast.
+pub async fn run_intercom_send(
+    mut rx: mpsc::UnboundedReceiver<Vec<i16>>,
+    native_rate: u32,
+    target: SocketAddr,
+) -> Result<()> {
+    let socket = UdpSocket::bind(("0.0.0.0", 0)).await?;
+    let mut resampler = Resampler::new(native_rate, OPUS_SAMPLE_RATE);
+    let encoder = new_encoder()?;
+    let mut seq: u32 = 0;
+    let mut pending: Vec<i16> = Vec::new();
+
+    while let Some(chunk) = rx.recv().await {
+        pending.extend(resampler.push(&chunk));
+        while pending.len() >= FRAME_SAMPLES {
+            let frame: Vec<i16> = pending.drain(..FRAME_SAMPLES).collect();
+            let mut opus_buf = [0u8; 4000];
+            let n = match encoder.encode(&frame, &mut opus_buf) {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            let packet = encode_audio_packet(seq, &opus_buf[..n]);
+            seq = seq.wrapping_add(1);
+            let _ = socket.send_to(&packet, target).await;
         }
     }
     Ok(())

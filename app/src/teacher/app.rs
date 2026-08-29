@@ -77,6 +77,10 @@ pub struct TeacherApp {
     state: AppState,
     _rt: tokio::runtime::Runtime,
     mic: Option<MicHandle>,
+    /// Own mic capture + send task for the private intercom leg. Entirely
+    /// independent of `mic` (a second, concurrent `cpal` input stream) so a
+    /// class-wide broadcast and a private word with one student can run at once.
+    intercom: Option<MicHandle>,
     textures: HashMap<StudentId, (u64, egui::TextureHandle)>,
     selected: HashSet<StudentId>,
     dragging: Option<StudentId>,
@@ -94,6 +98,7 @@ impl TeacherApp {
             state,
             _rt: rt,
             mic: None,
+            intercom: None,
             textures: HashMap::new(),
             selected: HashSet::new(),
             dragging: None,
@@ -112,7 +117,7 @@ impl TeacherApp {
             return;
         }
         let (tx, rx) = mpsc::unbounded_channel::<Vec<i16>>();
-        match mic::start_mic_capture(tx) {
+        match mic::start_mic_capture(tx, &mic::MIC_LEVEL_MILLIS) {
             Ok((capture, sample_rate)) => {
                 let state = self.state.clone();
                 let broadcast_task = self
@@ -152,16 +157,70 @@ impl TeacherApp {
                 let _ = s.to_client.send(ServerToClient::StopMicUpload);
             }
             guard.listening_to = None;
+            // Can't keep privately talking to someone we've just stopped listening to.
+            let was_talking = guard.talking_to == Some(id);
+            drop(guard);
+            if was_talking {
+                self.stop_intercom(id);
+            }
             return;
         }
-        if let Some(prev) = guard.listening_to.take() {
-            if let Some(s) = guard.students.get(&prev) {
-                let _ = s.to_client.send(ServerToClient::StopMicUpload);
+        guard.start_listening(id);
+    }
+
+    /// Opens (or closes) a private two-way intercom with `id`: the teacher's own
+    /// mic goes to just this student (a second, independent `cpal` capture — the
+    /// class-wide broadcast, if running, is untouched), and listen-in is switched
+    /// to this student too so the teacher hears them back (reusing the exact same
+    /// listen-in mechanism the plain "Слушать" button uses).
+    fn toggle_intercom(&mut self, id: StudentId) {
+        let currently_talking_to = self.state.lock().unwrap().talking_to;
+        if currently_talking_to == Some(id) {
+            self.stop_intercom(id);
+            return;
+        }
+        if let Some(prev) = currently_talking_to {
+            self.stop_intercom(prev);
+        }
+
+        let target_ip = self.state.lock().unwrap().students.get(&id).map(|s| s.ip);
+        let Some(ip) = target_ip else { return };
+
+        self.state.lock().unwrap().start_listening(id);
+
+        let (tx, rx) = mpsc::unbounded_channel::<Vec<i16>>();
+        match mic::start_mic_capture(tx, &mic::INTERCOM_MIC_LEVEL_MILLIS) {
+            Ok((capture, sample_rate)) => {
+                let target = std::net::SocketAddr::new(ip, lingua_common::TEACHER_INTERCOM_PORT);
+                let send_task = self
+                    ._rt
+                    .spawn(async move { let _ = mic::run_intercom_send(rx, sample_rate, target).await; });
+                self.intercom = Some(MicHandle {
+                    _capture: capture,
+                    _broadcast_task: send_task,
+                });
+                let mut guard = self.state.lock().unwrap();
+                guard.talking_to = Some(id);
+                if let Some(s) = guard.students.get(&id) {
+                    let _ = s.to_client.send(ServerToClient::StartIntercom);
+                }
             }
+            Err(e) => tracing::warn!("failed to start intercom microphone capture: {e:#}"),
+        }
+    }
+
+    /// Stops the intercom leg for `id` (if it's the one currently active) — drops
+    /// the second mic capture and tells the student the private channel is closed.
+    /// Leaves plain listen-in (`listening_to`) alone; the two are independent once
+    /// intercom has started.
+    fn stop_intercom(&mut self, id: StudentId) {
+        self.intercom = None;
+        let mut guard = self.state.lock().unwrap();
+        if guard.talking_to == Some(id) {
+            guard.talking_to = None;
         }
         if let Some(s) = guard.students.get(&id) {
-            let _ = s.to_client.send(ServerToClient::StartMicUpload);
-            guard.listening_to = Some(id);
+            let _ = s.to_client.send(ServerToClient::StopIntercom);
         }
     }
 
@@ -310,6 +369,13 @@ impl eframe::App for TeacherApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_millis(150));
 
+        // If the student we were privately talking to disconnected, net.rs already
+        // cleared `talking_to` — drop our side of the intercom (mic capture + send
+        // task) to match instead of leaving it running against a dead address.
+        if self.intercom.is_some() && self.state.lock().unwrap().talking_to.is_none() {
+            self.intercom = None;
+        }
+
         // Pull any new screen frames into the texture cache regardless of whether the
         // compact grid shows them — the focus view needs them ready immediately.
         let frames: Vec<(StudentId, Vec<u8>, u64)> = {
@@ -431,11 +497,16 @@ impl TeacherApp {
         };
 
         if let Some(id) = selected_one {
-            let (name, locked, listening) = {
+            let (name, locked, listening, talking) = {
                 let guard = self.state.lock().unwrap();
                 match guard.students.get(&id) {
-                    Some(s) => (s.name.clone(), s.locked, guard.listening_to == Some(id)),
-                    None => (String::new(), false, false),
+                    Some(s) => (
+                        s.name.clone(),
+                        s.locked,
+                        guard.listening_to == Some(id),
+                        guard.talking_to == Some(id),
+                    ),
+                    None => (String::new(), false, false, false),
                 }
             };
             ui.strong(&name);
@@ -452,6 +523,23 @@ impl TeacherApp {
                     theme::wave_meter(ui, listen::LISTEN_LEVEL_MILLIS.load(Ordering::Relaxed));
                 }
             });
+            ui.horizontal(|ui| {
+                let talk_label = if talking { "🔴 Завершить связь" } else { "🎙️ Говорить с учеником" };
+                let button = egui::Button::new(talk_label).fill(if talking {
+                    theme::DANGER.linear_multiply(0.35)
+                } else {
+                    ui.style().visuals.widgets.inactive.bg_fill
+                });
+                if ui.add(button).clicked() {
+                    self.toggle_intercom(id);
+                }
+                if talking {
+                    theme::wave_meter(ui, mic::INTERCOM_MIC_LEVEL_MILLIS.load(Ordering::Relaxed));
+                }
+            });
+            if talking {
+                ui.colored_label(theme::MUTED, "Приватный разговор — не слышен остальному классу");
+            }
         } else {
             ui.colored_label(theme::MUTED, "Выберите ученика в сетке, чтобы прослушать его или отправить задание.");
         }

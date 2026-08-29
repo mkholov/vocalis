@@ -96,6 +96,10 @@ pub struct SharedState {
     pub groups: HashMap<usize, Vec<StudentId>>,
     pub next_group_id: usize,
     pub listening_to: Option<StudentId>,
+    /// The student currently in a private two-way intercom with the teacher, if
+    /// any. Always implies `listening_to == talking_to` — you can listen to a
+    /// student without talking to them, but not the other way around.
+    pub talking_to: Option<StudentId>,
     pub chat_log: Vec<ChatEntry>,
     pub class_name: String,
     pub class_size: usize,
@@ -133,6 +137,7 @@ impl SharedState {
             groups: HashMap::new(),
             next_group_id: 0,
             listening_to: None,
+            talking_to: None,
             chat_log: Vec::new(),
             class_name,
             class_size,
@@ -261,6 +266,26 @@ impl SharedState {
             let _ = student
                 .to_client
                 .send(ServerToClient::JoinGroup { peers });
+        }
+    }
+
+    /// Switches `listening_to` to `id`, telling whichever student was previously
+    /// being listened to (if any, and if different) to stop uploading their mic,
+    /// and this one to start. No-op if already listening to `id`. Shared by the
+    /// plain "listen in" toggle and by starting an intercom (which always implies
+    /// listening to the same student).
+    pub fn start_listening(&mut self, id: StudentId) {
+        if self.listening_to == Some(id) {
+            return;
+        }
+        if let Some(prev) = self.listening_to.take() {
+            if let Some(s) = self.students.get(&prev) {
+                let _ = s.to_client.send(ServerToClient::StopMicUpload);
+            }
+        }
+        if let Some(s) = self.students.get(&id) {
+            let _ = s.to_client.send(ServerToClient::StartMicUpload);
+            self.listening_to = Some(id);
         }
     }
 

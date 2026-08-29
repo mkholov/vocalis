@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use lingua_common::{
     encode_audio_packet, new_decoder, new_encoder, split_audio_packet, Resampler, SequenceTracker,
-    FRAME_SAMPLES, MIC_PORT, OPUS_SAMPLE_RATE, PEER_PORT,
+    FRAME_SAMPLES, MIC_PORT, OPUS_SAMPLE_RATE, PEER_PORT, TEACHER_INTERCOM_PORT,
 };
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
@@ -32,11 +32,16 @@ fn max_queue_samples(rate: u32) -> usize {
 }
 
 /// All audio sources currently feeding the speakers, already resampled to the output
-/// device's native rate: the teacher's broadcast (if any) plus one queue per group
-/// member, additively mixed at playback time.
+/// device's native rate: the teacher's broadcast (if any), the teacher's private
+/// intercom audio (if any), plus one queue per group member — additively mixed at
+/// playback time.
 #[derive(Default)]
 pub struct MixState {
     pub broadcast: VecDeque<i16>,
+    /// The teacher's private intercom audio, kept in its own queue (rather than
+    /// folded into `broadcast`) purely so it can be identified/measured separately
+    /// if ever needed — it's mixed in exactly the same way at playback time.
+    pub intercom: VecDeque<i16>,
     pub peers: HashMap<SocketAddr, VecDeque<i16>>,
 }
 
@@ -78,6 +83,7 @@ fn pull_mixed(mix: &SharedMix, count: usize) -> Vec<i16> {
     (0..count)
         .map(|_| {
             let mut acc: i32 = state.broadcast.pop_front().unwrap_or(0) as i32;
+            acc += state.intercom.pop_front().unwrap_or(0) as i32;
             for q in state.peers.values_mut() {
                 acc += q.pop_front().unwrap_or(0) as i32;
             }
@@ -150,6 +156,32 @@ pub async fn run_mic_broadcast_receiver(mix: SharedMix, output_rate: u32) -> Res
         ensure_output_started(mix.clone());
         let resampled = resampler.push(&samples);
         push_capped(&mut mix.lock().unwrap().broadcast, &resampled, output_rate);
+    }
+}
+
+/// Listens for the teacher's private intercom audio (addressed to this student
+/// only), conceals dropped packets, resamples to the speaker's native rate and
+/// mixes the result into `mix.intercom`. Always bound, exactly like the broadcast
+/// receiver above — it's simply idle whenever the teacher isn't privately talking
+/// to this student, no start/stop signaling needed on the socket itself.
+pub async fn run_intercom_receiver(mix: SharedMix, output_rate: u32) -> Result<()> {
+    let socket = UdpSocket::bind(("0.0.0.0", TEACHER_INTERCOM_PORT)).await?;
+    let mut decoder = new_decoder()?;
+    let mut tracker = SequenceTracker::new();
+    let mut resampler = Resampler::new(OPUS_SAMPLE_RATE, output_rate);
+    let mut buf = [0u8; 4096];
+    loop {
+        let (len, _from) = socket.recv_from(&mut buf).await?;
+        let Some((seq, payload)) = split_audio_packet(&buf[..len]) else {
+            continue;
+        };
+        let samples = tracker.decode(&mut decoder, seq, payload);
+        if samples.is_empty() {
+            continue;
+        }
+        ensure_output_started(mix.clone());
+        let resampled = resampler.push(&samples);
+        push_capped(&mut mix.lock().unwrap().intercom, &resampled, output_rate);
     }
 }
 

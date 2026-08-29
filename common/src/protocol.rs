@@ -12,6 +12,12 @@ pub const MIC_PORT: u16 = 47992;
 pub const PEER_PORT: u16 = 47993;
 /// UDP port the teacher listens on when listening in on a single student's mic.
 pub const TEACHER_LISTEN_PORT: u16 = 47994;
+/// UDP port each student listens on for the teacher's private intercom audio —
+/// distinct from `MIC_PORT` because the two can be live at once (a class-wide
+/// broadcast in progress plus a private word with one student) and each carries
+/// its own independent Opus stream, which needs its own port rather than a
+/// discriminator byte grafted onto the shared packet format.
+pub const TEACHER_INTERCOM_PORT: u16 = 47995;
 
 pub const DISCOVERY_MAGIC: &[u8; 8] = b"LINGUA1\0";
 
@@ -93,6 +99,12 @@ pub enum ServerToClient {
     /// Start streaming mic audio to the teacher for real-time listen-in.
     StartMicUpload,
     StopMicUpload,
+    /// The teacher opened a private two-way intercom with this student — audio
+    /// will start arriving on `TEACHER_INTERCOM_PORT`. Purely a UI signal (to show
+    /// a "teacher is talking to you personally" indicator, distinct from the
+    /// class-wide broadcast); the receive socket is always bound regardless.
+    StartIntercom,
+    StopIntercom,
     /// Master mic switch: while locked, the student mustn't transmit mic audio to
     /// anyone (group peers or the teacher), e.g. to keep a test quiet.
     SetMicLocked(bool),

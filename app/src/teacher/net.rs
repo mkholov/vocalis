@@ -157,6 +157,9 @@ async fn handle_student(
         if guard.listening_to == Some(student_id) {
             guard.listening_to = None;
         }
+        if guard.talking_to == Some(student_id) {
+            guard.talking_to = None;
+        }
         guard.students.remove(&student_id);
     }
     info!("student '{name}' disconnected");

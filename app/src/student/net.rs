@@ -136,6 +136,12 @@ pub async fn connect_to_teacher(
             Ok(ServerToClient::StopMicUpload) => {
                 state.lock().unwrap().uploading_to_teacher = false;
             }
+            Ok(ServerToClient::StartIntercom) => {
+                state.lock().unwrap().intercom_active = true;
+            }
+            Ok(ServerToClient::StopIntercom) => {
+                state.lock().unwrap().intercom_active = false;
+            }
             Ok(ServerToClient::ChatMessage { from, text }) => {
                 state.lock().unwrap().chat_log.push(ChatEntry { from, text });
             }
@@ -173,6 +179,7 @@ pub async fn connect_to_teacher(
     guard.mic_locked = false;
     guard.needs_help = false;
     guard.assignments.clear();
+    guard.intercom_active = false;
     info!("disconnected from teacher '{teacher_name}'");
     Ok(())
 }

@@ -59,6 +59,7 @@ impl StudentApp {
         guard.mic_locked = false;
         guard.needs_help = false;
         guard.assignments.clear();
+        guard.intercom_active = false;
     }
 
     fn toggle_help(&mut self) {
@@ -149,7 +150,7 @@ impl eframe::App for StudentApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            let (connected, connecting, peer_names, uploading, files, mic_locked, needs_help, assignments) = {
+            let (connected, connecting, peer_names, uploading, files, mic_locked, needs_help, assignments, intercom_active) = {
                 let guard = self.state.lock().unwrap();
                 (
                     guard.connected_teacher.clone(),
@@ -168,11 +169,25 @@ impl eframe::App for StudentApp {
                         .iter()
                         .map(|a| (a.id, a.title.clone(), a.kind, a.done))
                         .collect::<Vec<_>>(),
+                    guard.intercom_active,
                 )
             };
 
             if let Some(teacher_name) = connected {
                 ui.colored_label(theme::OK, format!("✅ Подключено к: {teacher_name}"));
+                if intercom_active {
+                    egui::Frame::none()
+                        .fill(theme::ACCENT.linear_multiply(0.3))
+                        .rounding(egui::Rounding::same(8.0))
+                        .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+                        .show(ui, |ui| {
+                            ui.colored_label(
+                                theme::ACCENT_300,
+                                "🎧 Преподаватель говорит с вами лично — это приватный разговор, не общий урок",
+                            );
+                        });
+                    ui.add_space(6.0);
+                }
                 if !peer_names.is_empty() {
                     ui.label(format!("🔗 В группе с: {}", peer_names.join(", ")));
                 }
@@ -346,6 +361,14 @@ impl StudentApp {
             rt.spawn(async move {
                 if let Err(e) = audio::run_mic_broadcast_receiver(mix, output_rate).await {
                     tracing::warn!("mic broadcast receiver stopped: {e:#}");
+                }
+            });
+        }
+        {
+            let mix = mix.clone();
+            rt.spawn(async move {
+                if let Err(e) = audio::run_intercom_receiver(mix, output_rate).await {
+                    tracing::warn!("intercom receiver stopped: {e:#}");
                 }
             });
         }
