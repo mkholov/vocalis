@@ -27,4 +27,5 @@ cpal = "0.15"
 xcap = "0.9"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 rfd = "0.15"
+open = "5"
 rusqlite = { version = "0.40", features = ["bundled"] }

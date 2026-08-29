@@ -234,9 +234,16 @@ impl eframe::App for StudentApp {
 
                 if !files.is_empty() {
                     ui.separator();
-                    ui.label("Полученные файлы:");
+                    ui.label("Полученные файлы (нажмите, чтобы открыть):");
                     for (name, path) in files {
-                        ui.label(format!("📄 {name}")).on_hover_text(path);
+                        let resp = ui
+                            .add(egui::Button::new(format!("📄 {name}")).frame(false))
+                            .on_hover_text(&path);
+                        if resp.clicked() {
+                            if let Err(e) = open::that(&path) {
+                                tracing::warn!("failed to open received file '{path}': {e:#}");
+                            }
+                        }
                     }
                 }
             } else {
