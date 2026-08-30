@@ -72,6 +72,10 @@ pub enum ClientToServer {
     RequestHelp { needed: bool },
     /// The student marked a received assignment as done.
     AssignmentDone { id: AssignmentId },
+    /// A whole file pushed to the teacher (e.g. a self-recorded pronunciation clip),
+    /// saved as-is on the teacher's machine — the reverse direction of
+    /// [`ServerToClient::FileOffer`], over the same control channel.
+    FileOffer { name: String, data: Vec<u8> },
 }
 
 /// Messages sent from the teacher console to a student client over the TCP control channel.

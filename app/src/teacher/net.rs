@@ -145,6 +145,16 @@ async fn handle_student(
                     let _ = db::mark_assignment_done(&guard.db, assignment_db_id);
                 }
             }
+            Ok(ClientToServer::FileOffer { name: file_name, data }) => match save_received_file(&file_name, &data) {
+                Ok(path) => {
+                    let mut guard = state.lock().unwrap();
+                    guard.chat_log.push(ChatEntry {
+                        from: name.clone(),
+                        text: format!("📎 прислал(а) файл: {file_name} (сохранён в {})", path.display()),
+                    });
+                }
+                Err(e) => warn!("failed to save file '{file_name}' from student '{name}': {e:#}"),
+            },
             Ok(ClientToServer::Hello { .. }) => {}
             Err(_) => break,
         }
@@ -164,4 +174,15 @@ async fn handle_student(
     }
     info!("student '{name}' disconnected");
     Ok(())
+}
+
+/// Saves a file a student pushed to the teacher (e.g. a self-recorded clip sent
+/// via "Отправить учителю") — mirrors the student side's own `save_received_file`.
+fn save_received_file(name: &str, data: &[u8]) -> Result<std::path::PathBuf> {
+    let dir = std::env::temp_dir().join("VocalisReceivedFromStudents");
+    std::fs::create_dir_all(&dir)?;
+    let safe_name = name.replace(['/', '\\', ':'], "_");
+    let path = dir.join(safe_name);
+    std::fs::write(&path, data)?;
+    Ok(path)
 }

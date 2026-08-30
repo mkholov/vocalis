@@ -253,6 +253,12 @@ pub async fn run_outbound_and_group_audio(
 
     while let Some(chunk) = mic_rx.recv().await {
         MIC_LEVEL_MILLIS.store(rms_millis(&chunk), Ordering::Relaxed);
+        // Local self-recording taps the same raw, native-rate PCM already flowing
+        // through this loop for the network pipeline — no second capture stream,
+        // exactly the same mic feed used for the live broadcast.
+        if let Some(recording) = state.lock().unwrap().recording.as_mut() {
+            recording.samples.extend_from_slice(&chunk);
+        }
         pending.extend(resampler.push(&chunk));
         while pending.len() >= FRAME_SAMPLES {
             let frame: Vec<i16> = pending.drain(..FRAME_SAMPLES).collect();

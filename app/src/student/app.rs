@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
@@ -9,12 +10,16 @@ use tokio::sync::mpsc;
 use crate::theme;
 
 use super::state::{self, AppState, SharedState};
-use super::{audio, mic, net};
+use super::{audio, mic, net, recording};
 
 pub struct StudentApp {
     state: AppState,
     _rt: tokio::runtime::Runtime,
     _mic_capture: mic::MicCapture,
+    /// The mic's native capture rate — recordings are saved at this rate rather
+    /// than downsampled to the Opus voice rate, since it's a local file, not a
+    /// network stream.
+    mic_native_rate: u32,
     student_name: String,
     pin_input: String,
     connect_task: Option<tokio::task::JoinHandle<()>>,
@@ -96,6 +101,56 @@ impl StudentApp {
         }
         self.chat_input.clear();
     }
+
+    /// Starts recording the mic to a local WAV file — no new capture stream, just
+    /// taps the same PCM already flowing through `audio::run_outbound_and_group_audio`
+    /// (see its recording tap) at the mic's native rate.
+    fn start_recording(&mut self) {
+        let mut guard = self.state.lock().unwrap();
+        guard.recording = Some(state::ActiveRecording {
+            samples: Vec::new(),
+            sample_rate: self.mic_native_rate,
+        });
+    }
+
+    /// Ends the current recording (if any) and saves it to disk.
+    fn stop_recording(&mut self) {
+        let active = self.state.lock().unwrap().recording.take();
+        let Some(active) = active else { return };
+        match recording::save(&active.samples, active.sample_rate) {
+            Ok(entry) => self.state.lock().unwrap().saved_recordings.insert(0, entry),
+            Err(e) => tracing::warn!("failed to save recording: {e:#}"),
+        }
+    }
+
+    fn delete_recording(&mut self, path: &Path) {
+        if let Err(e) = recording::delete(path) {
+            tracing::warn!("failed to delete recording {path:?}: {e:#}");
+            return;
+        }
+        self.state.lock().unwrap().saved_recordings.retain(|r| r.path != path);
+    }
+
+    /// Pushes a saved recording to the teacher over the control channel — the
+    /// reverse direction of the existing "teacher sends a file" flow, same
+    /// `ClientToServer`/`ServerToClient` FileOffer mechanism, just the other way.
+    fn send_recording_to_teacher(&mut self, path: &Path) {
+        let data = match std::fs::read(path) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("failed to read recording {path:?}: {e:#}");
+                return;
+            }
+        };
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "recording.wav".to_string());
+        let sender = self.state.lock().unwrap().to_server.clone();
+        if let Some(tx) = sender {
+            let _ = tx.send(ClientToServer::FileOffer { name, data });
+        }
+    }
 }
 
 impl eframe::App for StudentApp {
@@ -150,7 +205,7 @@ impl eframe::App for StudentApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            let (connected, connecting, peer_names, uploading, files, mic_locked, needs_help, assignments, intercom_active) = {
+            let (connected, connecting, peer_names, uploading, files, mic_locked, needs_help, assignments, intercom_active, recording_active, saved_recordings, can_send_to_teacher) = {
                 let guard = self.state.lock().unwrap();
                 (
                     guard.connected_teacher.clone(),
@@ -170,8 +225,67 @@ impl eframe::App for StudentApp {
                         .map(|a| (a.id, a.title.clone(), a.kind, a.done))
                         .collect::<Vec<_>>(),
                     guard.intercom_active,
+                    guard.recording.is_some(),
+                    guard
+                        .saved_recordings
+                        .iter()
+                        .map(|r| (r.path.clone(), r.duration_secs))
+                        .collect::<Vec<_>>(),
+                    guard.to_server.is_some(),
                 )
             };
+
+            ui.label("Мои записи (для самопроверки произношения или как домашнее задание):");
+            ui.horizontal(|ui| {
+                let rec_label = if recording_active { "⏹ Остановить запись" } else { "🔴 Записать" };
+                let rec_button = egui::Button::new(rec_label).fill(if recording_active {
+                    theme::DANGER.linear_multiply(0.35)
+                } else {
+                    ui.style().visuals.widgets.inactive.bg_fill
+                });
+                if ui.add(rec_button).clicked() {
+                    if recording_active {
+                        self.stop_recording();
+                    } else {
+                        self.start_recording();
+                    }
+                }
+                if recording_active {
+                    ui.colored_label(theme::DANGER, "🔴 Идёт запись...");
+                }
+            });
+            if !saved_recordings.is_empty() {
+                let mut to_delete = None;
+                let mut to_send = None;
+                egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
+                    for (path, duration_secs) in &saved_recordings {
+                        ui.horizontal(|ui| {
+                            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                            if ui
+                                .add(egui::Button::new(format!("▶ {name} ({duration_secs:.0} сек)")).frame(false))
+                                .clicked()
+                            {
+                                if let Err(e) = open::that(path) {
+                                    tracing::warn!("failed to open recording {path:?}: {e:#}");
+                                }
+                            }
+                            if can_send_to_teacher && ui.button("📤 Отправить учителю").clicked() {
+                                to_send = Some(path.clone());
+                            }
+                            if ui.button("🗑").on_hover_text("Удалить запись").clicked() {
+                                to_delete = Some(path.clone());
+                            }
+                        });
+                    }
+                });
+                if let Some(path) = to_delete {
+                    self.delete_recording(&path);
+                }
+                if let Some(path) = to_send {
+                    self.send_recording_to_teacher(&path);
+                }
+            }
+            ui.separator();
 
             if let Some(teacher_name) = connected {
                 ui.colored_label(theme::OK, format!("✅ Подключено к: {teacher_name}"));
@@ -335,7 +449,10 @@ impl StudentApp {
     /// learns the user picked the student role.
     pub fn launch() -> Self {
         let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-        let state: AppState = Arc::new(Mutex::new(SharedState::default()));
+        let state: AppState = Arc::new(Mutex::new(SharedState {
+            saved_recordings: recording::list_existing(),
+            ..SharedState::default()
+        }));
 
         {
             let state = state.clone();
@@ -398,6 +515,7 @@ impl StudentApp {
             state,
             _rt: rt,
             _mic_capture: mic_capture,
+            mic_native_rate: mic_sample_rate,
             student_name: default_student_name(),
             pin_input: String::new(),
             connect_task: None,
