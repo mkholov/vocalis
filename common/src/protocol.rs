@@ -56,6 +56,38 @@ impl AssignmentKind {
     }
 }
 
+/// One multiple-choice question in a `Test` assignment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestQuestion {
+    pub text: String,
+    pub options: Vec<String>,
+    /// Index into `options`. Sent to the student along with the question —
+    /// grading happens client-side (see `AssignmentContent::Test`'s doc) — this
+    /// app has no encryption or anti-cheat pretensions anywhere else either, so
+    /// there's no separate "answer stays server-side" flow to build here.
+    pub correct_index: usize,
+}
+
+/// The actual content of an assignment, as opposed to just its `title`/`kind`
+/// label. `None` (not this type at all) on `AssignmentOffer` means a plain
+/// legacy/label-only assignment (currently just `Dialogue` quick-sends) —
+/// completed the old way, via a bare "mark done" click.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AssignmentContent {
+    /// Auto-graded once every question has an answer: the client computes
+    /// correct/total locally and reports it via `ClientToServer::TestResult`,
+    /// which also counts as completion — no separate "mark done" for a test.
+    Test { questions: Vec<TestQuestion> },
+    /// An existing library material plus prompts to think about while/after
+    /// listening. Not auto-graded — completed via `AssignmentDone` like Reading.
+    Listening {
+        material_title: String,
+        questions: Vec<String>,
+    },
+    /// A text to read aloud/silently. Not auto-graded.
+    Reading { text: String },
+}
+
 /// Messages sent from a student client to the teacher console over the TCP control channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientToServer {
@@ -76,6 +108,13 @@ pub enum ClientToServer {
     /// saved as-is on the teacher's machine — the reverse direction of
     /// [`ServerToClient::FileOffer`], over the same control channel.
     FileOffer { name: String, data: Vec<u8> },
+    /// Result of an auto-graded `AssignmentContent::Test`, sent once every
+    /// question has been answered. Also counts as completing the assignment.
+    TestResult {
+        id: AssignmentId,
+        correct: u32,
+        total: u32,
+    },
     /// Sent once each time the student's window loses OS focus while in test
     /// mode (`LockScreen.test_mode`) — i.e. they switched to another app/window.
     FocusLost,
@@ -162,5 +201,6 @@ pub enum ServerToClient {
         id: AssignmentId,
         title: String,
         kind: AssignmentKind,
+        content: Option<AssignmentContent>,
     },
 }

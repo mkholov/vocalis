@@ -3,7 +3,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use lingua_common::{AssignmentId, AssignmentKind, ClientToServer};
+use lingua_common::{AssignmentContent, AssignmentId, AssignmentKind, ClientToServer};
 use tokio::sync::mpsc;
 
 pub struct DiscoveredTeacher {
@@ -26,6 +26,12 @@ pub struct AssignmentEntry {
     pub title: String,
     pub kind: AssignmentKind,
     pub done: bool,
+    /// `None` for a plain legacy/label-only assignment (currently just Dialogue
+    /// quick-sends) — shown and completed the old way, a bare "mark done" click.
+    pub content: Option<AssignmentContent>,
+    /// (correct, total) right after finishing a `Test`, for immediate feedback —
+    /// the teacher gets the same numbers via `ClientToServer::TestResult`.
+    pub last_score: Option<(u32, u32)>,
 }
 
 /// A recording of the student's own mic in progress — filled in by

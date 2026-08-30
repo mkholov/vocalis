@@ -49,6 +49,34 @@ pub fn open() -> Result<Connection> {
             file_path TEXT NOT NULL,
             added_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS test_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            assignment_id INTEGER NOT NULL REFERENCES assignments(id),
+            correct INTEGER NOT NULL,
+            total INTEGER NOT NULL,
+            submitted_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS assignment_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            reading_text TEXT,
+            material_id INTEGER REFERENCES materials(id),
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS assignment_questions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            template_id INTEGER NOT NULL REFERENCES assignment_templates(id),
+            position INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            correct_index INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS assignment_question_options (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            question_id INTEGER NOT NULL REFERENCES assignment_questions(id),
+            position INTEGER NOT NULL,
+            text TEXT NOT NULL
+        );
         ",
     )
     .context("creating Vocalis tables")?;
@@ -78,6 +106,15 @@ fn kind_label(kind: AssignmentKind) -> &'static str {
         AssignmentKind::Test => "test",
         AssignmentKind::Dialogue => "dialogue",
         AssignmentKind::Pronunciation => "pronunciation",
+    }
+}
+
+fn kind_from_label(s: &str) -> AssignmentKind {
+    match s {
+        "listening" => AssignmentKind::Listening,
+        "test" => AssignmentKind::Test,
+        "pronunciation" => AssignmentKind::Pronunciation,
+        _ => AssignmentKind::Dialogue,
     }
 }
 
@@ -187,4 +224,126 @@ pub fn list_materials(conn: &Connection) -> Result<Vec<MaterialRow>> {
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
+}
+
+/// Records an auto-graded test result against the `assignments` row for that
+/// student's copy of the assignment (that row's own `done` flag is set separately
+/// via the existing `mark_assignment_done`).
+pub fn insert_test_result(conn: &Connection, assignment_row_id: i64, correct: u32, total: u32) -> Result<()> {
+    conn.execute(
+        "INSERT INTO test_results (assignment_id, correct, total, submitted_at) VALUES (?1, ?2, ?3, ?4)",
+        params![assignment_row_id, correct, total, now_epoch()],
+    )?;
+    Ok(())
+}
+
+/// One question of an authored assignment template. `options` is empty and
+/// `correct_index` is `None` for a `Listening` prompt (just a text question, not
+/// auto-graded); a `Test` question always has both.
+pub struct TemplateQuestion {
+    pub text: String,
+    pub options: Vec<String>,
+    pub correct_index: Option<usize>,
+}
+
+/// A reusable assignment blueprint the teacher authored — the "Задания" tab's
+/// library, analogous to `MaterialRow` for the materials library. `kind` decides
+/// which of `reading_text` / `material_id` / `questions` is actually populated.
+pub struct AssignmentTemplate {
+    pub id: i64,
+    pub kind: AssignmentKind,
+    pub title: String,
+    pub reading_text: Option<String>,
+    pub material_id: Option<i64>,
+    pub questions: Vec<TemplateQuestion>,
+}
+
+/// A question being authored, before it has a row id — the input side of
+/// `insert_assignment_template`, mirroring `TemplateQuestion` minus the id.
+pub struct NewQuestion {
+    pub text: String,
+    pub options: Vec<String>,
+    pub correct_index: Option<usize>,
+}
+
+/// Saves a new assignment template (and all its questions/options) in one
+/// transaction. Takes `&mut Connection` (unlike everything else in this module)
+/// because `rusqlite`'s transactions require exclusive access to the connection —
+/// callers already hold `&mut SharedState`'s lock, so `&mut guard.db` is at hand.
+pub fn insert_assignment_template(
+    conn: &mut Connection,
+    kind: AssignmentKind,
+    title: &str,
+    reading_text: Option<&str>,
+    material_id: Option<i64>,
+    questions: &[NewQuestion],
+) -> Result<i64> {
+    let tx = conn.transaction().context("starting transaction")?;
+    tx.execute(
+        "INSERT INTO assignment_templates (kind, title, reading_text, material_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![kind_label(kind), title, reading_text, material_id, now_epoch()],
+    )?;
+    let template_id = tx.last_insert_rowid();
+
+    for (position, question) in questions.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO assignment_questions (template_id, position, text, correct_index) VALUES (?1, ?2, ?3, ?4)",
+            params![template_id, position as i64, question.text, question.correct_index.map(|v| v as i64)],
+        )?;
+        let question_id = tx.last_insert_rowid();
+        for (opt_position, option_text) in question.options.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO assignment_question_options (question_id, position, text) VALUES (?1, ?2, ?3)",
+                params![question_id, opt_position as i64, option_text],
+            )?;
+        }
+    }
+
+    tx.commit().context("committing assignment template")?;
+    Ok(template_id)
+}
+
+pub fn list_assignment_templates(conn: &Connection) -> Result<Vec<AssignmentTemplate>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, kind, title, reading_text, material_id FROM assignment_templates ORDER BY created_at DESC",
+    )?;
+    let mut templates: Vec<AssignmentTemplate> = stmt
+        .query_map([], |row| {
+            let kind_str: String = row.get(1)?;
+            Ok(AssignmentTemplate {
+                id: row.get(0)?,
+                kind: kind_from_label(&kind_str),
+                title: row.get(2)?,
+                reading_text: row.get(3)?,
+                material_id: row.get(4)?,
+                questions: Vec::new(),
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    // Small, local, rarely-loaded data (once at startup, or after authoring a new
+    // template) — an N+1 query pattern here is simplicity, not a real cost.
+    for template in &mut templates {
+        let mut q_stmt = conn.prepare(
+            "SELECT id, text, correct_index FROM assignment_questions WHERE template_id = ?1 ORDER BY position",
+        )?;
+        let question_rows: Vec<(i64, String, Option<i64>)> = q_stmt
+            .query_map(params![template.id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        for (question_id, text, correct_index) in question_rows {
+            let mut o_stmt = conn
+                .prepare("SELECT text FROM assignment_question_options WHERE question_id = ?1 ORDER BY position")?;
+            let options: Vec<String> = o_stmt
+                .query_map(params![question_id], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            template.questions.push(TemplateQuestion {
+                text,
+                options,
+                correct_index: correct_index.map(|v| v as usize),
+            });
+        }
+    }
+
+    Ok(templates)
 }

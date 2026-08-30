@@ -202,12 +202,14 @@ pub async fn connect_to_teacher(
             Ok(ServerToClient::SetMicLocked(locked)) => {
                 state.lock().unwrap().mic_locked = locked;
             }
-            Ok(ServerToClient::AssignmentOffer { id, title, kind }) => {
+            Ok(ServerToClient::AssignmentOffer { id, title, kind, content }) => {
                 state.lock().unwrap().assignments.push(AssignmentEntry {
                     id,
                     title,
                     kind,
                     done: false,
+                    content,
+                    last_score: None,
                 });
             }
             Err(_) => break,

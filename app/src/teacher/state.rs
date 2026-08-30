@@ -30,6 +30,8 @@ pub struct AssignmentInstance {
     /// Row id in the `assignments` table, if the DB write succeeded — `None` just
     /// means this particular assignment won't be persisted, not a hard failure.
     pub db_id: Option<i64>,
+    /// (correct, total) once a `Test` assignment's auto-graded result arrives.
+    pub test_score: Option<(u32, u32)>,
 }
 
 /// A student's live status, in the priority order the grid should show it in.
@@ -135,6 +137,9 @@ pub struct SharedState {
     /// relayed student's), if any. Mutually exclusive with itself — starting one
     /// always stops whichever was running before.
     pub screen_demo: Option<ScreenDemo>,
+    /// Authored assignment templates (Test/Listening/Reading) — the "Задания" tab's
+    /// library, loaded once at startup and appended to as the teacher creates more.
+    pub assignment_templates: Vec<db::AssignmentTemplate>,
 }
 
 /// Live playback progress for the Materials tab, updated a few times a second by
@@ -180,6 +185,7 @@ impl SharedState {
         lesson_row_id: i64,
         history: db::HistorySummary,
         materials: Vec<db::MaterialRow>,
+        assignment_templates: Vec<db::AssignmentTemplate>,
     ) -> Self {
         Self {
             students: HashMap::new(),
@@ -200,6 +206,7 @@ impl SharedState {
             materials,
             playing: None,
             screen_demo: None,
+            assignment_templates,
             next_seat: 1,
             lesson_started_at: Instant::now(),
         }

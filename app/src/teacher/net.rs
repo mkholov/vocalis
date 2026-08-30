@@ -161,6 +161,22 @@ async fn handle_student(
                     let _ = db::mark_assignment_done(&guard.db, assignment_db_id);
                 }
             }
+            Ok(ClientToServer::TestResult { id, correct, total }) => {
+                let mut guard = state.lock().unwrap();
+                let assignment_db_id = guard.students.get(&student_id).and_then(|student| {
+                    student.assignments.iter().find(|a| a.id == id).and_then(|a| a.db_id)
+                });
+                if let Some(student) = guard.students.get_mut(&student_id) {
+                    if let Some(a) = student.assignments.iter_mut().find(|a| a.id == id) {
+                        a.done = true;
+                        a.test_score = Some((correct, total));
+                    }
+                }
+                if let Some(assignment_db_id) = assignment_db_id {
+                    let _ = db::mark_assignment_done(&guard.db, assignment_db_id);
+                    let _ = db::insert_test_result(&guard.db, assignment_db_id, correct, total);
+                }
+            }
             Ok(ClientToServer::FocusLost) => {
                 let mut guard = state.lock().unwrap();
                 if let Some(student) = guard.students.get_mut(&student_id) {

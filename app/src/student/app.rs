@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -33,6 +34,10 @@ pub struct StudentApp {
     /// screen, or a relayed classmate's) — same "poll and diff by version" pattern
     /// the teacher's grid uses for student thumbnails.
     demo_texture: Option<(u64, egui::TextureHandle)>,
+    /// In-progress answers for a `Test` assignment currently being filled in —
+    /// `None` per slot until the student picks an option for that question.
+    /// Immediate-mode UI needs this to live across frames; cleared once submitted.
+    test_answers: HashMap<lingua_common::AssignmentId, Vec<Option<usize>>>,
 }
 
 impl StudentApp {
@@ -100,6 +105,30 @@ impl StudentApp {
         if let Some(tx) = &guard.to_server {
             let _ = tx.send(ClientToServer::AssignmentDone { id });
         }
+    }
+
+    /// Grades a finished test locally (client-side, like everything else in this
+    /// app — no encryption or server-side answer-hiding anywhere else either) and
+    /// reports the result, which also counts as completing the assignment — no
+    /// separate "mark done" for a test.
+    fn submit_test(&mut self, id: lingua_common::AssignmentId, questions: &[lingua_common::TestQuestion], answers: &[usize]) {
+        let correct = questions
+            .iter()
+            .zip(answers.iter())
+            .filter(|(q, &a)| q.correct_index == a)
+            .count() as u32;
+        let total = questions.len() as u32;
+
+        let mut guard = self.state.lock().unwrap();
+        if let Some(a) = guard.assignments.iter_mut().find(|a| a.id == id) {
+            a.done = true;
+            a.last_score = Some((correct, total));
+        }
+        if let Some(tx) = &guard.to_server {
+            let _ = tx.send(ClientToServer::TestResult { id, correct, total });
+        }
+        drop(guard);
+        self.test_answers.remove(&id);
     }
 
     fn send_chat(&mut self) {
@@ -311,7 +340,7 @@ impl eframe::App for StudentApp {
                     guard
                         .assignments
                         .iter()
-                        .map(|a| (a.id, a.title.clone(), a.kind, a.done))
+                        .map(|a| (a.id, a.title.clone(), a.kind, a.done, a.content.clone(), a.last_score))
                         .collect::<Vec<_>>(),
                     guard.intercom_active,
                     guard.recording.is_some(),
@@ -471,18 +500,76 @@ impl eframe::App for StudentApp {
                     ui.separator();
                     ui.label("Задания:");
                     let mut to_complete = None;
-                    for (id, title, kind, done) in &assignments {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("[{}] {title}", kind.label()));
-                            if *done {
-                                ui.colored_label(theme::OK, "✔ Готово");
-                            } else if ui.button("Отметить готовым").clicked() {
-                                to_complete = Some(*id);
+                    let mut to_submit: Option<(lingua_common::AssignmentId, Vec<lingua_common::TestQuestion>, Vec<usize>)> = None;
+                    for (id, title, kind, done, content, last_score) in &assignments {
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.colored_label(theme::ACCENT, format!("[{}]", kind.label()));
+                                ui.strong(title);
+                            });
+                            match content {
+                                Some(lingua_common::AssignmentContent::Test { questions }) => {
+                                    if *done {
+                                        let score = last_score
+                                            .map(|(c, t)| format!("✔ Тест завершён: {c}/{t}"))
+                                            .unwrap_or_else(|| "✔ Тест завершён".to_string());
+                                        ui.colored_label(theme::OK, score);
+                                    } else {
+                                        let answers = self
+                                            .test_answers
+                                            .entry(*id)
+                                            .or_insert_with(|| vec![None; questions.len()]);
+                                        for (qi, q) in questions.iter().enumerate() {
+                                            ui.add_space(4.0);
+                                            ui.label(format!("{}. {}", qi + 1, q.text));
+                                            for (oi, opt) in q.options.iter().enumerate() {
+                                                ui.radio_value(&mut answers[qi], Some(oi), opt);
+                                            }
+                                        }
+                                        let all_answered = answers.iter().all(|a| a.is_some());
+                                        ui.add_space(6.0);
+                                        if ui.add_enabled(all_answered, egui::Button::new("Завершить тест")).clicked() {
+                                            let picked: Vec<usize> = answers.iter().map(|a| a.unwrap()).collect();
+                                            to_submit = Some((*id, questions.clone(), picked));
+                                        }
+                                    }
+                                }
+                                Some(lingua_common::AssignmentContent::Listening { material_title, questions }) => {
+                                    ui.label(format!("🎧 Материал: {material_title}"));
+                                    for (qi, q) in questions.iter().enumerate() {
+                                        ui.label(format!("{}. {q}", qi + 1));
+                                    }
+                                    if *done {
+                                        ui.colored_label(theme::OK, "✔ Готово");
+                                    } else if ui.button("Отметить готовым").clicked() {
+                                        to_complete = Some(*id);
+                                    }
+                                }
+                                Some(lingua_common::AssignmentContent::Reading { text }) => {
+                                    egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
+                                        ui.label(text);
+                                    });
+                                    if *done {
+                                        ui.colored_label(theme::OK, "✔ Готово");
+                                    } else if ui.button("Отметить готовым").clicked() {
+                                        to_complete = Some(*id);
+                                    }
+                                }
+                                None => {
+                                    if *done {
+                                        ui.colored_label(theme::OK, "✔ Готово");
+                                    } else if ui.button("Отметить готовым").clicked() {
+                                        to_complete = Some(*id);
+                                    }
+                                }
                             }
                         });
                     }
                     if let Some(id) = to_complete {
                         self.mark_assignment_done(id);
+                    }
+                    if let Some((id, questions, picked)) = to_submit {
+                        self.submit_test(id, &questions, &picked);
                     }
                 }
 
@@ -665,6 +752,7 @@ impl StudentApp {
             was_focused: true,
             chat_input: String::new(),
             demo_texture: None,
+            test_answers: HashMap::new(),
         }
     }
 }

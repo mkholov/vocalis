@@ -13,11 +13,13 @@ use crate::theme;
 use super::state::{self, AppState, Presence, SharedState};
 use super::{db, listen, materials, mic, net, screen};
 
+// Test/Listening/Reading now go through the "Задания" tab's authored-template
+// library (real questions/content, not a label) — this quick-send list is left
+// for Dialogue, which is inherently a live/verbal exercise (paired students +
+// existing grouping/intercom infrastructure) rather than something with content
+// to author.
 const ASSIGNMENT_TEMPLATES: &[(&str, AssignmentKind)] = &[
-    ("Аудирование: заказ в кафе", AssignmentKind::Listening),
-    ("Тест: неправильные глаголы", AssignmentKind::Test),
     ("Диалог в парах: интервью", AssignmentKind::Dialogue),
-    ("Чтение вслух: текст 4", AssignmentKind::Pronunciation),
 ];
 
 fn assignment_kind_color(kind: AssignmentKind) -> egui::Color32 {
@@ -58,6 +60,57 @@ enum Tab {
     Class,
     Stats,
     Materials,
+    Assignments,
+}
+
+/// Which kind of assignment the "Задания" tab's editor is currently authoring.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EditorKind {
+    Test,
+    Listening,
+    Reading,
+}
+
+impl Default for EditorKind {
+    fn default() -> Self {
+        Self::Test
+    }
+}
+
+/// One question being built in the editor — `options`/`correct_index` are only
+/// meaningful for `EditorKind::Test`; a `Listening` question is just `text`.
+struct DraftQuestion {
+    text: String,
+    options: Vec<String>,
+    correct_index: usize,
+}
+
+impl Default for DraftQuestion {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            options: vec![String::new(), String::new()],
+            correct_index: 0,
+        }
+    }
+}
+
+/// In-progress state for the "Задания" tab's assignment editor — has to live on
+/// `TeacherApp` (not be locally-scoped per frame) since egui is immediate-mode and
+/// authoring a multi-question test spans many frames of typing.
+#[derive(Default)]
+struct AssignmentDraft {
+    kind: EditorKind,
+    title: String,
+    reading_text: String,
+    material_id: Option<i64>,
+    questions: Vec<DraftQuestion>,
+}
+
+impl AssignmentDraft {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -100,6 +153,7 @@ pub struct TeacherApp {
     grid_mode: GridMode,
     focus: bool,
     score_edit: Option<(StudentId, String)>,
+    assignment_draft: AssignmentDraft,
 }
 
 impl TeacherApp {
@@ -120,6 +174,7 @@ impl TeacherApp {
             grid_mode: GridMode::Individual,
             focus: false,
             score_edit: None,
+            assignment_draft: AssignmentDraft::default(),
         }
     }
 
@@ -472,12 +527,154 @@ impl TeacherApp {
                 kind,
                 done: false,
                 db_id: assignment_db_id,
+                test_score: None,
             });
             let _ = s.to_client.send(ServerToClient::AssignmentOffer {
                 id: assignment_id,
                 title: title.to_string(),
                 kind,
+                content: None,
             });
+        }
+    }
+
+    /// Sends an authored assignment template (Test/Listening/Reading) — same
+    /// recipient rule as `send_assignment` (current selection, or the whole class
+    /// if nothing's selected) — with its real content attached this time.
+    fn send_assignment_template(&mut self, template_id: i64) {
+        let mut guard = self.state.lock().unwrap();
+        let Some(template) = guard.assignment_templates.iter().find(|t| t.id == template_id) else {
+            return;
+        };
+        let kind = template.kind;
+        let title = template.title.clone();
+        let content = match kind {
+            AssignmentKind::Test => lingua_common::AssignmentContent::Test {
+                questions: template
+                    .questions
+                    .iter()
+                    .map(|q| lingua_common::TestQuestion {
+                        text: q.text.clone(),
+                        options: q.options.clone(),
+                        correct_index: q.correct_index.unwrap_or(0),
+                    })
+                    .collect(),
+            },
+            AssignmentKind::Listening => {
+                let material_title = template
+                    .material_id
+                    .and_then(|mid| guard.materials.iter().find(|m| m.id == mid))
+                    .map(|m| m.title.clone())
+                    .unwrap_or_else(|| "материал удалён".to_string());
+                lingua_common::AssignmentContent::Listening {
+                    material_title,
+                    questions: template.questions.iter().map(|q| q.text.clone()).collect(),
+                }
+            }
+            _ => lingua_common::AssignmentContent::Reading {
+                text: template.reading_text.clone().unwrap_or_default(),
+            },
+        };
+
+        let targets = self.action_targets(&guard);
+        for id in targets {
+            let student_db_id = match guard.students.get(&id) {
+                Some(s) => s.db_id,
+                None => continue,
+            };
+            let assignment_db_id =
+                student_db_id.and_then(|row_id| db::insert_assignment(&guard.db, row_id, &title, kind).ok());
+
+            let Some(s) = guard.students.get_mut(&id) else { continue };
+            let assignment_id = Uuid::new_v4();
+            s.assignments.push(state::AssignmentInstance {
+                id: assignment_id,
+                title: title.clone(),
+                kind,
+                done: false,
+                db_id: assignment_db_id,
+                test_score: None,
+            });
+            let _ = s.to_client.send(ServerToClient::AssignmentOffer {
+                id: assignment_id,
+                title: title.clone(),
+                kind,
+                content: Some(content.clone()),
+            });
+        }
+    }
+
+    /// Saves the current editor draft as a new assignment template and clears it.
+    /// No-ops (leaves the draft alone) if the title's empty or a Test has no
+    /// answerable questions — cheap validation, not full form feedback.
+    fn save_assignment_draft(&mut self) {
+        let draft = &self.assignment_draft;
+        if draft.title.trim().is_empty() {
+            return;
+        }
+        let (kind, reading_text, material_id, questions): (AssignmentKind, Option<String>, Option<i64>, Vec<db::NewQuestion>) =
+            match draft.kind {
+                EditorKind::Test => {
+                    let questions: Vec<db::NewQuestion> = draft
+                        .questions
+                        .iter()
+                        .filter(|q| !q.text.trim().is_empty() && q.options.iter().any(|o| !o.trim().is_empty()))
+                        .map(|q| db::NewQuestion {
+                            text: q.text.clone(),
+                            options: q.options.clone(),
+                            correct_index: Some(q.correct_index.min(q.options.len().saturating_sub(1))),
+                        })
+                        .collect();
+                    if questions.is_empty() {
+                        return;
+                    }
+                    (AssignmentKind::Test, None, None, questions)
+                }
+                EditorKind::Listening => {
+                    let questions: Vec<db::NewQuestion> = draft
+                        .questions
+                        .iter()
+                        .filter(|q| !q.text.trim().is_empty())
+                        .map(|q| db::NewQuestion {
+                            text: q.text.clone(),
+                            options: Vec::new(),
+                            correct_index: None,
+                        })
+                        .collect();
+                    (AssignmentKind::Listening, None, draft.material_id, questions)
+                }
+                EditorKind::Reading => {
+                    if draft.reading_text.trim().is_empty() {
+                        return;
+                    }
+                    (AssignmentKind::Pronunciation, Some(draft.reading_text.clone()), None, Vec::new())
+                }
+            };
+
+        let mut guard = self.state.lock().unwrap();
+        let title = draft.title.clone();
+        match db::insert_assignment_template(&mut guard.db, kind, &title, reading_text.as_deref(), material_id, &questions) {
+            Ok(id) => {
+                let template = db::AssignmentTemplate {
+                    id,
+                    kind,
+                    title,
+                    reading_text,
+                    material_id,
+                    questions: questions
+                        .into_iter()
+                        .map(|q| db::TemplateQuestion {
+                            text: q.text,
+                            options: q.options,
+                            correct_index: q.correct_index,
+                        })
+                        .collect(),
+                };
+                guard.assignment_templates.insert(0, template);
+                drop(guard);
+                self.assignment_draft.reset();
+            }
+            Err(e) => tracing::warn!("failed to save assignment template: {e:#}"),
         }
     }
 
@@ -615,6 +812,8 @@ impl eframe::App for TeacherApp {
             self.stats_tab(ctx);
         } else if self.tab == Tab::Materials {
             self.materials_tab(ctx);
+        } else if self.tab == Tab::Assignments {
+            self.assignments_tab(ctx);
         } else if self.focus {
             self.focus_view(ctx);
         } else {
@@ -679,6 +878,7 @@ impl TeacherApp {
                 ui.selectable_value(&mut self.tab, Tab::Class, "Класс");
                 ui.selectable_value(&mut self.tab, Tab::Stats, "Статистика");
                 ui.selectable_value(&mut self.tab, Tab::Materials, "Материалы");
+                ui.selectable_value(&mut self.tab, Tab::Assignments, "Задания");
 
                 ui.add_space(12.0);
                 let locked = self.state.lock().unwrap().mics_locked;
@@ -1175,7 +1375,7 @@ impl TeacherApp {
             ui.colored_label(theme::MUTED, "ПРОГРЕСС ПО УЧЕНИКАМ");
             ui.add_space(6.0);
 
-            type Row = (usize, StudentId, String, Presence, usize, Vec<(String, AssignmentKind, bool)>, Option<u32>);
+            type Row = (usize, StudentId, String, Presence, usize, Vec<(String, AssignmentKind, bool, Option<(u32, u32)>)>, Option<u32>);
             let mut rows: Vec<Row> = {
                 let guard = self.state.lock().unwrap();
                 guard
@@ -1188,7 +1388,7 @@ impl TeacherApp {
                             s.name.clone(),
                             s.presence(),
                             s.assignments_done(),
-                            s.assignments.iter().map(|a| (a.title.clone(), a.kind, a.done)).collect(),
+                            s.assignments.iter().map(|a| (a.title.clone(), a.kind, a.done, a.test_score)).collect(),
                             s.score,
                         )
                     })
@@ -1216,7 +1416,7 @@ impl TeacherApp {
                                 if assignments.is_empty() {
                                     ui.colored_label(theme::MUTED, "Заданий пока не отправлено");
                                 }
-                                for (title, kind, is_done) in &assignments {
+                                for (title, kind, is_done, test_score) in &assignments {
                                     ui.horizontal(|ui| {
                                         ui.colored_label(
                                             if *is_done { theme::OK } else { egui::Color32::GRAY },
@@ -1224,6 +1424,9 @@ impl TeacherApp {
                                         );
                                         ui.colored_label(assignment_kind_color(*kind), kind.label());
                                         ui.label(title);
+                                        if let Some((correct, total)) = test_score {
+                                            ui.colored_label(theme::MUTED, format!("({correct}/{total})"));
+                                        }
                                     });
                                 }
                             });
@@ -1334,6 +1537,143 @@ impl TeacherApp {
             });
         });
     }
+
+    fn assignments_tab(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.heading("Библиотека заданий");
+                ui.colored_label(
+                    theme::MUTED,
+                    "Отправка — выберите учеников в разделе «Класс», иначе задание уйдёт всему классу.",
+                );
+                ui.add_space(10.0);
+
+                let templates: Vec<(i64, AssignmentKind, String)> = {
+                    let guard = self.state.lock().unwrap();
+                    guard.assignment_templates.iter().map(|t| (t.id, t.kind, t.title.clone())).collect()
+                };
+
+                if templates.is_empty() {
+                    ui.colored_label(theme::MUTED, "Пока нет ни одного созданного задания — соберите его ниже.");
+                }
+                let mut to_send = None;
+                for (id, kind, title) in &templates {
+                    ui.horizontal(|ui| {
+                        let color = assignment_kind_color(*kind);
+                        egui::Frame::none()
+                            .fill(color.linear_multiply(0.25))
+                            .rounding(egui::Rounding::same(6.0))
+                            .inner_margin(egui::Margin::symmetric(6.0, 1.0))
+                            .show(ui, |ui| {
+                                ui.colored_label(color, kind.label());
+                            });
+                        ui.label(title);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("📤 Отправить").clicked() {
+                                to_send = Some(*id);
+                            }
+                        });
+                    });
+                }
+                if let Some(id) = to_send {
+                    self.send_assignment_template(id);
+                }
+
+                ui.add_space(20.0);
+                ui.separator();
+                ui.add_space(10.0);
+                ui.heading("Создать задание");
+
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.assignment_draft.kind, EditorKind::Test, "Тест");
+                    ui.selectable_value(&mut self.assignment_draft.kind, EditorKind::Listening, "Аудирование");
+                    ui.selectable_value(&mut self.assignment_draft.kind, EditorKind::Reading, "Чтение / произношение");
+                });
+                ui.add_space(6.0);
+                ui.label("Название:");
+                ui.add(egui::TextEdit::singleline(&mut self.assignment_draft.title).desired_width(400.0));
+                ui.add_space(10.0);
+
+                match self.assignment_draft.kind {
+                    EditorKind::Test => self.test_editor(ui),
+                    EditorKind::Listening => self.listening_editor(ui),
+                    EditorKind::Reading => {
+                        ui.label("Текст для чтения:");
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.assignment_draft.reading_text)
+                                .desired_rows(6)
+                                .desired_width(f32::INFINITY),
+                        );
+                    }
+                }
+
+                ui.add_space(10.0);
+                if ui.button("💾 Сохранить задание").clicked() {
+                    self.save_assignment_draft();
+                }
+            });
+        });
+    }
+
+    fn test_editor(&mut self, ui: &mut egui::Ui) {
+        let draft = &mut self.assignment_draft;
+        for (qi, q) in draft.questions.iter_mut().enumerate() {
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(format!("Вопрос {}:", qi + 1));
+                    ui.add(egui::TextEdit::singleline(&mut q.text).desired_width(320.0));
+                });
+                for (oi, opt) in q.options.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut q.correct_index, oi, "").on_hover_text("Правильный вариант");
+                        ui.add(egui::TextEdit::singleline(opt).desired_width(260.0));
+                    });
+                }
+                if ui.small_button("+ Вариант ответа").clicked() {
+                    q.options.push(String::new());
+                }
+            });
+        }
+        if ui.button("+ Добавить вопрос").clicked() {
+            draft.questions.push(DraftQuestion::default());
+        }
+    }
+
+    fn listening_editor(&mut self, ui: &mut egui::Ui) {
+        let materials: Vec<(i64, String)> = {
+            let guard = self.state.lock().unwrap();
+            guard.materials.iter().map(|m| (m.id, m.title.clone())).collect()
+        };
+        let draft = &mut self.assignment_draft;
+
+        ui.label("Материал:");
+        let selected_label = draft
+            .material_id
+            .and_then(|id| materials.iter().find(|(mid, _)| *mid == id))
+            .map(|(_, title)| title.clone())
+            .unwrap_or_else(|| "— выберите материал —".to_string());
+        egui::ComboBox::new("listening_material_picker", "")
+            .selected_text(selected_label)
+            .show_ui(ui, |ui| {
+                for (id, title) in &materials {
+                    ui.selectable_value(&mut draft.material_id, Some(*id), title);
+                }
+            });
+        if materials.is_empty() {
+            ui.colored_label(theme::MUTED, "Материалов пока нет — загрузите их во вкладке «Материалы».");
+        }
+        ui.add_space(10.0);
+        ui.label("Вопросы по материалу (без автопроверки — ученик просто отмечает задание выполненным):");
+        for (qi, q) in draft.questions.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(format!("{}.", qi + 1));
+                ui.add(egui::TextEdit::singleline(&mut q.text).desired_width(400.0));
+            });
+        }
+        if ui.button("+ Добавить вопрос").clicked() {
+            draft.questions.push(DraftQuestion::default());
+        }
+    }
 }
 
 fn stat_tile(ui: &mut egui::Ui, label: &str, value: &str) {
@@ -1366,6 +1706,7 @@ impl TeacherApp {
         let history = db::load_history_summary(&db_conn).unwrap_or_default();
         let lesson_row_id = db::insert_lesson(&db_conn, &class_name).expect("failed to record lesson start");
         let materials = db::list_materials(&db_conn).unwrap_or_default();
+        let assignment_templates = db::list_assignment_templates(&db_conn).unwrap_or_default();
 
         let state: AppState = Arc::new(Mutex::new(SharedState::new(
             class_name,
@@ -1375,6 +1716,7 @@ impl TeacherApp {
             lesson_row_id,
             history,
             materials,
+            assignment_templates,
         )));
         let teacher_name: Arc<str> = Arc::from(teacher_name);
 
