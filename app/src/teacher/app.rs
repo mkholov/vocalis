@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::theme;
 
 use super::state::{self, AppState, Presence, SharedState};
-use super::{db, listen, materials, mic, net, screen};
+use super::{csv_export, db, listen, materials, mic, net, screen};
 
 // Test/Listening/Reading now go through the "Задания" tab's authored-template
 // library (real questions/content, not a label) — this quick-send list is left
@@ -1433,7 +1433,7 @@ impl TeacherApp {
 
     fn stats_tab(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            let (avg_score, done_total, connected, class_size, attendance, history) = {
+            let (avg_score, done_total, connected, class_size, attendance, history, roster_nonempty) = {
                 let guard = self.state.lock().unwrap();
                 (
                     guard.average_score(),
@@ -1442,8 +1442,23 @@ impl TeacherApp {
                     guard.class_size.max(1),
                     guard.ever_connected_seats.len(),
                     guard.history,
+                    !guard.roster.is_empty(),
                 )
             };
+
+            ui.horizontal(|ui| {
+                ui.heading("Статистика");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add_enabled(roster_nonempty, egui::Button::new("📥 Экспорт всего класса"))
+                        .on_hover_text("Выгрузить историю всех учеников списка класса в один CSV-файл")
+                        .clicked()
+                    {
+                        self.export_class_history();
+                    }
+                });
+            });
+            ui.add_space(6.0);
 
             ui.horizontal(|ui| {
                 stat_tile(ui, "СРЕДНИЙ БАЛЛ", &avg_score.map(|v| format!("{v:.0}%")).unwrap_or_else(|| "—".to_string()));
@@ -1837,6 +1852,62 @@ impl TeacherApp {
         });
     }
 
+    /// Opens a save dialog and writes `name`'s cross-lesson history as CSV. Runs
+    /// its own `student_history` query rather than taking an already-fetched
+    /// slice — only happens on a click, so the extra round-trip against a small
+    /// local SQLite file isn't worth threading through the render call chain for.
+    fn export_student_history(&mut self, name: &str) {
+        let normalized = db::normalize_name(name);
+        let history = {
+            let guard = self.state.lock().unwrap();
+            db::student_history(&guard.db, &normalized).unwrap_or_default()
+        };
+        let safe_name = name.replace(['/', '\\', ':'], "_");
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name(format!("ученик_{safe_name}_статистика.csv"))
+            .save_file()
+        else {
+            return;
+        };
+        if let Err(e) = csv_export::write_student_history(&path, &history) {
+            tracing::warn!("failed to export student history to {path:?}: {e:#}");
+        }
+    }
+
+    /// Opens a save dialog and writes every roster student's history into one
+    /// CSV — the "Экспорт всего класса" button on the Stats tab. No-op if the
+    /// roster is empty (nothing to export); the button is disabled in that case.
+    fn export_class_history(&mut self) {
+        let students: Vec<(String, Vec<db::LessonHistoryEntry>)> = {
+            let guard = self.state.lock().unwrap();
+            guard
+                .roster
+                .iter()
+                .map(|r| {
+                    let normalized = db::normalize_name(&r.full_name);
+                    let history = db::student_history(&guard.db, &normalized).unwrap_or_default();
+                    (r.full_name.clone(), history)
+                })
+                .collect()
+        };
+        if students.is_empty() {
+            return;
+        }
+        let today_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name(format!("класс_статистика_{}.csv", format_epoch_date_ymd(today_epoch)))
+            .save_file()
+        else {
+            return;
+        };
+        if let Err(e) = csv_export::write_class_history(&path, &students) {
+            tracing::warn!("failed to export class history to {path:?}: {e:#}");
+        }
+    }
+
     /// Cross-lesson history for one student, matched by normalized name (the same
     /// comparison the roster check uses) — reachable from a click on a name in
     /// either the roster or stats tab. Simple time-ordered table, no charts.
@@ -1847,6 +1918,11 @@ impl TeacherApp {
                     self.history_card = None;
                 }
                 ui.heading(format!("История: {name}"));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("📥 Экспорт в CSV").clicked() {
+                        self.export_student_history(name);
+                    }
+                });
             });
             ui.add_space(10.0);
 
@@ -1894,27 +1970,36 @@ impl TeacherApp {
 /// this app avoids adding one anywhere, so this is the proleptic Gregorian
 /// calendar conversion by hand (Howard Hinnant's well-known `civil_from_days`
 /// algorithm; the same integer arithmetic `chrono` and others use internally).
-fn format_epoch_date(epoch_secs: i64) -> String {
-    fn civil_from_days(z: i64) -> (i64, u32, u32) {
-        let z = z + 719468;
-        let era = if z >= 0 { z } else { z - 146096 } / 146097;
-        let doe = (z - era * 146097) as u64; // [0, 146096]
-        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
-        let y = yoe as i64 + era * 400;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-        let mp = (5 * doy + 2) / 153; // [0, 11]
-        let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
-        let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
-        let y = if m <= 2 { y + 1 } else { y };
-        (y, m, d)
-    }
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
 
+/// `pub(crate)`: also used by `csv_export` for the CSV's date column.
+pub(crate) fn format_epoch_date(epoch_secs: i64) -> String {
     let days = epoch_secs.div_euclid(86400);
     let secs_of_day = epoch_secs.rem_euclid(86400);
     let (y, m, d) = civil_from_days(days);
     let h = secs_of_day / 3600;
     let mi = (secs_of_day % 3600) / 60;
     format!("{d:02}.{m:02}.{y} {h:02}:{mi:02}")
+}
+
+/// Filesystem-safe date (no colons — Windows forbids them in filenames), for the
+/// default "класс_статистика_ДАТА.csv" export filename.
+fn format_epoch_date_ymd(epoch_secs: i64) -> String {
+    let days = epoch_secs.div_euclid(86400);
+    let (y, m, d) = civil_from_days(days);
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 fn stat_tile(ui: &mut egui::Ui, label: &str, value: &str) {
