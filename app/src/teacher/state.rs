@@ -134,6 +134,11 @@ pub struct PlayingMaterial {
     pub title: String,
     pub total_ms: u64,
     pub elapsed_ms: u64,
+    /// Who this play-out was actually sent to — needed so both the "Stop" button
+    /// and the natural end of the clip can tell the same set of students it ended
+    /// (`ServerToClient::MaterialStopped`), regardless of the selection changing
+    /// in the meantime.
+    pub targets: Vec<StudentId>,
 }
 
 pub type AppState = Arc<std::sync::Mutex<SharedState>>;

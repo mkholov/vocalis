@@ -2,11 +2,12 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use lingua_common::{read_message, write_message, ClientToServer, ServerToClient};
+use lingua_common::{read_message, write_message, ClientToServer, ServerToClient, OPUS_SAMPLE_RATE};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use super::state::{AppState, AssignmentEntry, ChatEntry, DiscoveredTeacher, ReceivedFile};
+use super::recording;
+use super::state::{ActiveRecording, AppState, AssignmentEntry, ChatEntry, DiscoveredTeacher, ReceivedFile};
 
 const STALE_AFTER: Duration = Duration::from_secs(6);
 
@@ -142,6 +143,28 @@ pub async fn connect_to_teacher(
             Ok(ServerToClient::StopIntercom) => {
                 state.lock().unwrap().intercom_active = false;
             }
+            Ok(ServerToClient::MaterialPlaying { title }) => {
+                let mut guard = state.lock().unwrap();
+                guard.material_title = Some(title);
+                guard.material_playing = true;
+                guard.reference_capture = Some(ActiveRecording {
+                    samples: Vec::new(),
+                    sample_rate: OPUS_SAMPLE_RATE,
+                });
+            }
+            Ok(ServerToClient::MaterialStopped) => {
+                let active = {
+                    let mut guard = state.lock().unwrap();
+                    guard.material_playing = false;
+                    guard.reference_capture.take()
+                };
+                if let Some(active) = active {
+                    match recording::save_reference(&active.samples, active.sample_rate) {
+                        Ok(entry) => state.lock().unwrap().reference = Some(entry),
+                        Err(e) => warn!("failed to save reference recording: {e:#}"),
+                    }
+                }
+            }
             Ok(ServerToClient::ChatMessage { from, text }) => {
                 state.lock().unwrap().chat_log.push(ChatEntry { from, text });
             }
@@ -180,6 +203,10 @@ pub async fn connect_to_teacher(
     guard.needs_help = false;
     guard.assignments.clear();
     guard.intercom_active = false;
+    guard.material_title = None;
+    guard.material_playing = false;
+    guard.reference_capture = None;
+    guard.reference = None;
     info!("disconnected from teacher '{teacher_name}'");
     Ok(())
 }

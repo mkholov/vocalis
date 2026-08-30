@@ -138,7 +138,7 @@ fn run_output_stream(mix: SharedMix) -> Result<()> {
 
 /// Listens for the teacher's mic broadcast, conceals dropped packets, resamples to
 /// the speaker's native rate and mixes the result into `mix.broadcast`.
-pub async fn run_mic_broadcast_receiver(mix: SharedMix, output_rate: u32) -> Result<()> {
+pub async fn run_mic_broadcast_receiver(state: AppState, mix: SharedMix, output_rate: u32) -> Result<()> {
     let socket = UdpSocket::bind(("0.0.0.0", MIC_PORT)).await?;
     let mut decoder = new_decoder()?;
     let mut tracker = SequenceTracker::new();
@@ -154,6 +154,14 @@ pub async fn run_mic_broadcast_receiver(mix: SharedMix, output_rate: u32) -> Res
             continue;
         }
         ensure_output_started(mix.clone());
+        // "Model pronunciation": while the teacher is playing a material, cache
+        // what's coming through (pre-resample, at the wire's own OPUS_SAMPLE_RATE —
+        // there's no more fidelity to gain from resampling up) so the student can
+        // play it back as a reference after recording their own attempt. Same tap
+        // idea as the mic-recording feature, just on the receive side.
+        if let Some(reference) = state.lock().unwrap().reference_capture.as_mut() {
+            reference.samples.extend_from_slice(&samples);
+        }
         let resampled = resampler.push(&samples);
         push_capped(&mut mix.lock().unwrap().broadcast, &resampled, output_rate);
     }

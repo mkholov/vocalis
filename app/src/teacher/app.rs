@@ -193,39 +193,51 @@ impl TeacherApp {
         };
         let total_ms = (samples.len() as u64 * 1000) / native_rate.max(1) as u64;
 
-        let targets: Vec<std::net::SocketAddr> = {
+        let target_ids: Vec<StudentId> = {
             let guard = self.state.lock().unwrap();
             self.action_targets(&guard)
-                .into_iter()
-                .filter_map(|id| guard.students.get(&id))
-                .map(|s| std::net::SocketAddr::new(s.ip, lingua_common::MIC_PORT))
-                .collect()
         };
-        if targets.is_empty() {
+        if target_ids.is_empty() {
             return;
         }
 
-        self.state.lock().unwrap().playing = Some(state::PlayingMaterial {
-            material_id,
-            title,
-            total_ms,
-            elapsed_ms: 0,
-        });
+        {
+            let mut guard = self.state.lock().unwrap();
+            for id in &target_ids {
+                if let Some(s) = guard.students.get(id) {
+                    let _ = s.to_client.send(ServerToClient::MaterialPlaying { title: title.clone() });
+                }
+            }
+            guard.playing = Some(state::PlayingMaterial {
+                material_id,
+                title,
+                total_ms,
+                elapsed_ms: 0,
+                targets: target_ids.clone(),
+            });
+        }
 
         let state = self.state.clone();
         let task = self
             ._rt
-            .spawn(async move { let _ = materials::run_playback(state, samples, native_rate, targets).await; });
+            .spawn(async move { let _ = materials::run_playback(state, samples, native_rate, target_ids).await; });
         self.playback = Some(task);
     }
 
-    /// Stops whatever material is currently playing, if any. Safe to call when
-    /// nothing is playing.
+    /// Stops whatever material is currently playing, if any, and tells everyone it
+    /// was playing to that it's over. Safe to call when nothing is playing.
     fn stop_playback(&mut self) {
         if let Some(task) = self.playback.take() {
             task.abort();
         }
-        self.state.lock().unwrap().playing = None;
+        let mut guard = self.state.lock().unwrap();
+        if let Some(playing) = guard.playing.take() {
+            for id in &playing.targets {
+                if let Some(s) = guard.students.get(id) {
+                    let _ = s.to_client.send(ServerToClient::MaterialStopped);
+                }
+            }
+        }
     }
 
     fn set_locked(&mut self, id: StudentId, locked: bool) {

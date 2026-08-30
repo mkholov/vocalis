@@ -10,7 +10,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use lingua_common::{
-    encode_audio_packet, new_encoder, Resampler, FRAME_SAMPLES, OPUS_SAMPLE_RATE,
+    encode_audio_packet, new_encoder, Resampler, ServerToClient, StudentId, FRAME_SAMPLES,
+    MIC_PORT, OPUS_SAMPLE_RATE,
 };
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
@@ -93,19 +94,29 @@ pub fn decode_to_mono_pcm(path: &Path) -> Result<(Vec<i16>, u32)> {
 }
 
 /// Resamples the whole (already-decoded) clip to 16kHz, Opus-encodes it, and sends
-/// it to `targets` at the same 20ms-per-frame cadence a live mic stream would —
+/// it to `target_ids` at the same 20ms-per-frame cadence a live mic stream would —
 /// unlike a live capture there's no natural real-time pacing for a file that's
 /// entirely in memory already, so a `tokio::time::interval` ticker stands in for
 /// the hardware callback that normally paces `run_mic_broadcast`. Updates
 /// `state.playing.elapsed_ms` as it goes; stops early (without clearing `playing`
-/// itself — the caller already did, e.g. via the "Stop" button) if `playing` goes
-/// `None` out from under it.
+/// itself or sending `MaterialStopped` — the caller already did both, e.g. via the
+/// "Stop" button) if `playing` goes `None` out from under it. On a natural end (the
+/// clip just finishes) sends `MaterialStopped` itself, since nothing else would.
 pub async fn run_playback(
     state: AppState,
     samples: Vec<i16>,
     native_rate: u32,
-    targets: Vec<SocketAddr>,
+    target_ids: Vec<StudentId>,
 ) -> Result<()> {
+    let targets: Vec<SocketAddr> = {
+        let guard = state.lock().unwrap();
+        target_ids
+            .iter()
+            .filter_map(|id| guard.students.get(id))
+            .map(|s| SocketAddr::new(s.ip, MIC_PORT))
+            .collect()
+    };
+
     let socket = UdpSocket::bind(("0.0.0.0", 0)).await?;
     let mut resampler = Resampler::new(native_rate, OPUS_SAMPLE_RATE);
     let encoder = new_encoder()?;
@@ -135,11 +146,18 @@ pub async fn run_playback(
         let mut guard = state.lock().unwrap();
         match guard.playing.as_mut() {
             Some(playing) => playing.elapsed_ms = elapsed_ms,
-            // Stopped externally (e.g. the "Stop" button already cleared `playing`).
+            // Stopped externally (e.g. the "Stop" button already cleared `playing`
+            // and notified everyone) — nothing left for us to do.
             None => return Ok(()),
         }
     }
 
-    state.lock().unwrap().playing = None;
+    let mut guard = state.lock().unwrap();
+    for id in &target_ids {
+        if let Some(s) = guard.students.get(id) {
+            let _ = s.to_client.send(ServerToClient::MaterialStopped);
+        }
+    }
+    guard.playing = None;
     Ok(())
 }

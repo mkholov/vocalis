@@ -44,6 +44,28 @@ pub fn save(samples: &[i16], sample_rate: u32) -> Result<RecordingEntry> {
     })
 }
 
+/// A cache, not a kept library — each new material overwrites the same file
+/// rather than piling up like `save`'s timestamped recordings do. Lives in its own
+/// subfolder (not scanned by `list_existing`, which only looks at the flat
+/// `recordings_dir()`) so it never shows up mixed in with the student's own attempts.
+fn reference_path() -> PathBuf {
+    recordings_dir().join("reference").join("current.wav")
+}
+
+/// Writes the audio captured while a "model pronunciation" material was playing,
+/// so it can be offered back as a locally-playable reference.
+pub fn save_reference(samples: &[i16], sample_rate: u32) -> Result<RecordingEntry> {
+    let path = reference_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).context("creating reference cache directory")?;
+    }
+    write_wav_mono(&path, samples, sample_rate)?;
+    Ok(RecordingEntry {
+        duration_secs: samples.len() as f32 / sample_rate.max(1) as f32,
+        path,
+    })
+}
+
 /// Scans the recordings directory for `.wav` files, newest first, so the list
 /// survives an app restart — they're just files already sitting on disk, nothing
 /// extra needs to be persisted.

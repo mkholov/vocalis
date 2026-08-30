@@ -71,6 +71,23 @@ pub struct SharedState {
     /// Recordings saved to disk — loaded from disk at startup, appended to as new
     /// ones are saved.
     pub saved_recordings: Vec<RecordingEntry>,
+    /// "Model pronunciation" feature: title of the material the teacher most
+    /// recently played (or is currently playing) to this student — drives the
+    /// "Повторите за диктором" prompt. Kept until a new material starts or the
+    /// student disconnects (not cleared just because playback ended, since the
+    /// prompt is meant to stick around for "recently played" too).
+    pub material_title: Option<String>,
+    /// Whether `material_title`'s clip is still actively playing right now (vs.
+    /// having already finished) — only affects prompt wording.
+    pub material_playing: bool,
+    /// While a material is playing, the incoming broadcast is opportunistically
+    /// cached here (same tap idea as `recording`, just on the receive side) so it
+    /// can be offered back as a locally-playable reference. Best-effort: absent if
+    /// the student wasn't connected for the whole clip, or nothing has played yet.
+    pub reference_capture: Option<ActiveRecording>,
+    /// The finalized reference recording for `material_title`, once caching
+    /// completes (`ServerToClient::MaterialStopped` arrives).
+    pub reference: Option<RecordingEntry>,
 }
 
 pub type AppState = Arc<Mutex<SharedState>>;

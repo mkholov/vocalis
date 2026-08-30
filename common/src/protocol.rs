@@ -109,6 +109,16 @@ pub enum ServerToClient {
     /// class-wide broadcast); the receive socket is always bound regardless.
     StartIntercom,
     StopIntercom,
+    /// The teacher started playing an audio material to this student — pairs with
+    /// the "model pronunciation" feature: the student's UI can prompt "repeat
+    /// after the speaker" and starts caching the incoming broadcast locally as a
+    /// playable reference (best-effort — nothing breaks if it's missed).
+    MaterialPlaying {
+        title: String,
+    },
+    /// That material stopped (finished or was stopped by the teacher) — the
+    /// student finalizes whatever reference audio it managed to cache.
+    MaterialStopped,
     /// Master mic switch: while locked, the student mustn't transmit mic audio to
     /// anyone (group peers or the teacher), e.g. to keep a test quiet.
     SetMicLocked(bool),

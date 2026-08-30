@@ -65,6 +65,10 @@ impl StudentApp {
         guard.needs_help = false;
         guard.assignments.clear();
         guard.intercom_active = false;
+        guard.material_title = None;
+        guard.material_playing = false;
+        guard.reference_capture = None;
+        guard.reference = None;
     }
 
     fn toggle_help(&mut self) {
@@ -205,7 +209,7 @@ impl eframe::App for StudentApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            let (connected, connecting, peer_names, uploading, files, mic_locked, needs_help, assignments, intercom_active, recording_active, saved_recordings, can_send_to_teacher) = {
+            let (connected, connecting, peer_names, uploading, files, mic_locked, needs_help, assignments, intercom_active, recording_active, saved_recordings, can_send_to_teacher, material_title, material_playing, reference) = {
                 let guard = self.state.lock().unwrap();
                 (
                     guard.connected_teacher.clone(),
@@ -232,8 +236,55 @@ impl eframe::App for StudentApp {
                         .map(|r| (r.path.clone(), r.duration_secs))
                         .collect::<Vec<_>>(),
                     guard.to_server.is_some(),
+                    guard.material_title.clone(),
+                    guard.material_playing,
+                    guard.reference.as_ref().map(|r| r.path.clone()),
                 )
             };
+
+            // "Модельное произношение": the teacher played (or is playing) a
+            // material — surface the existing record button prominently right
+            // here, since this is exactly when a student would want it.
+            if let Some(title) = &material_title {
+                egui::Frame::none()
+                    .fill(theme::ACCENT.linear_multiply(0.3))
+                    .rounding(egui::Rounding::same(8.0))
+                    .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let verb = if material_playing { "звучит" } else { "прозвучал" };
+                            ui.colored_label(
+                                theme::ACCENT_300,
+                                format!("🎧 Сейчас {verb} материал «{title}». Повторите за диктором!"),
+                            );
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let rec_label = if recording_active { "⏹ Остановить" } else { "🔴 Записать" };
+                                if ui.button(rec_label).clicked() {
+                                    if recording_active {
+                                        self.stop_recording();
+                                    } else {
+                                        self.start_recording();
+                                    }
+                                }
+                            });
+                        });
+                    });
+                ui.add_space(6.0);
+            }
+            if let (Some(reference_path), Some((latest_path, _))) = (&reference, saved_recordings.first()) {
+                ui.label("Сравните с эталоном:");
+                if ui.button("▶ Прослушать: Эталон").clicked() {
+                    if let Err(e) = open::that(reference_path) {
+                        tracing::warn!("failed to open reference recording: {e:#}");
+                    }
+                }
+                if ui.button("▶ Прослушать: Моя попытка").clicked() {
+                    if let Err(e) = open::that(latest_path) {
+                        tracing::warn!("failed to open recording: {e:#}");
+                    }
+                }
+                ui.add_space(6.0);
+            }
 
             ui.label("Мои записи (для самопроверки произношения или как домашнее задание):");
             ui.horizontal(|ui| {
@@ -474,9 +525,10 @@ impl StudentApp {
         let mix = audio::new_mix_state();
         let output_rate = audio::default_output_sample_rate();
         {
+            let state = state.clone();
             let mix = mix.clone();
             rt.spawn(async move {
-                if let Err(e) = audio::run_mic_broadcast_receiver(mix, output_rate).await {
+                if let Err(e) = audio::run_mic_broadcast_receiver(state, mix, output_rate).await {
                     tracing::warn!("mic broadcast receiver stopped: {e:#}");
                 }
             });
