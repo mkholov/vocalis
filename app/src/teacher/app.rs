@@ -648,6 +648,18 @@ impl TeacherApp {
             if talking {
                 ui.colored_label(theme::MUTED, "Приватный разговор — не слышен остальному классу");
             }
+            // Same incoming pipeline serves plain listen-in and intercom's "hear
+            // the student" leg (intercom always implies listening) — one slider
+            // covers both, since it's really "how loud is what I'm hearing right now".
+            if listening || talking {
+                let mut gain_percent = listen::LISTEN_GAIN_PERCENT.load(Ordering::Relaxed);
+                if ui
+                    .add(egui::Slider::new(&mut gain_percent, 0..=200).text("Громкость").suffix("%"))
+                    .changed()
+                {
+                    listen::LISTEN_GAIN_PERCENT.store(gain_percent, Ordering::Relaxed);
+                }
+            }
         } else {
             ui.colored_label(theme::MUTED, "Выберите ученика в сетке, чтобы прослушать его или отправить задание.");
         }
@@ -856,10 +868,19 @@ impl TeacherApp {
                         });
                     }
                     Some(id) => {
-                        let (name, group, needs_help, presence, level_active) = {
+                        let (name, group, needs_help, presence, level_active, mic_level) = {
                             let guard = self.state.lock().unwrap();
                             match guard.students.get(&id) {
-                                Some(s) => (s.name.clone(), s.group.is_some(), s.needs_help, s.presence(), s.presence() == Presence::Speaking),
+                                Some(s) => {
+                                    let presence = s.presence();
+                                    let level_active = presence == Presence::Speaking;
+                                    // Only show a live level while it's fresh (same recency
+                                    // rule `presence()` uses for "Speaking") — otherwise a
+                                    // stale reading (e.g. after a network hiccup) would just
+                                    // sit there looking like a frozen VU meter.
+                                    let mic_level = if level_active { s.last_level } else { 0 };
+                                    (s.name.clone(), s.group.is_some(), s.needs_help, presence, level_active, mic_level)
+                                }
                                 None => return,
                             }
                         };
@@ -894,6 +915,7 @@ impl TeacherApp {
                                     ui.colored_label(color, if level_active { "🎙" } else { "⚪" });
                                     ui.colored_label(color, label);
                                 });
+                                theme::wave_meter(ui, mic_level);
                             });
                         });
                     }

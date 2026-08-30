@@ -15,6 +15,15 @@ pub type ListenQueue = Arc<Mutex<VecDeque<i16>>>;
 /// Current level (RMS, fixed-point *1000) of whichever student is being listened to.
 pub static LISTEN_LEVEL_MILLIS: AtomicI32 = AtomicI32::new(0);
 
+/// Playback volume for listen-in/intercom audio, as a percentage (100 = unity gain,
+/// the default — matches the previous, unscaled behavior). A single knob rather
+/// than a per-student setting: it's a property of "how loud is this speaker fed
+/// into my headphones right now", not something worth remembering per student.
+/// Applied as a plain multiply in `pull_queued`, right before samples reach the
+/// output device — nothing upstream (decoding, the level meter, the queue itself)
+/// is touched.
+pub static LISTEN_GAIN_PERCENT: AtomicI32 = AtomicI32::new(100);
+
 static OUTPUT_STARTED: AtomicBool = AtomicBool::new(false);
 
 pub fn new_listen_queue() -> ListenQueue {
@@ -44,8 +53,14 @@ fn ensure_output_started(queue: ListenQueue) {
 }
 
 fn pull_queued(queue: &ListenQueue, count: usize) -> Vec<i16> {
+    let gain = LISTEN_GAIN_PERCENT.load(Ordering::Relaxed) as f32 / 100.0;
     let mut q = queue.lock().unwrap();
-    (0..count).map(|_| q.pop_front().unwrap_or(0)).collect()
+    (0..count)
+        .map(|_| {
+            let s = q.pop_front().unwrap_or(0);
+            (s as f32 * gain).clamp(i16::MIN as f32, i16::MAX as f32) as i16
+        })
+        .collect()
 }
 
 fn run_output_stream(queue: ListenQueue) -> Result<()> {
