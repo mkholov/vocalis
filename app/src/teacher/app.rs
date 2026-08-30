@@ -344,14 +344,24 @@ impl TeacherApp {
         }
     }
 
-    fn set_locked(&mut self, id: StudentId, locked: bool) {
+    /// Locks (or unlocks) a student's screen. `test_mode` additionally starts the
+    /// focus-loss monitoring/resistance on the student's side and resets their
+    /// violation count — meaningless when `locked` is false.
+    fn set_locked(&mut self, id: StudentId, locked: bool, test_mode: bool) {
         let mut guard = self.state.lock().unwrap();
         if let Some(s) = guard.students.get_mut(&id) {
             s.locked = locked;
+            s.test_mode = locked && test_mode;
+            if s.test_mode {
+                s.test_violations = 0;
+            }
             let msg = if locked {
-                ServerToClient::LockScreen {
-                    message: "Экран заблокирован преподавателем".to_string(),
-                }
+                let message = if test_mode {
+                    "Тестовый режим: не переключайтесь на другие приложения".to_string()
+                } else {
+                    "Экран заблокирован преподавателем".to_string()
+                };
+                ServerToClient::LockScreen { message, test_mode }
             } else {
                 ServerToClient::UnlockScreen
             };
@@ -719,7 +729,7 @@ impl TeacherApp {
         };
 
         if let Some(id) = selected_one {
-            let (name, locked, listening, talking, demoing_this_student) = {
+            let (name, locked, test_mode, test_violations, listening, talking, demoing_this_student) = {
                 let guard = self.state.lock().unwrap();
                 let demoing_this_student = matches!(
                     guard.screen_demo.as_ref().map(|d| d.source),
@@ -729,18 +739,25 @@ impl TeacherApp {
                     Some(s) => (
                         s.name.clone(),
                         s.locked,
+                        s.test_mode,
+                        s.test_violations,
                         guard.listening_to == Some(id),
                         guard.talking_to == Some(id),
                         demoing_this_student,
                     ),
-                    None => (String::new(), false, false, false, false),
+                    None => (String::new(), false, false, 0, false, false, false),
                 }
             };
             ui.strong(&name);
             ui.horizontal(|ui| {
                 let btn_label = if locked { "Разблокировать" } else { "Заблокировать" };
                 if ui.button(btn_label).clicked() {
-                    self.set_locked(id, !locked);
+                    self.set_locked(id, !locked, false);
+                }
+                if !locked {
+                    if ui.button("📝 Начать тест").on_hover_text("Блокировка + мониторинг переключений на другие приложения").clicked() {
+                        self.set_locked(id, true, true);
+                    }
                 }
                 let listen_label = if listening { "Прекратить" } else { "🎧 Слушать" };
                 if ui.button(listen_label).clicked() {
@@ -775,6 +792,14 @@ impl TeacherApp {
             });
             if demoing_this_student {
                 ui.colored_label(theme::MUTED, "Экран этого ученика виден остальному классу");
+            }
+            if test_mode {
+                let (color, text) = if test_violations > 0 {
+                    (theme::DANGER, format!("⚠️ Переключений на другое приложение: {test_violations}"))
+                } else {
+                    (theme::OK, "Тестовый режим: переключений пока не было".to_string())
+                };
+                ui.colored_label(color, text);
             }
             // Same incoming pipeline serves plain listen-in and intercom's "hear
             // the student" leg (intercom always implies listening) — one slider
@@ -996,7 +1021,7 @@ impl TeacherApp {
                         });
                     }
                     Some(id) => {
-                        let (name, group, needs_help, presence, level_active, mic_level) = {
+                        let (name, group, needs_help, presence, level_active, mic_level, test_badge) = {
                             let guard = self.state.lock().unwrap();
                             match guard.students.get(&id) {
                                 Some(s) => {
@@ -1007,7 +1032,8 @@ impl TeacherApp {
                                     // stale reading (e.g. after a network hiccup) would just
                                     // sit there looking like a frozen VU meter.
                                     let mic_level = if level_active { s.last_level } else { 0 };
-                                    (s.name.clone(), s.group.is_some(), s.needs_help, presence, level_active, mic_level)
+                                    let test_badge = s.test_mode.then_some(s.test_violations);
+                                    (s.name.clone(), s.group.is_some(), s.needs_help, presence, level_active, mic_level, test_badge)
                                 }
                                 None => return,
                             }
@@ -1016,6 +1042,15 @@ impl TeacherApp {
                             ui.colored_label(theme::MUTED, format!("#{seat}"));
                             if group {
                                 ui.colored_label(theme::ACCENT, "🔗");
+                            }
+                            if let Some(violations) = test_badge {
+                                let color = if violations > 0 { theme::DANGER } else { theme::WARN };
+                                let text = if violations > 0 { format!("📝⚠️{violations}") } else { "📝".to_string() };
+                                ui.colored_label(color, text).on_hover_text(if violations > 0 {
+                                    format!("Тестовый режим — переключений на другое приложение: {violations}")
+                                } else {
+                                    "Тестовый режим — переключений пока не было".to_string()
+                                });
                             }
                         });
                         ui.add_space(4.0);
@@ -1085,7 +1120,7 @@ impl TeacherApp {
                 ui.heading(&name);
                 let btn_label = if locked { "Разблокировать" } else { "Заблокировать" };
                 if ui.button(btn_label).clicked() {
-                    self.set_locked(id, !locked);
+                    self.set_locked(id, !locked, false);
                 }
             });
             ui.add_space(10.0);

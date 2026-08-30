@@ -125,11 +125,15 @@ pub async fn connect_to_teacher(
                 guard.peer_addrs.clear();
                 guard.peer_names.clear();
             }
-            Ok(ServerToClient::LockScreen { message }) => {
-                state.lock().unwrap().locked_message = Some(message);
+            Ok(ServerToClient::LockScreen { message, test_mode }) => {
+                let mut guard = state.lock().unwrap();
+                guard.locked_message = Some(message);
+                guard.test_mode_active = test_mode;
             }
             Ok(ServerToClient::UnlockScreen) => {
-                state.lock().unwrap().locked_message = None;
+                let mut guard = state.lock().unwrap();
+                guard.locked_message = None;
+                guard.test_mode_active = false;
             }
             Ok(ServerToClient::StartMicUpload) => {
                 state.lock().unwrap().uploading_to_teacher = true;
@@ -218,6 +222,7 @@ pub async fn connect_to_teacher(
     guard.peer_names.clear();
     guard.uploading_to_teacher = false;
     guard.locked_message = None;
+    guard.test_mode_active = false;
     guard.mic_locked = false;
     guard.needs_help = false;
     guard.assignments.clear();

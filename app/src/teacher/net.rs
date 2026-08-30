@@ -82,6 +82,8 @@ async fn handle_student(
                 last_frame_jpeg: None,
                 frame_version: 0,
                 locked: false,
+                test_mode: false,
+                test_violations: 0,
                 group: None,
                 needs_help: false,
                 last_level: 0,
@@ -158,6 +160,16 @@ async fn handle_student(
                 if let Some(assignment_db_id) = assignment_db_id {
                     let _ = db::mark_assignment_done(&guard.db, assignment_db_id);
                 }
+            }
+            Ok(ClientToServer::FocusLost) => {
+                let mut guard = state.lock().unwrap();
+                if let Some(student) = guard.students.get_mut(&student_id) {
+                    student.test_violations += 1;
+                }
+                guard.chat_log.push(ChatEntry {
+                    from: "Система".to_string(),
+                    text: format!("⚠️ {name} переключился(-ась) на другое приложение во время теста"),
+                });
             }
             Ok(ClientToServer::FileOffer { name: file_name, data }) => match save_received_file(&file_name, &data) {
                 Ok(path) => {

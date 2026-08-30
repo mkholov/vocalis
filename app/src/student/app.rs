@@ -24,6 +24,10 @@ pub struct StudentApp {
     pin_input: String,
     connect_task: Option<tokio::task::JoinHandle<()>>,
     was_locked: bool,
+    /// OS focus state as of the last frame, tracked only while locked in test
+    /// mode — used to detect the moment focus is *lost* (edge, not level) so
+    /// `ClientToServer::FocusLost` is sent once per switch-away, not every frame.
+    was_focused: bool,
     chat_input: String,
     /// Version + texture for the incoming screen-demo stream (teacher's own
     /// screen, or a relayed classmate's) — same "poll and diff by version" pattern
@@ -65,6 +69,7 @@ impl StudentApp {
         guard.peer_names.clear();
         guard.uploading_to_teacher = false;
         guard.locked_message = None;
+        guard.test_mode_active = false;
         guard.mic_locked = false;
         guard.needs_help = false;
         guard.assignments.clear();
@@ -168,14 +173,43 @@ impl eframe::App for StudentApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(std::time::Duration::from_millis(150));
 
-        let locked_message = self.state.lock().unwrap().locked_message.clone();
+        let (locked_message, test_mode_active) = {
+            let guard = self.state.lock().unwrap();
+            (guard.locked_message.clone(), guard.test_mode_active)
+        };
 
         if let Some(message) = &locked_message {
             if !self.was_locked {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
                 ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
                 self.was_locked = true;
+                self.was_focused = ctx.input(|i| i.focused);
             }
+
+            // Test mode: a regular desktop app can't actually block Alt+Tab or
+            // other task-switching without an admin-level global hook (which is
+            // exactly the kind of invasive, stability-risking trick we're
+            // avoiding) — so instead of trying to prevent switching away, this
+            // notices it (via OS focus) and does two honest things: fights to
+            // reclaim focus/fullscreen/topmost so casually switching away is
+            // awkward rather than seamless, and tells the teacher it happened.
+            if test_mode_active {
+                let focused = ctx.input(|i| i.focused);
+                if !focused {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
+                }
+                if self.was_focused && !focused {
+                    let sender = self.state.lock().unwrap().to_server.clone();
+                    if let Some(tx) = sender {
+                        let _ = tx.send(ClientToServer::FocusLost);
+                    }
+                }
+                self.was_focused = focused;
+            }
+
             egui::CentralPanel::default()
                 .frame(egui::Frame::none().fill(theme::DANGER))
                 .show(ctx, |ui| {
@@ -628,6 +662,7 @@ impl StudentApp {
             pin_input: String::new(),
             connect_task: None,
             was_locked: false,
+            was_focused: true,
             chat_input: String::new(),
             demo_texture: None,
         }

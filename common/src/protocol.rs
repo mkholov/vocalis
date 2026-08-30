@@ -76,6 +76,9 @@ pub enum ClientToServer {
     /// saved as-is on the teacher's machine — the reverse direction of
     /// [`ServerToClient::FileOffer`], over the same control channel.
     FileOffer { name: String, data: Vec<u8> },
+    /// Sent once each time the student's window loses OS focus while in test
+    /// mode (`LockScreen.test_mode`) — i.e. they switched to another app/window.
+    FocusLost,
 }
 
 /// Messages sent from the teacher console to a student client over the TCP control channel.
@@ -98,6 +101,13 @@ pub enum ServerToClient {
     LeaveGroup,
     LockScreen {
         message: String,
+        /// Test mode adds two things on top of the plain lock overlay: the
+        /// student's client fights to keep OS focus (re-requesting it, re-
+        /// asserting fullscreen/always-on-top) whenever it detects focus was
+        /// lost, and reports each loss to the teacher via `FocusLost` — "honest
+        /// monitoring", not a hard block (a regular desktop app can't actually
+        /// prevent Alt+Tab/task-switching without admin-level hooks).
+        test_mode: bool,
     },
     UnlockScreen,
     /// Start streaming mic audio to the teacher for real-time listen-in.

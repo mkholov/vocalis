@@ -58,6 +58,12 @@ pub struct Student {
     /// Bumped every time `last_frame_jpeg` changes, so the GUI knows to re-upload the texture.
     pub frame_version: u64,
     pub locked: bool,
+    /// Whether the current lock (if `locked`) is test mode — drives the focus-loss
+    /// monitoring UI on the teacher's side; meaningless while `locked` is false.
+    pub test_mode: bool,
+    /// How many times this student's client reported losing OS focus during the
+    /// current test — reset to 0 each time a new test-mode lock starts.
+    pub test_violations: u32,
     pub group: Option<usize>,
     pub needs_help: bool,
     pub last_level: i32,

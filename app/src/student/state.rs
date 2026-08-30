@@ -52,6 +52,9 @@ pub struct SharedState {
     pub teacher_addr: Option<IpAddr>,
     pub connecting: bool,
     pub locked_message: Option<String>,
+    /// Set alongside `locked_message` when the current lock is test mode —
+    /// drives the focus-loss monitoring/resistance loop in `StudentApp::update`.
+    pub test_mode_active: bool,
     pub peer_addrs: Vec<SocketAddr>,
     pub peer_names: Vec<String>,
     pub uploading_to_teacher: bool,
