@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::theme;
 
 use super::state::{self, AppState, Presence, SharedState};
-use super::{db, listen, materials, mic, net};
+use super::{db, listen, materials, mic, net, screen};
 
 const ASSIGNMENT_TEMPLATES: &[(&str, AssignmentKind)] = &[
     ("Аудирование: заказ в кафе", AssignmentKind::Listening),
@@ -87,6 +87,10 @@ pub struct TeacherApp {
     /// the task streaming pre-decoded samples out — so `.abort()` on stop is the
     /// only way to end it early (dropping the handle alone would not).
     playback: Option<tokio::task::JoinHandle<()>>,
+    /// The teacher's own-screen capture/send task, if `screen_demo`'s source is
+    /// `Teacher`. Demoing a *student's* screen instead needs no task here at all —
+    /// `teacher::net` just relays that student's existing uploads as they arrive.
+    screen_demo_task: Option<tokio::task::JoinHandle<()>>,
     textures: HashMap<StudentId, (u64, egui::TextureHandle)>,
     selected: HashSet<StudentId>,
     dragging: Option<StudentId>,
@@ -106,6 +110,7 @@ impl TeacherApp {
             mic: None,
             intercom: None,
             playback: None,
+            screen_demo_task: None,
             textures: HashMap::new(),
             selected: HashSet::new(),
             dragging: None,
@@ -235,6 +240,105 @@ impl TeacherApp {
             for id in &playing.targets {
                 if let Some(s) = guard.students.get(id) {
                     let _ = s.to_client.send(ServerToClient::MaterialStopped);
+                }
+            }
+        }
+    }
+
+    /// Toggles demoing the teacher's own screen to the current selection (or the
+    /// whole class if nothing's selected — same `action_targets` rule as
+    /// assignments/files/materials).
+    fn toggle_own_screen_demo(&mut self) {
+        let already_teacher = matches!(
+            self.state.lock().unwrap().screen_demo.as_ref().map(|d| d.source),
+            Some(state::ScreenDemoSource::Teacher)
+        );
+        if already_teacher {
+            self.stop_screen_demo();
+            return;
+        }
+        let target_ids: Vec<StudentId> = {
+            let guard = self.state.lock().unwrap();
+            self.action_targets(&guard)
+        };
+        if target_ids.is_empty() {
+            return;
+        }
+        self.start_screen_demo(state::ScreenDemoSource::Teacher, self.teacher_name.to_string(), target_ids);
+    }
+
+    /// Toggles demoing `id`'s screen to the rest of the class (deliberately
+    /// everyone *but* `id` — showing someone's screen back to themselves makes no
+    /// sense, so this ignores the current selection rather than reusing
+    /// `action_targets`).
+    fn toggle_student_screen_demo(&mut self, id: StudentId) {
+        let already_this_student = matches!(
+            self.state.lock().unwrap().screen_demo.as_ref().map(|d| d.source),
+            Some(state::ScreenDemoSource::Student(sid)) if sid == id
+        );
+        if already_this_student {
+            self.stop_screen_demo();
+            return;
+        }
+        let (name, target_ids) = {
+            let guard = self.state.lock().unwrap();
+            let Some(name) = guard.students.get(&id).map(|s| s.name.clone()) else { return };
+            let targets = guard.students.keys().filter(|&&sid| sid != id).copied().collect();
+            (name, targets)
+        };
+        self.start_screen_demo(state::ScreenDemoSource::Student(id), name, target_ids);
+    }
+
+    fn start_screen_demo(&mut self, source: state::ScreenDemoSource, presenter_name: String, targets: Vec<StudentId>) {
+        self.stop_screen_demo();
+        if targets.is_empty() {
+            return;
+        }
+
+        {
+            let mut guard = self.state.lock().unwrap();
+            for id in &targets {
+                if let Some(s) = guard.students.get(id) {
+                    let _ = s.to_client.send(ServerToClient::StartScreenDemo {
+                        presenter: presenter_name.clone(),
+                    });
+                }
+            }
+            if let state::ScreenDemoSource::Student(presenter_id) = source {
+                if let Some(s) = guard.students.get(&presenter_id) {
+                    let _ = s.to_client.send(ServerToClient::SetScreenCaptureBoost(true));
+                }
+            }
+            guard.screen_demo = Some(state::ScreenDemo {
+                source,
+                presenter_name,
+                targets: targets.clone(),
+            });
+        }
+
+        if let state::ScreenDemoSource::Teacher = source {
+            let state = self.state.clone();
+            let task = self._rt.spawn(async move { screen::run_own_screen_demo(state, targets).await });
+            self.screen_demo_task = Some(task);
+        }
+    }
+
+    /// Stops whatever screen demo is currently active, if any. Safe to call when
+    /// nothing is running.
+    fn stop_screen_demo(&mut self) {
+        if let Some(task) = self.screen_demo_task.take() {
+            task.abort();
+        }
+        let mut guard = self.state.lock().unwrap();
+        if let Some(demo) = guard.screen_demo.take() {
+            for id in &demo.targets {
+                if let Some(s) = guard.students.get(id) {
+                    let _ = s.to_client.send(ServerToClient::StopScreenDemo);
+                }
+            }
+            if let state::ScreenDemoSource::Student(presenter_id) = demo.source {
+                if let Some(s) = guard.students.get(&presenter_id) {
+                    let _ = s.to_client.send(ServerToClient::SetScreenCaptureBoost(false));
                 }
             }
         }
@@ -583,6 +687,16 @@ impl TeacherApp {
                     theme::wave_meter(ui, mic::MIC_LEVEL_MILLIS.load(Ordering::Relaxed));
                 }
 
+                ui.add_space(8.0);
+                let demoing_own_screen = matches!(
+                    self.state.lock().unwrap().screen_demo.as_ref().map(|d| d.source),
+                    Some(state::ScreenDemoSource::Teacher)
+                );
+                let demo_label = if demoing_own_screen { "⏹ Остановить демонстрацию" } else { "🖥 Показать мой экран" };
+                if ui.button(demo_label).clicked() {
+                    self.toggle_own_screen_demo();
+                }
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let enabled = self.selected.len() == 1;
                     if ui
@@ -605,16 +719,21 @@ impl TeacherApp {
         };
 
         if let Some(id) = selected_one {
-            let (name, locked, listening, talking) = {
+            let (name, locked, listening, talking, demoing_this_student) = {
                 let guard = self.state.lock().unwrap();
+                let demoing_this_student = matches!(
+                    guard.screen_demo.as_ref().map(|d| d.source),
+                    Some(state::ScreenDemoSource::Student(sid)) if sid == id
+                );
                 match guard.students.get(&id) {
                     Some(s) => (
                         s.name.clone(),
                         s.locked,
                         guard.listening_to == Some(id),
                         guard.talking_to == Some(id),
+                        demoing_this_student,
                     ),
-                    None => (String::new(), false, false, false),
+                    None => (String::new(), false, false, false, false),
                 }
             };
             ui.strong(&name);
@@ -647,6 +766,15 @@ impl TeacherApp {
             });
             if talking {
                 ui.colored_label(theme::MUTED, "Приватный разговор — не слышен остальному классу");
+            }
+            ui.horizontal(|ui| {
+                let demo_label = if demoing_this_student { "⏹ Остановить демонстрацию" } else { "🖥 Показать классу" };
+                if ui.button(demo_label).on_hover_text("Показать экран этого ученика остальному классу").clicked() {
+                    self.toggle_student_screen_demo(id);
+                }
+            });
+            if demoing_this_student {
+                ui.colored_label(theme::MUTED, "Экран этого ученика виден остальному классу");
             }
             // Same incoming pipeline serves plain listen-in and intercom's "hear
             // the student" leg (intercom always implies listening) — one slider

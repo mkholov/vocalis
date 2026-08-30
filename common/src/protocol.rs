@@ -119,6 +119,23 @@ pub enum ServerToClient {
     /// That material stopped (finished or was stopped by the teacher) — the
     /// student finalizes whatever reference audio it managed to cache.
     MaterialStopped,
+    /// A full-class screen demonstration started — either the teacher's own
+    /// screen, or (relayed through the teacher) another student's. `presenter` is
+    /// a display name for the "Демонстрация экрана: <кто>" indicator; frames
+    /// follow as `ScreenDemoFrame`.
+    StartScreenDemo {
+        presenter: String,
+    },
+    StopScreenDemo,
+    /// One frame of an active screen demo (see `StartScreenDemo`).
+    ScreenDemoFrame {
+        jpeg: Vec<u8>,
+    },
+    /// Sent only to the student whose screen is being demoed to the class: raises
+    /// (or restores) their own `ScreenFrame` capture to demo-grade quality/rate —
+    /// the passive monitoring cadence is deliberately too light for the rest of
+    /// the class to actually read along.
+    SetScreenCaptureBoost(bool),
     /// Master mic switch: while locked, the student mustn't transmit mic audio to
     /// anyone (group peers or the teacher), e.g. to keep a test quiet.
     SetMicLocked(bool),

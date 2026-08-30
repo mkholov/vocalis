@@ -25,6 +25,10 @@ pub struct StudentApp {
     connect_task: Option<tokio::task::JoinHandle<()>>,
     was_locked: bool,
     chat_input: String,
+    /// Version + texture for the incoming screen-demo stream (teacher's own
+    /// screen, or a relayed classmate's) — same "poll and diff by version" pattern
+    /// the teacher's grid uses for student thumbnails.
+    demo_texture: Option<(u64, egui::TextureHandle)>,
 }
 
 impl StudentApp {
@@ -69,6 +73,9 @@ impl StudentApp {
         guard.material_playing = false;
         guard.reference_capture = None;
         guard.reference = None;
+        guard.screen_boosted = false;
+        guard.demo_presenter = None;
+        guard.last_demo_frame_jpeg = None;
     }
 
     fn toggle_help(&mut self) {
@@ -187,6 +194,50 @@ impl eframe::App for StudentApp {
             self.was_locked = false;
         }
 
+        // Screen demo takes over the whole window (not OS-level fullscreen like
+        // the lock screen above — this is just informational viewing, not an
+        // enforcement mechanism, so an in-window takeover is enough and simpler).
+        let (demo_presenter, demo_jpeg, demo_version) = {
+            let guard = self.state.lock().unwrap();
+            (guard.demo_presenter.clone(), guard.last_demo_frame_jpeg.clone(), guard.demo_frame_version)
+        };
+        if let Some(presenter) = demo_presenter {
+            if let Some(jpeg) = demo_jpeg {
+                let needs_update = self.demo_texture.as_ref().map(|(v, _)| *v != demo_version).unwrap_or(true);
+                if needs_update {
+                    if let Ok(img) = image::load_from_memory(&jpeg) {
+                        let rgba = img.to_rgba8();
+                        let (w, h) = rgba.dimensions();
+                        let color_image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], rgba.as_raw());
+                        let handle = ctx.load_texture("screen_demo", color_image, egui::TextureOptions::LINEAR);
+                        self.demo_texture = Some((demo_version, handle));
+                    }
+                }
+            }
+            egui::TopBottomPanel::top("demo_top").show(ctx, |ui| {
+                ui.add_space(4.0);
+                ui.colored_label(theme::ACCENT, format!("🖥 Демонстрация экрана: {presenter}"));
+                ui.add_space(4.0);
+            });
+            egui::CentralPanel::default().show(ctx, |ui| {
+                if let Some((_, tex)) = &self.demo_texture {
+                    let avail = ui.available_size();
+                    let size = tex.size_vec2();
+                    let scale = (avail.x / size.x).min(avail.y / size.y);
+                    ui.centered_and_justified(|ui| {
+                        ui.image((tex.id(), size * scale));
+                    });
+                } else {
+                    ui.centered_and_justified(|ui| {
+                        ui.colored_label(theme::MUTED, "Ожидание изображения…");
+                    });
+                }
+            });
+            return;
+        } else {
+            self.demo_texture = None;
+        }
+
         let already_connected = self.state.lock().unwrap().connected_teacher.is_some();
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
@@ -209,7 +260,7 @@ impl eframe::App for StudentApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            let (connected, connecting, peer_names, uploading, files, mic_locked, needs_help, assignments, intercom_active, recording_active, saved_recordings, can_send_to_teacher, material_title, material_playing, reference) = {
+            let (connected, connecting, peer_names, uploading, files, mic_locked, needs_help, assignments, intercom_active, recording_active, saved_recordings, can_send_to_teacher, material_title, material_playing, reference, screen_boosted) = {
                 let guard = self.state.lock().unwrap();
                 (
                     guard.connected_teacher.clone(),
@@ -239,8 +290,13 @@ impl eframe::App for StudentApp {
                     guard.material_title.clone(),
                     guard.material_playing,
                     guard.reference.as_ref().map(|r| r.path.clone()),
+                    guard.screen_boosted,
                 )
             };
+
+            if screen_boosted {
+                ui.colored_label(theme::ACCENT, "🖥 Ваш экран сейчас транслируется классу");
+            }
 
             // "Модельное произношение": the teacher played (or is playing) a
             // material — surface the existing record button prominently right
@@ -573,6 +629,7 @@ impl StudentApp {
             connect_task: None,
             was_locked: false,
             chat_input: String::new(),
+            demo_texture: None,
         }
     }
 }

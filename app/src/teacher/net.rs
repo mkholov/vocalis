@@ -9,7 +9,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::db;
-use super::state::{AppState, ChatEntry, Student};
+use super::state::{self, AppState, ChatEntry, Student};
 
 pub async fn run_control_server(state: AppState, teacher_name: Arc<str>) -> Result<()> {
     let listener = TcpListener::bind(("0.0.0.0", CONTROL_PORT)).await?;
@@ -106,6 +106,20 @@ async fn handle_student(
         match read_message::<ClientToServer, _>(&mut read_half).await {
             Ok(ClientToServer::ScreenFrame { jpeg }) => {
                 let mut guard = state.lock().unwrap();
+                // If this student is the one currently being demoed to the class,
+                // relay the same frame on to the audience — there's no student-to-
+                // student channel for screenshots (unlike P2P group audio), so the
+                // teacher is the only place this can be forwarded from.
+                if let Some(demo) = &guard.screen_demo {
+                    if demo.source == state::ScreenDemoSource::Student(student_id) {
+                        let targets = demo.targets.clone();
+                        for id in &targets {
+                            if let Some(s) = guard.students.get(id) {
+                                let _ = s.to_client.send(ServerToClient::ScreenDemoFrame { jpeg: jpeg.clone() });
+                            }
+                        }
+                    }
+                }
                 if let Some(student) = guard.students.get_mut(&student_id) {
                     student.last_frame_jpeg = Some(jpeg);
                     student.frame_version += 1;
@@ -169,6 +183,16 @@ async fn handle_student(
         }
         if guard.talking_to == Some(student_id) {
             guard.talking_to = None;
+        }
+        // Nothing left to show if the student being demoed just left.
+        if matches!(&guard.screen_demo, Some(demo) if demo.source == state::ScreenDemoSource::Student(student_id)) {
+            if let Some(demo) = guard.screen_demo.take() {
+                for id in &demo.targets {
+                    if let Some(s) = guard.students.get(id) {
+                        let _ = s.to_client.send(ServerToClient::StopScreenDemo);
+                    }
+                }
+            }
         }
         guard.students.remove(&student_id);
     }

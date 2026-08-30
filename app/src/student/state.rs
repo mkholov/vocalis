@@ -88,6 +88,18 @@ pub struct SharedState {
     /// The finalized reference recording for `material_title`, once caching
     /// completes (`ServerToClient::MaterialStopped` arrives).
     pub reference: Option<RecordingEntry>,
+    /// Set while *this* student's own screen is the one being demoed to the rest
+    /// of the class — tells `screen::run_screen_capture` to switch to demo-grade
+    /// quality/rate, and drives a small "your screen is being shown" notice.
+    pub screen_boosted: bool,
+    /// Display name of whoever is presenting, while a screen demo (teacher's own
+    /// or a relayed student's) is being shown to this student. `None` = no demo.
+    pub demo_presenter: Option<String>,
+    /// Latest frame of the active demo, and a version counter bumped on each new
+    /// frame — same "poll and diff" pattern the teacher's grid uses for student
+    /// screen thumbnails, so the GUI only re-uploads the texture when it changes.
+    pub last_demo_frame_jpeg: Option<Vec<u8>>,
+    pub demo_frame_version: u64,
 }
 
 pub type AppState = Arc<Mutex<SharedState>>;

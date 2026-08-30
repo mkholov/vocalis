@@ -125,6 +125,10 @@ pub struct SharedState {
     /// The material currently being broadcast, if any (progress for the "now
     /// playing" bar in the Materials tab).
     pub playing: Option<PlayingMaterial>,
+    /// An active full-class screen demonstration (teacher's own screen, or a
+    /// relayed student's), if any. Mutually exclusive with itself — starting one
+    /// always stops whichever was running before.
+    pub screen_demo: Option<ScreenDemo>,
 }
 
 /// Live playback progress for the Materials tab, updated a few times a second by
@@ -138,6 +142,24 @@ pub struct PlayingMaterial {
     /// and the natural end of the clip can tell the same set of students it ended
     /// (`ServerToClient::MaterialStopped`), regardless of the selection changing
     /// in the meantime.
+    pub targets: Vec<StudentId>,
+}
+
+/// Whose screen a demo is currently showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenDemoSource {
+    Teacher,
+    Student(StudentId),
+}
+
+/// An active full-class screen demonstration.
+pub struct ScreenDemo {
+    pub source: ScreenDemoSource,
+    pub presenter_name: String,
+    /// The audience — everyone it was announced to (`StartScreenDemo`), so the
+    /// same set can be told it ended regardless of the selection changing later.
+    /// For a student demo this is deliberately "everyone but the presenter", not
+    /// `action_targets()` — showing someone's screen to themselves makes no sense.
     pub targets: Vec<StudentId>,
 }
 
@@ -171,6 +193,7 @@ impl SharedState {
             history,
             materials,
             playing: None,
+            screen_demo: None,
             next_seat: 1,
             lesson_started_at: Instant::now(),
         }

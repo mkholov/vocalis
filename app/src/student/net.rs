@@ -99,7 +99,7 @@ pub async fn connect_to_teacher(
     }
     info!("connected to teacher '{teacher_name}'");
 
-    let _screen_task = AbortOnDrop(tokio::spawn(super::screen::run_screen_capture(tx)));
+    let _screen_task = AbortOnDrop(tokio::spawn(super::screen::run_screen_capture(state.clone(), tx)));
 
     let _writer_task = AbortOnDrop(tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
@@ -165,6 +165,25 @@ pub async fn connect_to_teacher(
                     }
                 }
             }
+            Ok(ServerToClient::StartScreenDemo { presenter }) => {
+                let mut guard = state.lock().unwrap();
+                guard.demo_presenter = Some(presenter);
+                guard.last_demo_frame_jpeg = None;
+                guard.demo_frame_version = 0;
+            }
+            Ok(ServerToClient::StopScreenDemo) => {
+                let mut guard = state.lock().unwrap();
+                guard.demo_presenter = None;
+                guard.last_demo_frame_jpeg = None;
+            }
+            Ok(ServerToClient::ScreenDemoFrame { jpeg }) => {
+                let mut guard = state.lock().unwrap();
+                guard.last_demo_frame_jpeg = Some(jpeg);
+                guard.demo_frame_version += 1;
+            }
+            Ok(ServerToClient::SetScreenCaptureBoost(boosted)) => {
+                state.lock().unwrap().screen_boosted = boosted;
+            }
             Ok(ServerToClient::ChatMessage { from, text }) => {
                 state.lock().unwrap().chat_log.push(ChatEntry { from, text });
             }
@@ -207,6 +226,9 @@ pub async fn connect_to_teacher(
     guard.material_playing = false;
     guard.reference_capture = None;
     guard.reference = None;
+    guard.screen_boosted = false;
+    guard.demo_presenter = None;
+    guard.last_demo_frame_jpeg = None;
     info!("disconnected from teacher '{teacher_name}'");
     Ok(())
 }
