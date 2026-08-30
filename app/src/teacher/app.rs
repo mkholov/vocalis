@@ -160,6 +160,10 @@ pub struct TeacherApp {
     /// Inline rename in progress on the roster list (row id, buffer) — mirrors
     /// `score_edit`'s pattern.
     roster_edit: Option<(i64, String)>,
+    /// Display name of the student whose cross-lesson history card is open, if
+    /// any — a drill-down reachable from both the roster and stats tabs, so it's
+    /// tracked independently of `tab` rather than being one itself.
+    history_card: Option<String>,
 }
 
 impl TeacherApp {
@@ -183,6 +187,7 @@ impl TeacherApp {
             assignment_draft: AssignmentDraft::default(),
             roster_input: String::new(),
             roster_edit: None,
+            history_card: None,
         }
     }
 
@@ -867,7 +872,9 @@ impl eframe::App for TeacherApp {
 
         self.top_bar(ctx);
 
-        if self.tab == Tab::Stats {
+        if let Some(name) = self.history_card.clone() {
+            self.history_card_view(ctx, &name);
+        } else if self.tab == Tab::Stats {
             self.stats_tab(ctx);
         } else if self.tab == Tab::Materials {
             self.materials_tab(ctx);
@@ -1494,7 +1501,13 @@ impl TeacherApp {
 
                     for (seat, id, name, presence, done, assignments, score) in rows {
                         ui.label(format!("#{seat}"));
-                        ui.label(name);
+                        if ui
+                            .add(egui::Button::new(&name).frame(false))
+                            .on_hover_text("Открыть историю по урокам")
+                            .clicked()
+                        {
+                            self.history_card = Some(name.clone());
+                        }
                         let (label, color) = presence_label_color(presence);
                         ui.colored_label(color, label);
                         let total = assignments.len();
@@ -1801,7 +1814,13 @@ impl TeacherApp {
                                 self.save_roster_rename();
                             }
                         } else {
-                            ui.label(name);
+                            if ui
+                                .add(egui::Button::new(name).frame(false))
+                                .on_hover_text("Открыть историю по урокам")
+                                .clicked()
+                            {
+                                self.history_card = Some(name.clone());
+                            }
                             if ui.small_button("✏️").on_hover_text("Переименовать").clicked() {
                                 self.roster_edit = Some((*id, name.clone()));
                             }
@@ -1817,6 +1836,85 @@ impl TeacherApp {
             }
         });
     }
+
+    /// Cross-lesson history for one student, matched by normalized name (the same
+    /// comparison the roster check uses) — reachable from a click on a name in
+    /// either the roster or stats tab. Simple time-ordered table, no charts.
+    fn history_card_view(&mut self, ctx: &egui::Context, name: &str) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("← Назад").clicked() {
+                    self.history_card = None;
+                }
+                ui.heading(format!("История: {name}"));
+            });
+            ui.add_space(10.0);
+
+            let normalized = db::normalize_name(name);
+            let history = {
+                let guard = self.state.lock().unwrap();
+                db::student_history(&guard.db, &normalized).unwrap_or_default()
+            };
+
+            if history.is_empty() {
+                ui.colored_label(theme::MUTED, "Данных пока нет — ученик ещё не участвовал в уроках под этим именем.");
+                return;
+            }
+
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::Grid::new("history_table").num_columns(4).striped(true).min_col_width(100.0).show(ui, |ui| {
+                    ui.colored_label(theme::MUTED, "ДАТА");
+                    ui.colored_label(theme::MUTED, "КЛАСС");
+                    ui.colored_label(theme::MUTED, "ОЦЕНКА");
+                    ui.colored_label(theme::MUTED, "ТЕСТЫ");
+                    ui.end_row();
+
+                    for entry in &history {
+                        ui.label(format_epoch_date(entry.started_at));
+                        ui.label(&entry.class_name);
+                        ui.label(entry.score.map(|v| format!("{v}%")).unwrap_or_else(|| "—".to_string()));
+                        if entry.test_results.is_empty() {
+                            ui.colored_label(theme::MUTED, "—");
+                        } else {
+                            ui.vertical(|ui| {
+                                for tr in &entry.test_results {
+                                    ui.label(format!("{}: {}/{}", tr.title, tr.correct, tr.total));
+                                }
+                            });
+                        }
+                        ui.end_row();
+                    }
+                });
+            });
+        });
+    }
+}
+
+/// Formats a Unix timestamp as `DD.MM.YYYY HH:MM` with no timezone/date library —
+/// this app avoids adding one anywhere, so this is the proleptic Gregorian
+/// calendar conversion by hand (Howard Hinnant's well-known `civil_from_days`
+/// algorithm; the same integer arithmetic `chrono` and others use internally).
+fn format_epoch_date(epoch_secs: i64) -> String {
+    fn civil_from_days(z: i64) -> (i64, u32, u32) {
+        let z = z + 719468;
+        let era = if z >= 0 { z } else { z - 146096 } / 146097;
+        let doe = (z - era * 146097) as u64; // [0, 146096]
+        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+        let y = yoe as i64 + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+        let mp = (5 * doy + 2) / 153; // [0, 11]
+        let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+        let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+        let y = if m <= 2 { y + 1 } else { y };
+        (y, m, d)
+    }
+
+    let days = epoch_secs.div_euclid(86400);
+    let secs_of_day = epoch_secs.rem_euclid(86400);
+    let (y, m, d) = civil_from_days(days);
+    let h = secs_of_day / 3600;
+    let mi = (secs_of_day % 3600) / 60;
+    format!("{d:02}.{m:02}.{y} {h:02}:{mi:02}")
 }
 
 fn stat_tile(ui: &mut egui::Ui, label: &str, value: &str) {

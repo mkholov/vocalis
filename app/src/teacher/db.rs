@@ -398,3 +398,64 @@ pub fn delete_roster_student(conn: &Connection, roster_row_id: i64) -> Result<()
     conn.execute("DELETE FROM roster WHERE id = ?1", params![roster_row_id])?;
     Ok(())
 }
+
+/// One test result within a `LessonHistoryEntry`.
+pub struct TestResultEntry {
+    pub title: String,
+    pub correct: u32,
+    pub total: u32,
+}
+
+/// One lesson a student (by normalized name) was present for — the row's mere
+/// existence in the `students` table already *is* the attendance record, same as
+/// everywhere else in this app; there's no separate present/absent flag.
+pub struct LessonHistoryEntry {
+    pub class_name: String,
+    pub started_at: i64,
+    pub score: Option<u32>,
+    pub test_results: Vec<TestResultEntry>,
+}
+
+/// Every lesson a student attended, most recent first, matched across *all*
+/// lessons (not just the current class) by normalized name — the only identity a
+/// student has in this schema, since there's no login/account system. Filtering
+/// happens in Rust rather than SQL (`WHERE LOWER(name) = ...`) because SQLite's
+/// built-in `LOWER()` only folds ASCII and would silently miss Cyrillic names —
+/// `normalize_name` (the same function the roster check uses) handles that
+/// correctly. Fine to just scan the whole `students` table for this: it's a small
+/// local classroom database, not something that needs a name index.
+pub fn student_history(conn: &Connection, normalized_name: &str) -> Result<Vec<LessonHistoryEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT s.id, s.name, s.score, l.class_name, l.started_at
+         FROM students s
+         JOIN lessons l ON l.id = s.lesson_id
+         ORDER BY l.started_at DESC",
+    )?;
+    let rows: Vec<(i64, String, Option<u32>, String, i64)> = stmt
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut entries = Vec::new();
+    for (student_row_id, name, score, class_name, started_at) in rows {
+        if normalize_name(&name) != normalized_name {
+            continue;
+        }
+        let mut tr_stmt = conn.prepare(
+            "SELECT a.title, tr.correct, tr.total
+             FROM test_results tr
+             JOIN assignments a ON a.id = tr.assignment_id
+             WHERE a.student_id = ?1
+             ORDER BY tr.submitted_at",
+        )?;
+        let test_results = tr_stmt
+            .query_map(params![student_row_id], |row| {
+                Ok(TestResultEntry { title: row.get(0)?, correct: row.get(1)?, total: row.get(2)? })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        entries.push(LessonHistoryEntry { class_name, started_at, score, test_results });
+    }
+    Ok(entries)
+}
