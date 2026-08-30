@@ -34,6 +34,20 @@ pub struct AssignmentInstance {
     pub test_score: Option<(u32, u32)>,
 }
 
+/// Whether a connecting student's name matched the class roster — a soft,
+/// record-keeping check (see `RosterEntry`'s doc comment), never a connection
+/// gate: everyone gets in regardless, this only decides what the teacher sees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RosterStatus {
+    /// Name matched (or there's no roster set for this class at all — nothing to
+    /// flag either way).
+    Matched,
+    /// Didn't match anyone on the roster; the teacher hasn't acknowledged it yet.
+    UnrecognizedPending,
+    /// Didn't match, but the teacher clicked "Принять как гостя".
+    AcceptedGuest,
+}
+
 /// A student's live status, in the priority order the grid should show it in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Presence {
@@ -74,6 +88,7 @@ pub struct Student {
     pub score: Option<u32>,
     /// Row id in the `students` table, if the DB write succeeded when they connected.
     pub db_id: Option<i64>,
+    pub roster_status: RosterStatus,
 }
 
 impl Student {
@@ -140,6 +155,9 @@ pub struct SharedState {
     /// Authored assignment templates (Test/Listening/Reading) — the "Задания" tab's
     /// library, loaded once at startup and appended to as the teacher creates more.
     pub assignment_templates: Vec<db::AssignmentTemplate>,
+    /// The pre-set class roster (see the `db::roster` table) — loaded for the
+    /// class name the app started with; edited from the "Список класса" tab.
+    pub roster: Vec<db::RosterEntry>,
 }
 
 /// Live playback progress for the Materials tab, updated a few times a second by
@@ -186,6 +204,7 @@ impl SharedState {
         history: db::HistorySummary,
         materials: Vec<db::MaterialRow>,
         assignment_templates: Vec<db::AssignmentTemplate>,
+        roster: Vec<db::RosterEntry>,
     ) -> Self {
         Self {
             students: HashMap::new(),
@@ -207,6 +226,7 @@ impl SharedState {
             playing: None,
             screen_demo: None,
             assignment_templates,
+            roster,
             next_seat: 1,
             lesson_started_at: Instant::now(),
         }
@@ -217,6 +237,21 @@ impl SharedState {
         self.next_seat += 1;
         self.ever_connected_seats.insert(seat);
         seat
+    }
+
+    /// Roster names with nobody currently connected under a matching name — used
+    /// to pre-fill empty seats with "who's expected here" in the grid. Order
+    /// follows the roster list itself (insertion order); the grid then just hands
+    /// out these names to empty seats one at a time as it renders them, so there's
+    /// no claim of a *specific* seat belonging to a *specific* roster name.
+    pub fn waiting_roster_names(&self) -> Vec<String> {
+        let connected: std::collections::HashSet<String> =
+            self.students.values().map(|s| db::normalize_name(&s.name)).collect();
+        self.roster
+            .iter()
+            .filter(|r| !connected.contains(&db::normalize_name(&r.full_name)))
+            .map(|r| r.full_name.clone())
+            .collect()
     }
 
     pub fn student_addrs(&self) -> Vec<SocketAddr> {

@@ -77,6 +77,12 @@ pub fn open() -> Result<Connection> {
             position INTEGER NOT NULL,
             text TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS roster (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            class_name TEXT NOT NULL,
+            full_name TEXT NOT NULL,
+            added_at INTEGER NOT NULL
+        );
         ",
     )
     .context("creating Vocalis tables")?;
@@ -346,4 +352,49 @@ pub fn list_assignment_templates(conn: &Connection) -> Result<Vec<AssignmentTemp
     }
 
     Ok(templates)
+}
+
+/// One student on the pre-set class roster (see `roster` table doc comment above)
+/// — just a name to check connecting students against, not an account.
+pub struct RosterEntry {
+    pub id: i64,
+    pub full_name: String,
+}
+
+/// Case/whitespace-insensitive comparison key — `"  Иванов Иван "` and
+/// `"иванов иван"` are the same student for roster-matching purposes.
+pub fn normalize_name(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
+pub fn insert_roster_student(conn: &Connection, class_name: &str, full_name: &str) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO roster (class_name, full_name, added_at) VALUES (?1, ?2, ?3)",
+        params![class_name, full_name, now_epoch()],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn list_roster(conn: &Connection, class_name: &str) -> Result<Vec<RosterEntry>> {
+    let mut stmt =
+        conn.prepare("SELECT id, full_name FROM roster WHERE class_name = ?1 ORDER BY added_at")?;
+    let rows = stmt
+        .query_map(params![class_name], |row| {
+            Ok(RosterEntry { id: row.get(0)?, full_name: row.get(1)? })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+pub fn rename_roster_student(conn: &Connection, roster_row_id: i64, full_name: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE roster SET full_name = ?1 WHERE id = ?2",
+        params![full_name, roster_row_id],
+    )?;
+    Ok(())
+}
+
+pub fn delete_roster_student(conn: &Connection, roster_row_id: i64) -> Result<()> {
+    conn.execute("DELETE FROM roster WHERE id = ?1", params![roster_row_id])?;
+    Ok(())
 }

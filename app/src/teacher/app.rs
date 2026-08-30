@@ -61,6 +61,7 @@ enum Tab {
     Stats,
     Materials,
     Assignments,
+    Roster,
 }
 
 /// Which kind of assignment the "Задания" tab's editor is currently authoring.
@@ -154,6 +155,11 @@ pub struct TeacherApp {
     focus: bool,
     score_edit: Option<(StudentId, String)>,
     assignment_draft: AssignmentDraft,
+    /// New-student-name field on the "Список класса" tab.
+    roster_input: String,
+    /// Inline rename in progress on the roster list (row id, buffer) — mirrors
+    /// `score_edit`'s pattern.
+    roster_edit: Option<(i64, String)>,
 }
 
 impl TeacherApp {
@@ -175,6 +181,8 @@ impl TeacherApp {
             focus: false,
             score_edit: None,
             assignment_draft: AssignmentDraft::default(),
+            roster_input: String::new(),
+            roster_edit: None,
         }
     }
 
@@ -678,6 +686,57 @@ impl TeacherApp {
         }
     }
 
+    fn add_roster_student(&mut self) {
+        let name = self.roster_input.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let mut guard = self.state.lock().unwrap();
+        let class_name = guard.class_name.clone();
+        match db::insert_roster_student(&guard.db, &class_name, &name) {
+            Ok(id) => {
+                guard.roster.push(db::RosterEntry { id, full_name: name });
+                drop(guard);
+                self.roster_input.clear();
+            }
+            Err(e) => tracing::warn!("failed to save roster student '{name}': {e:#}"),
+        }
+    }
+
+    fn save_roster_rename(&mut self) {
+        let Some((id, name)) = self.roster_edit.take() else { return };
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let mut guard = self.state.lock().unwrap();
+        if let Err(e) = db::rename_roster_student(&guard.db, id, &name) {
+            tracing::warn!("failed to rename roster student: {e:#}");
+            return;
+        }
+        if let Some(entry) = guard.roster.iter_mut().find(|r| r.id == id) {
+            entry.full_name = name;
+        }
+    }
+
+    fn delete_roster_student(&mut self, id: i64) {
+        let mut guard = self.state.lock().unwrap();
+        if let Err(e) = db::delete_roster_student(&guard.db, id) {
+            tracing::warn!("failed to delete roster student: {e:#}");
+            return;
+        }
+        guard.roster.retain(|r| r.id != id);
+    }
+
+    /// Dismisses the "not on the roster" warning for `id` — purely acknowledges
+    /// it for the teacher's own bookkeeping; the connection was never at risk.
+    fn accept_as_guest(&mut self, id: StudentId) {
+        let mut guard = self.state.lock().unwrap();
+        if let Some(s) = guard.students.get_mut(&id) {
+            s.roster_status = state::RosterStatus::AcceptedGuest;
+        }
+    }
+
     fn send_chat(&mut self) {
         let text = self.chat_input.trim().to_string();
         if text.is_empty() {
@@ -814,6 +873,8 @@ impl eframe::App for TeacherApp {
             self.materials_tab(ctx);
         } else if self.tab == Tab::Assignments {
             self.assignments_tab(ctx);
+        } else if self.tab == Tab::Roster {
+            self.roster_tab(ctx);
         } else if self.focus {
             self.focus_view(ctx);
         } else {
@@ -879,6 +940,7 @@ impl TeacherApp {
                 ui.selectable_value(&mut self.tab, Tab::Stats, "Статистика");
                 ui.selectable_value(&mut self.tab, Tab::Materials, "Материалы");
                 ui.selectable_value(&mut self.tab, Tab::Assignments, "Задания");
+                ui.selectable_value(&mut self.tab, Tab::Roster, "Список класса");
 
                 ui.add_space(12.0);
                 let locked = self.state.lock().unwrap().mics_locked;
@@ -929,7 +991,7 @@ impl TeacherApp {
         };
 
         if let Some(id) = selected_one {
-            let (name, locked, test_mode, test_violations, listening, talking, demoing_this_student) = {
+            let (name, locked, test_mode, test_violations, listening, talking, demoing_this_student, roster_status) = {
                 let guard = self.state.lock().unwrap();
                 let demoing_this_student = matches!(
                     guard.screen_demo.as_ref().map(|d| d.source),
@@ -944,11 +1006,22 @@ impl TeacherApp {
                         guard.listening_to == Some(id),
                         guard.talking_to == Some(id),
                         demoing_this_student,
+                        s.roster_status,
                     ),
-                    None => (String::new(), false, false, 0, false, false, false),
+                    None => (String::new(), false, false, 0, false, false, false, state::RosterStatus::Matched),
                 }
             };
             ui.strong(&name);
+            if roster_status == state::RosterStatus::UnrecognizedPending {
+                ui.horizontal(|ui| {
+                    ui.colored_label(theme::WARN, "⚠ Не найден(а) в списке класса");
+                    if ui.button("Принять как гостя").clicked() {
+                        self.accept_as_guest(id);
+                    }
+                });
+            } else if roster_status == state::RosterStatus::AcceptedGuest {
+                ui.colored_label(theme::MUTED, "Гость (принят вручную)");
+            }
             ui.horizontal(|ui| {
                 let btn_label = if locked { "Разблокировать" } else { "Заблокировать" };
                 if ui.button(btn_label).clicked() {
@@ -1108,11 +1181,12 @@ impl TeacherApp {
         });
         ui.add_space(10.0);
 
-        let (class_size, seats): (usize, HashMap<usize, StudentId>) = {
+        let (class_size, seats, mut waiting_names): (usize, HashMap<usize, StudentId>, std::collections::VecDeque<String>) = {
             let guard = self.state.lock().unwrap();
             (
                 guard.class_size,
                 guard.students.iter().map(|(id, s)| (s.seat, *id)).collect(),
+                guard.waiting_roster_names().into(),
             )
         };
 
@@ -1151,7 +1225,8 @@ impl TeacherApp {
                 .show(ui, |ui| {
                     for seat in 1..=class_size {
                         let occupant = seats.get(&seat).copied();
-                        let response = self.seat_card(ui, seat, occupant, card_width, card_h);
+                        let waiting_name = if occupant.is_none() { waiting_names.pop_front() } else { None };
+                        let response = self.seat_card(ui, seat, occupant, waiting_name, card_width, card_h);
                         if let Some(id) = occupant {
                             if response.clicked() {
                                 click_action = Some(id);
@@ -1192,6 +1267,7 @@ impl TeacherApp {
         ui: &mut egui::Ui,
         seat: usize,
         occupant: Option<StudentId>,
+        waiting_name: Option<String>,
         width: f32,
         height: f32,
     ) -> egui::Response {
@@ -1216,12 +1292,19 @@ impl TeacherApp {
                             ui.colored_label(theme::MUTED, format!("#{seat}"));
                         });
                         ui.centered_and_justified(|ui| {
-                            let (label, color) = presence_label_color(Presence::Empty);
-                            ui.colored_label(color, label);
+                            if let Some(name) = &waiting_name {
+                                ui.vertical_centered(|ui| {
+                                    ui.colored_label(theme::MUTED, name);
+                                    ui.colored_label(theme::MUTED, "ожидание");
+                                });
+                            } else {
+                                let (label, color) = presence_label_color(Presence::Empty);
+                                ui.colored_label(color, label);
+                            }
                         });
                     }
                     Some(id) => {
-                        let (name, group, needs_help, presence, level_active, mic_level, test_badge) = {
+                        let (name, group, needs_help, presence, level_active, mic_level, test_badge, unrecognized) = {
                             let guard = self.state.lock().unwrap();
                             match guard.students.get(&id) {
                                 Some(s) => {
@@ -1233,7 +1316,8 @@ impl TeacherApp {
                                     // sit there looking like a frozen VU meter.
                                     let mic_level = if level_active { s.last_level } else { 0 };
                                     let test_badge = s.test_mode.then_some(s.test_violations);
-                                    (s.name.clone(), s.group.is_some(), s.needs_help, presence, level_active, mic_level, test_badge)
+                                    let unrecognized = s.roster_status == state::RosterStatus::UnrecognizedPending;
+                                    (s.name.clone(), s.group.is_some(), s.needs_help, presence, level_active, mic_level, test_badge, unrecognized)
                                 }
                                 None => return,
                             }
@@ -1242,6 +1326,9 @@ impl TeacherApp {
                             ui.colored_label(theme::MUTED, format!("#{seat}"));
                             if group {
                                 ui.colored_label(theme::ACCENT, "🔗");
+                            }
+                            if unrecognized {
+                                ui.colored_label(theme::WARN, "❓").on_hover_text("Не найден(а) в списке класса");
                             }
                             if let Some(violations) = test_badge {
                                 let color = if violations > 0 { theme::DANGER } else { theme::WARN };
@@ -1674,6 +1761,62 @@ impl TeacherApp {
             draft.questions.push(DraftQuestion::default());
         }
     }
+
+    fn roster_tab(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("Список класса");
+            ui.colored_label(
+                theme::MUTED,
+                "Заранее заданный список ФИО — просто для порядка и статистики посещаемости: подключение \
+                 с любым другим именем всё равно проходит (по PIN-коду), но учитель увидит мягкое предупреждение.",
+            );
+            ui.add_space(10.0);
+
+            ui.horizontal(|ui| {
+                let resp = ui.add(egui::TextEdit::singleline(&mut self.roster_input).desired_width(300.0).hint_text("Фамилия Имя"));
+                let enter_pressed = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if ui.button("➕ Добавить").clicked() || enter_pressed {
+                    self.add_roster_student();
+                }
+            });
+            ui.add_space(14.0);
+
+            let roster: Vec<(i64, String)> = {
+                let guard = self.state.lock().unwrap();
+                guard.roster.iter().map(|r| (r.id, r.full_name.clone())).collect()
+            };
+            if roster.is_empty() {
+                ui.colored_label(theme::MUTED, "Список пока пуст.");
+            }
+
+            let mut to_delete = None;
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for (id, name) in &roster {
+                    ui.horizontal(|ui| {
+                        if self.roster_edit.as_ref().map(|(eid, _)| eid) == Some(id) {
+                            let buf = &mut self.roster_edit.as_mut().unwrap().1;
+                            let resp = ui.add(egui::TextEdit::singleline(buf).desired_width(280.0));
+                            let enter_pressed = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            if resp.lost_focus() || enter_pressed {
+                                self.save_roster_rename();
+                            }
+                        } else {
+                            ui.label(name);
+                            if ui.small_button("✏️").on_hover_text("Переименовать").clicked() {
+                                self.roster_edit = Some((*id, name.clone()));
+                            }
+                        }
+                        if ui.small_button("🗑").on_hover_text("Удалить").clicked() {
+                            to_delete = Some(*id);
+                        }
+                    });
+                }
+            });
+            if let Some(id) = to_delete {
+                self.delete_roster_student(id);
+            }
+        });
+    }
 }
 
 fn stat_tile(ui: &mut egui::Ui, label: &str, value: &str) {
@@ -1707,6 +1850,7 @@ impl TeacherApp {
         let lesson_row_id = db::insert_lesson(&db_conn, &class_name).expect("failed to record lesson start");
         let materials = db::list_materials(&db_conn).unwrap_or_default();
         let assignment_templates = db::list_assignment_templates(&db_conn).unwrap_or_default();
+        let roster = db::list_roster(&db_conn, &class_name).unwrap_or_default();
 
         let state: AppState = Arc::new(Mutex::new(SharedState::new(
             class_name,
@@ -1717,6 +1861,7 @@ impl TeacherApp {
             history,
             materials,
             assignment_templates,
+            roster,
         )));
         let teacher_name: Arc<str> = Arc::from(teacher_name);
 

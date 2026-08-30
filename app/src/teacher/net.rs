@@ -72,6 +72,25 @@ async fn handle_student(
             let _ = tx.send(ServerToClient::SetMicLocked(true));
         }
         let db_id = db::insert_student(&guard.db, guard.lesson_row_id, &name, seat).ok();
+
+        // Roster check is soft record-keeping, never a connection gate (that's
+        // what the PIN is for) — an empty roster (nothing configured yet) means
+        // there's nothing to flag against, so it's treated as a match too.
+        let normalized = db::normalize_name(&name);
+        let roster_status = if guard.roster.is_empty()
+            || guard.roster.iter().any(|r| db::normalize_name(&r.full_name) == normalized)
+        {
+            state::RosterStatus::Matched
+        } else {
+            state::RosterStatus::UnrecognizedPending
+        };
+        if roster_status == state::RosterStatus::UnrecognizedPending {
+            guard.chat_log.push(ChatEntry {
+                from: "Система".to_string(),
+                text: format!("❓ {name} подключился(-ась), но не найден(а) в списке класса"),
+            });
+        }
+
         guard.students.insert(
             student_id,
             Student {
@@ -91,6 +110,7 @@ async fn handle_student(
                 assignments: Vec::new(),
                 score: None,
                 db_id,
+                roster_status,
             },
         );
     }
