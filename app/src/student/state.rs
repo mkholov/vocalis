@@ -3,7 +3,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use lingua_common::{AssignmentContent, AssignmentId, AssignmentKind, ClientToServer};
+use lingua_common::{AssignmentContent, AssignmentId, AssignmentKind, ClientToServer, SessionKey};
 use tokio::sync::mpsc;
 
 pub struct DiscoveredTeacher {
@@ -63,8 +63,22 @@ pub struct SharedState {
     pub test_mode_active: bool,
     pub peer_addrs: Vec<SocketAddr>,
     pub peer_names: Vec<String>,
+    /// Each current group peer's own session key, derived from their relayed salt
+    /// (`GroupPeer::salt`) plus `pin` — see `net::connect_to_teacher`'s handling of
+    /// `JoinGroup`. Keyed by the same address `peer_addrs` uses, so a received
+    /// packet's source address looks its sender's key up here directly.
+    pub peer_keys: HashMap<SocketAddr, SessionKey>,
     pub uploading_to_teacher: bool,
     pub to_server: Option<mpsc::UnboundedSender<ClientToServer>>,
+    /// The PIN this student connected with, kept around (not just used once for
+    /// the Hello handshake) because deriving a group peer's key later requires it
+    /// again — see `peer_keys`.
+    pub pin: String,
+    /// This connection's session key, derived from `(pin, salt)` once the teacher
+    /// accepts the Hello handshake (see `net::connect_to_teacher`). `None` before
+    /// that point and after a disconnect — every encrypted audio receiver treats a
+    /// missing key as "nothing legitimate to decrypt yet" and just drops packets.
+    pub session_key: Option<SessionKey>,
     pub chat_log: Vec<ChatEntry>,
     pub received_files: Vec<ReceivedFile>,
     pub last_error: Option<String>,

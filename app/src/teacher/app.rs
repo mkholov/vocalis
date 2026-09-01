@@ -495,8 +495,11 @@ impl TeacherApp {
             self.stop_intercom(prev);
         }
 
-        let target_ip = self.state.lock().unwrap().students.get(&id).map(|s| s.ip);
-        let Some(ip) = target_ip else { return };
+        let target = {
+            let guard = self.state.lock().unwrap();
+            guard.students.get(&id).map(|s| (s.ip, s.session_key))
+        };
+        let Some((ip, key)) = target else { return };
 
         self.state.lock().unwrap().start_listening(id);
 
@@ -506,7 +509,7 @@ impl TeacherApp {
                 let target = std::net::SocketAddr::new(ip, lingua_common::TEACHER_INTERCOM_PORT);
                 let send_task = self
                     ._rt
-                    .spawn(async move { let _ = mic::run_intercom_send(rx, sample_rate, target).await; });
+                    .spawn(async move { let _ = mic::run_intercom_send(rx, sample_rate, target, key).await; });
                 self.intercom = Some(MicHandle {
                     _capture: capture,
                     _broadcast_task: send_task,
@@ -2223,9 +2226,10 @@ impl TeacherApp {
         let listen_queue = listen::new_listen_queue();
         let listen_output_rate = listen::default_output_sample_rate();
         {
+            let state = state.clone();
             let listen_queue = listen_queue.clone();
             rt.spawn(async move {
-                if let Err(e) = listen::run_listen_receiver(listen_queue, listen_output_rate).await {
+                if let Err(e) = listen::run_listen_receiver(state, listen_queue, listen_output_rate).await {
                     tracing::warn!("listen-in receiver stopped: {e:#}");
                 }
             });

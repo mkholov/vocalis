@@ -5,10 +5,12 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use lingua_common::{
-    new_decoder, split_audio_packet, Resampler, SequenceTracker, OPUS_SAMPLE_RATE,
+    crypto, new_decoder, split_audio_packet, Resampler, SequenceTracker, OPUS_SAMPLE_RATE,
     TEACHER_LISTEN_PORT,
 };
 use tokio::net::UdpSocket;
+
+use super::state::AppState;
 
 pub type ListenQueue = Arc<Mutex<VecDeque<i16>>>;
 
@@ -111,8 +113,9 @@ fn run_output_stream(queue: ListenQueue) -> Result<()> {
 /// Receives whichever student is currently uploading its mic for real-time listen-in,
 /// conceals dropped packets, resamples to the speaker's native rate, and plays it
 /// back. Only one student is ever asked to upload at a time, so a single
-/// decoder/tracker/resampler is enough.
-pub async fn run_listen_receiver(queue: ListenQueue, output_rate: u32) -> Result<()> {
+/// decoder/tracker/resampler is enough — and also which student's session key to
+/// decrypt incoming packets with: whoever `state.listening_to` currently names.
+pub async fn run_listen_receiver(state: AppState, queue: ListenQueue, output_rate: u32) -> Result<()> {
     let socket = UdpSocket::bind(("0.0.0.0", TEACHER_LISTEN_PORT)).await?;
     let mut decoder = new_decoder()?;
     let mut tracker = SequenceTracker::new();
@@ -120,7 +123,16 @@ pub async fn run_listen_receiver(queue: ListenQueue, output_rate: u32) -> Result
     let mut buf = [0u8; 4096];
     loop {
         let (len, _from) = socket.recv_from(&mut buf).await?;
-        let Some((seq, payload)) = split_audio_packet(&buf[..len]) else {
+        let Some(key) = ({
+            let guard = state.lock().unwrap();
+            guard.listening_to.and_then(|id| guard.students.get(&id)).map(|s| s.session_key)
+        }) else {
+            continue;
+        };
+        let Ok(plaintext) = crypto::decrypt(&key, &buf[..len]) else {
+            continue;
+        };
+        let Some((seq, payload)) = split_audio_packet(&plaintext) else {
             continue;
         };
         let samples = tracker.decode(&mut decoder, seq, payload);

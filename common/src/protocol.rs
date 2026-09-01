@@ -35,6 +35,13 @@ pub struct DiscoveryAnnounce {
 pub struct GroupPeer {
     pub addr: SocketAddr,
     pub name: String,
+    /// This peer's own connection salt (see `ServerToClient::Welcome`), relayed so
+    /// the receiving student can derive the peer's session key locally — peer-to-
+    /// peer audio never goes through the teacher, so there's no other way for two
+    /// students to end up sharing a key. Safe to send in the clear (like any KDF
+    /// salt): security comes from the PIN, which every legitimate group member
+    /// already knows, not from keeping this secret.
+    pub salt: crate::Salt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,6 +133,13 @@ pub enum ServerToClient {
     Welcome {
         student_id: StudentId,
         teacher_name: String,
+        /// This connection's freshly generated salt — sent in the clear (it isn't
+        /// secret; the PIN is) since this is the last plaintext message either
+        /// side ever sends. Both sides derive the shared session key from
+        /// `(pin, salt)` right after, and every message from here on — this
+        /// control channel and every UDP audio port tied to this student — is
+        /// encrypted under that key.
+        salt: crate::Salt,
     },
     /// Sent instead of `Welcome` when `Hello.pin` didn't match the lesson PIN; the
     /// control connection is closed by the teacher right after.

@@ -70,8 +70,11 @@ impl StudentApp {
         guard.teacher_addr = None;
         guard.connecting = false;
         guard.to_server = None;
+        guard.session_key = None;
+        guard.pin.clear();
         guard.peer_addrs.clear();
         guard.peer_names.clear();
+        guard.peer_keys.clear();
         guard.uploading_to_teacher = false;
         guard.locked_message = None;
         guard.test_mode_active = false;
@@ -711,9 +714,10 @@ impl StudentApp {
             });
         }
         {
+            let state = state.clone();
             let mix = mix.clone();
             rt.spawn(async move {
-                if let Err(e) = audio::run_intercom_receiver(mix, output_rate).await {
+                if let Err(e) = audio::run_intercom_receiver(state, mix, output_rate).await {
                     tracing::warn!("intercom receiver stopped: {e:#}");
                 }
             });

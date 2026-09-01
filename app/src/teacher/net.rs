@@ -2,7 +2,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use lingua_common::{read_message, write_message, ClientToServer, ServerToClient, CONTROL_PORT};
+use lingua_common::{
+    crypto, read_message, read_message_encrypted, write_message, write_message_encrypted,
+    ClientToServer, ServerToClient, CONTROL_PORT,
+};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -60,11 +63,19 @@ async fn handle_student(
     let student_id = Uuid::new_v4();
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerToClient>();
 
+    // Last plaintext message either side sends. From here on every control frame
+    // (and every UDP audio packet tied to this student) is encrypted under
+    // `session_key`, which both sides can now derive independently from `pin` +
+    // this freshly generated salt — see `crypto`'s module doc comment.
+    let salt = crypto::generate_salt();
+    let session_key = crypto::derive_key(&pin, &salt);
+
     write_message(
         &mut write_half,
         &ServerToClient::Welcome {
             student_id,
             teacher_name: teacher_name.to_string(),
+            salt,
         },
     )
     .await?;
@@ -115,6 +126,8 @@ async fn handle_student(
                 score: None,
                 db_id,
                 roster_status,
+                salt,
+                session_key,
             },
         );
         let _ = db::insert_connection_log(&guard.db, guard.lesson_row_id, &name, &ip.to_string(), "connected");
@@ -123,14 +136,14 @@ async fn handle_student(
 
     let writer_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
-            if write_message(&mut write_half, &msg).await.is_err() {
+            if write_message_encrypted(&mut write_half, &msg, &session_key).await.is_err() {
                 break;
             }
         }
     });
 
     loop {
-        match read_message::<ClientToServer, _>(&mut read_half).await {
+        match read_message_encrypted::<ClientToServer, _>(&mut read_half, &session_key).await {
             Ok(ClientToServer::ScreenFrame { jpeg }) => {
                 let mut guard = state.lock().unwrap();
                 // If this student is the one currently being demoed to the class,

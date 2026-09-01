@@ -3,7 +3,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use lingua_common::{AssignmentId, AssignmentKind, ServerToClient, StudentId};
+use lingua_common::{AssignmentId, AssignmentKind, Salt, ServerToClient, SessionKey, StudentId};
 use rusqlite::Connection;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -89,6 +89,17 @@ pub struct Student {
     /// Row id in the `students` table, if the DB write succeeded when they connected.
     pub db_id: Option<i64>,
     pub roster_status: RosterStatus,
+    /// This connection's salt, generated fresh when the PIN check passed (see
+    /// `net::handle_student`) — kept around (not just the derived `session_key`)
+    /// so it can be relayed to other students via `GroupPeer::salt` for
+    /// peer-to-peer audio, which never goes through the teacher.
+    pub salt: Salt,
+    /// Symmetric key derived from `(lesson_pin, salt)`, shared with exactly this
+    /// student. Encrypts/decrypts everything tied to them: their TCP control
+    /// frames in both directions, mic-broadcast/material/intercom packets sent to
+    /// them, and their own mic upload on `TEACHER_LISTEN_PORT` when they're the
+    /// one being listened to.
+    pub session_key: SessionKey,
 }
 
 impl Student {
@@ -262,10 +273,15 @@ impl SharedState {
             .collect()
     }
 
-    pub fn student_addrs(&self) -> Vec<SocketAddr> {
+    /// Every connected student's broadcast address paired with their own session
+    /// key — the class-wide mic broadcast and material playback aren't a single
+    /// shared stream on the wire, they're fanned out to each student's address
+    /// individually, so each copy can (and must) be encrypted separately under
+    /// that student's own key rather than one shared "class" key.
+    pub fn student_addrs_with_keys(&self) -> Vec<(SocketAddr, SessionKey)> {
         self.students
             .values()
-            .map(|s| SocketAddr::new(s.ip, lingua_common::MIC_PORT))
+            .map(|s| (SocketAddr::new(s.ip, lingua_common::MIC_PORT), s.session_key))
             .collect()
     }
 
@@ -364,6 +380,7 @@ impl SharedState {
                 .map(|s| lingua_common::GroupPeer {
                     addr: SocketAddr::new(s.ip, lingua_common::PEER_PORT),
                     name: s.name.clone(),
+                    salt: s.salt,
                 })
                 .collect();
             let _ = student

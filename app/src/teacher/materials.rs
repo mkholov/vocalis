@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use lingua_common::{
-    encode_audio_packet, new_encoder, Resampler, ServerToClient, StudentId, FRAME_SAMPLES,
-    MIC_PORT, OPUS_SAMPLE_RATE,
+    crypto, encode_audio_packet, new_encoder, Resampler, ServerToClient, SessionKey, StudentId,
+    FRAME_SAMPLES, MIC_PORT, OPUS_SAMPLE_RATE,
 };
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
@@ -108,12 +108,14 @@ pub async fn run_playback(
     native_rate: u32,
     target_ids: Vec<StudentId>,
 ) -> Result<()> {
-    let targets: Vec<SocketAddr> = {
+    // Same per-recipient encryption as the live broadcast (`mic::run_mic_broadcast`)
+    // this mirrors: each target gets their own ciphertext under their own key.
+    let targets: Vec<(SocketAddr, SessionKey)> = {
         let guard = state.lock().unwrap();
         target_ids
             .iter()
             .filter_map(|id| guard.students.get(id))
-            .map(|s| SocketAddr::new(s.ip, MIC_PORT))
+            .map(|s| (SocketAddr::new(s.ip, MIC_PORT), s.session_key))
             .collect()
     };
 
@@ -138,8 +140,9 @@ pub async fn run_playback(
         };
         let packet = encode_audio_packet(seq, &opus_buf[..n]);
         seq = seq.wrapping_add(1);
-        for addr in &targets {
-            let _ = socket.send_to(&packet, *addr).await;
+        for (addr, key) in &targets {
+            let encrypted = crypto::encrypt(key, &packet);
+            let _ = socket.send_to(&encrypted, *addr).await;
         }
 
         let elapsed_ms = (i as u64 + 1) * frame_duration.as_millis() as u64;

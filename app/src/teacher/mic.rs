@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use lingua_common::{encode_audio_packet, new_encoder, Resampler, FRAME_SAMPLES, OPUS_SAMPLE_RATE};
+use lingua_common::{crypto, encode_audio_packet, new_encoder, Resampler, SessionKey, FRAME_SAMPLES, OPUS_SAMPLE_RATE};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -116,9 +116,13 @@ pub async fn run_mic_broadcast(
             };
             let packet = encode_audio_packet(seq, &opus_buf[..n]);
             seq = seq.wrapping_add(1);
-            let addrs = state.lock().unwrap().student_addrs();
-            for addr in addrs {
-                let _ = socket.send_to(&packet, addr).await;
+            // Not one shared packet fanned out identically — each student gets
+            // their own ciphertext, encrypted under their own session key (see
+            // `state::SharedState::student_addrs_with_keys`'s doc comment).
+            let addrs_with_keys = state.lock().unwrap().student_addrs_with_keys();
+            for (addr, key) in addrs_with_keys {
+                let encrypted = crypto::encrypt(&key, &packet);
+                let _ = socket.send_to(&encrypted, addr).await;
             }
         }
     }
@@ -134,6 +138,7 @@ pub async fn run_intercom_send(
     mut rx: mpsc::UnboundedReceiver<Vec<i16>>,
     native_rate: u32,
     target: SocketAddr,
+    key: SessionKey,
 ) -> Result<()> {
     let socket = UdpSocket::bind(("0.0.0.0", 0)).await?;
     let mut resampler = Resampler::new(native_rate, OPUS_SAMPLE_RATE);
@@ -152,7 +157,8 @@ pub async fn run_intercom_send(
             };
             let packet = encode_audio_packet(seq, &opus_buf[..n]);
             seq = seq.wrapping_add(1);
-            let _ = socket.send_to(&packet, target).await;
+            let encrypted = crypto::encrypt(&key, &packet);
+            let _ = socket.send_to(&encrypted, target).await;
         }
     }
     Ok(())

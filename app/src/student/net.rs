@@ -2,7 +2,10 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use lingua_common::{read_message, write_message, ClientToServer, ServerToClient, OPUS_SAMPLE_RATE};
+use lingua_common::{
+    crypto, read_message, read_message_encrypted, write_message, write_message_encrypted,
+    ClientToServer, ServerToClient, OPUS_SAMPLE_RATE,
+};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -79,15 +82,21 @@ pub async fn connect_to_teacher(
 
     write_message(
         &mut write_half,
-        &ClientToServer::Hello { name: student_name, pin },
+        &ClientToServer::Hello { name: student_name, pin: pin.clone() },
     )
     .await?;
     let welcome: ServerToClient = read_message(&mut read_half).await?;
-    let teacher_name = match welcome {
-        ServerToClient::Welcome { teacher_name, .. } => teacher_name,
+    let (teacher_name, salt) = match welcome {
+        ServerToClient::Welcome { teacher_name, salt, .. } => (teacher_name, salt),
         ServerToClient::Rejected { reason } => anyhow::bail!(reason),
         _ => anyhow::bail!("expected Welcome as first server message"),
     };
+    // Last plaintext message either side sends — see `crypto`'s module doc
+    // comment. Both sides now independently hold the same session key, derived
+    // from the PIN we just successfully connected with and the salt the teacher
+    // just sent, so everything from here on (this control channel, and every UDP
+    // audio port) is encrypted under it.
+    let session_key = crypto::derive_key(&pin, &salt);
 
     let (tx, mut rx) = mpsc::unbounded_channel::<ClientToServer>();
     {
@@ -96,6 +105,8 @@ pub async fn connect_to_teacher(
         guard.teacher_addr = Some(addr.ip());
         guard.connecting = false;
         guard.to_server = Some(tx.clone());
+        guard.pin = pin;
+        guard.session_key = Some(session_key);
     }
     info!("connected to teacher '{teacher_name}'");
 
@@ -103,20 +114,27 @@ pub async fn connect_to_teacher(
 
     let _writer_task = AbortOnDrop(tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
-            if write_message(&mut write_half, &msg).await.is_err() {
+            if write_message_encrypted(&mut write_half, &msg, &session_key).await.is_err() {
                 break;
             }
         }
     }));
 
     loop {
-        match read_message::<ServerToClient, _>(&mut read_half).await {
+        match read_message_encrypted::<ServerToClient, _>(&mut read_half, &session_key).await {
             Ok(ServerToClient::Welcome { .. }) => {}
             // Only ever sent as the very first reply, handled above during the
             // handshake — present here only so this match stays exhaustive.
             Ok(ServerToClient::Rejected { .. }) => {}
             Ok(ServerToClient::JoinGroup { peers }) => {
                 let mut guard = state.lock().unwrap();
+                // Peer-to-peer audio never goes through the teacher, so there's no
+                // shared per-pair key the way there is for teacher<->student
+                // traffic — each peer's key is instead derived right here from
+                // their relayed salt plus the same class PIN we ourselves typed in
+                // to connect, and used to decrypt whatever arrives from them.
+                let pin = guard.pin.clone();
+                guard.peer_keys = peers.iter().map(|p| (p.addr, crypto::derive_key(&pin, &p.salt))).collect();
                 guard.peer_addrs = peers.iter().map(|p| p.addr).collect();
                 guard.peer_names = peers.iter().map(|p| p.name.clone()).collect();
             }
@@ -124,6 +142,7 @@ pub async fn connect_to_teacher(
                 let mut guard = state.lock().unwrap();
                 guard.peer_addrs.clear();
                 guard.peer_names.clear();
+                guard.peer_keys.clear();
             }
             Ok(ServerToClient::LockScreen { message, test_mode }) => {
                 let mut guard = state.lock().unwrap();
@@ -220,8 +239,11 @@ pub async fn connect_to_teacher(
     guard.connected_teacher = None;
     guard.teacher_addr = None;
     guard.to_server = None;
+    guard.session_key = None;
+    guard.pin.clear();
     guard.peer_addrs.clear();
     guard.peer_names.clear();
+    guard.peer_keys.clear();
     guard.uploading_to_teacher = false;
     guard.locked_message = None;
     guard.test_mode_active = false;

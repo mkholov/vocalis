@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use lingua_common::{
-    encode_audio_packet, new_decoder, new_encoder, split_audio_packet, Resampler, SequenceTracker,
-    FRAME_SAMPLES, MIC_PORT, OPUS_SAMPLE_RATE, PEER_PORT, TEACHER_INTERCOM_PORT,
+    crypto, encode_audio_packet, new_decoder, new_encoder, split_audio_packet, Resampler,
+    SequenceTracker, FRAME_SAMPLES, MIC_PORT, OPUS_SAMPLE_RATE, PEER_PORT, TEACHER_INTERCOM_PORT,
 };
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
@@ -146,7 +146,13 @@ pub async fn run_mic_broadcast_receiver(state: AppState, mix: SharedMix, output_
     let mut buf = [0u8; 4096];
     loop {
         let (len, _from) = socket.recv_from(&mut buf).await?;
-        let Some((seq, payload)) = split_audio_packet(&buf[..len]) else {
+        let Some(key) = state.lock().unwrap().session_key else {
+            continue;
+        };
+        let Ok(plaintext) = crypto::decrypt(&key, &buf[..len]) else {
+            continue;
+        };
+        let Some((seq, payload)) = split_audio_packet(&plaintext) else {
             continue;
         };
         let samples = tracker.decode(&mut decoder, seq, payload);
@@ -172,7 +178,7 @@ pub async fn run_mic_broadcast_receiver(state: AppState, mix: SharedMix, output_
 /// mixes the result into `mix.intercom`. Always bound, exactly like the broadcast
 /// receiver above — it's simply idle whenever the teacher isn't privately talking
 /// to this student, no start/stop signaling needed on the socket itself.
-pub async fn run_intercom_receiver(mix: SharedMix, output_rate: u32) -> Result<()> {
+pub async fn run_intercom_receiver(state: AppState, mix: SharedMix, output_rate: u32) -> Result<()> {
     let socket = UdpSocket::bind(("0.0.0.0", TEACHER_INTERCOM_PORT)).await?;
     let mut decoder = new_decoder()?;
     let mut tracker = SequenceTracker::new();
@@ -180,7 +186,13 @@ pub async fn run_intercom_receiver(mix: SharedMix, output_rate: u32) -> Result<(
     let mut buf = [0u8; 4096];
     loop {
         let (len, _from) = socket.recv_from(&mut buf).await?;
-        let Some((seq, payload)) = split_audio_packet(&buf[..len]) else {
+        let Some(key) = state.lock().unwrap().session_key else {
+            continue;
+        };
+        let Ok(plaintext) = crypto::decrypt(&key, &buf[..len]) else {
+            continue;
+        };
+        let Some((seq, payload)) = split_audio_packet(&plaintext) else {
             continue;
         };
         let samples = tracker.decode(&mut decoder, seq, payload);
@@ -211,6 +223,7 @@ pub async fn run_outbound_and_group_audio(
     // per sender so each peer's stream stays independently continuous.
     let recv_socket = socket.clone();
     let recv_mix = mix.clone();
+    let recv_state = state.clone();
     tokio::spawn(async move {
         struct PeerRx {
             decoder: lingua_common::Decoder,
@@ -222,7 +235,17 @@ pub async fn run_outbound_and_group_audio(
         loop {
             match recv_socket.recv_from(&mut buf).await {
                 Ok((len, from)) => {
-                    let Some((seq, payload)) = split_audio_packet(&buf[..len]) else {
+                    // Each peer always encrypts what *they* send with their own
+                    // session key (see `crypto`'s module doc comment) — so
+                    // decrypting here means looking up *that peer's* key, derived
+                    // from their salt when `JoinGroup` last arrived, not our own.
+                    let Some(peer_key) = recv_state.lock().unwrap().peer_keys.get(&from).copied() else {
+                        continue;
+                    };
+                    let Ok(plaintext) = crypto::decrypt(&peer_key, &buf[..len]) else {
+                        continue;
+                    };
+                    let Some((seq, payload)) = split_audio_packet(&plaintext) else {
                         continue;
                     };
                     let peer = match peers.entry(from) {
@@ -278,13 +301,14 @@ pub async fn run_outbound_and_group_audio(
             let packet = encode_audio_packet(seq, &opus_buf[..n]);
             seq = seq.wrapping_add(1);
 
-            let (peer_addrs, teacher_addr, upload_to_teacher, mic_locked) = {
+            let (peer_addrs, teacher_addr, upload_to_teacher, mic_locked, key) = {
                 let guard = state.lock().unwrap();
                 (
                     guard.peer_addrs.clone(),
                     guard.teacher_addr,
                     guard.uploading_to_teacher,
                     guard.mic_locked,
+                    guard.session_key,
                 )
             };
             // A teacher-issued mic lock silences transmission entirely — e.g. to keep
@@ -292,13 +316,19 @@ pub async fn run_outbound_and_group_audio(
             if mic_locked {
                 continue;
             }
+            let Some(key) = key else { continue };
+            // Everything we send — to group peers or to the teacher — is
+            // encrypted once under our own session key (see `crypto`'s module doc
+            // comment): peers derive it themselves from our relayed salt, and the
+            // teacher already has it from our own handshake.
+            let encrypted = crypto::encrypt(&key, &packet);
             for addr in peer_addrs {
-                let _ = socket.send_to(&packet, addr).await;
+                let _ = socket.send_to(&encrypted, addr).await;
             }
             if upload_to_teacher {
                 if let Some(addr) = teacher_addr {
                     let _ = teacher_socket
-                        .send_to(&packet, (addr, lingua_common::TEACHER_LISTEN_PORT))
+                        .send_to(&encrypted, (addr, lingua_common::TEACHER_LISTEN_PORT))
                         .await;
                 }
             }
