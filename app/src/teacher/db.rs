@@ -90,6 +90,15 @@ pub fn open() -> Result<Connection> {
             password_hash TEXT NOT NULL,
             created_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS connection_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lesson_id INTEGER NOT NULL REFERENCES lessons(id),
+            at INTEGER NOT NULL,
+            name_raw TEXT NOT NULL,
+            name_normalized TEXT NOT NULL,
+            ip TEXT NOT NULL,
+            event TEXT NOT NULL
+        );
         ",
     )
     .context("creating Vocalis tables")?;
@@ -501,4 +510,54 @@ pub fn save_teacher_profile(conn: &Connection, name: &str, salt: &str, password_
 pub fn delete_teacher_profile(conn: &Connection) -> Result<()> {
     conn.execute("DELETE FROM teacher_profile", [])?;
     Ok(())
+}
+
+/// A connection-related event, for incident review — who tried to connect (or
+/// disconnected), from where, and whether it actually succeeded. Rejected-PIN
+/// attempts are the important case: repeated ones from the same IP/name are what
+/// a brute-force guess at the lesson PIN would look like in this log.
+pub struct ConnectionLogEntry {
+    pub at: i64,
+    pub name_raw: String,
+    pub ip: String,
+    pub event: String,
+}
+
+pub fn insert_connection_log(conn: &Connection, lesson_id: i64, name_raw: &str, ip: &str, event: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO connection_log (lesson_id, at, name_raw, name_normalized, ip, event) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![lesson_id, now_epoch(), name_raw, normalize_name(name_raw), ip, event],
+    )?;
+    Ok(())
+}
+
+/// Most recent `limit` entries, newest first — optionally restricted to one
+/// lesson (the "Только текущий урок" filter). Two separate queries rather than
+/// one with an optional parameter: simpler than building a dynamic WHERE clause
+/// for what's just two fixed shapes.
+pub fn list_connection_log(conn: &Connection, lesson_filter: Option<i64>, limit: u32) -> Result<Vec<ConnectionLogEntry>> {
+    fn collect(mut stmt: rusqlite::Statement, params: impl rusqlite::Params) -> Result<Vec<ConnectionLogEntry>> {
+        let rows = stmt
+            .query_map(params, |row| {
+                Ok(ConnectionLogEntry {
+                    at: row.get(0)?,
+                    name_raw: row.get(1)?,
+                    ip: row.get(2)?,
+                    event: row.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    match lesson_filter {
+        Some(lesson_id) => collect(
+            conn.prepare("SELECT at, name_raw, ip, event FROM connection_log WHERE lesson_id = ?1 ORDER BY at DESC LIMIT ?2")?,
+            params![lesson_id, limit],
+        ),
+        None => collect(
+            conn.prepare("SELECT at, name_raw, ip, event FROM connection_log ORDER BY at DESC LIMIT ?1")?,
+            params![limit],
+        ),
+    }
 }

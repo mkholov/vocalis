@@ -40,6 +40,15 @@ fn presence_label_color(p: Presence) -> (&'static str, egui::Color32) {
     }
 }
 
+fn event_label_color(event: &str) -> (&'static str, egui::Color32) {
+    match event {
+        "connected" => ("Подключился", theme::OK),
+        "disconnected" => ("Отключился", theme::MUTED),
+        "rejected_pin" => ("⚠ Отклонён: неверный PIN", theme::DANGER),
+        _ => ("?", theme::MUTED),
+    }
+}
+
 fn initials(name: &str) -> String {
     let mut it = name.split_whitespace().filter_map(|w| w.chars().next());
     match (it.next(), it.next()) {
@@ -62,6 +71,7 @@ enum Tab {
     Materials,
     Assignments,
     Roster,
+    ConnectionLog,
 }
 
 /// Which kind of assignment the "Задания" tab's editor is currently authoring.
@@ -164,6 +174,9 @@ pub struct TeacherApp {
     /// any — a drill-down reachable from both the roster and stats tabs, so it's
     /// tracked independently of `tab` rather than being one itself.
     history_card: Option<String>,
+    /// "Только текущий урок" toggle on the Журнал tab. Defaults on: right after
+    /// class, the current lesson's log is almost always what you want first.
+    log_filter_current_lesson: bool,
 }
 
 impl TeacherApp {
@@ -188,6 +201,7 @@ impl TeacherApp {
             roster_input: String::new(),
             roster_edit: None,
             history_card: None,
+            log_filter_current_lesson: true,
         }
     }
 
@@ -882,6 +896,8 @@ impl eframe::App for TeacherApp {
             self.assignments_tab(ctx);
         } else if self.tab == Tab::Roster {
             self.roster_tab(ctx);
+        } else if self.tab == Tab::ConnectionLog {
+            self.connection_log_tab(ctx);
         } else if self.focus {
             self.focus_view(ctx);
         } else {
@@ -948,6 +964,7 @@ impl TeacherApp {
                 ui.selectable_value(&mut self.tab, Tab::Materials, "Материалы");
                 ui.selectable_value(&mut self.tab, Tab::Assignments, "Задания");
                 ui.selectable_value(&mut self.tab, Tab::Roster, "Список класса");
+                ui.selectable_value(&mut self.tab, Tab::ConnectionLog, "Журнал");
 
                 ui.add_space(12.0);
                 let locked = self.state.lock().unwrap().mics_locked;
@@ -1849,6 +1866,55 @@ impl TeacherApp {
             if let Some(id) = to_delete {
                 self.delete_roster_student(id);
             }
+        });
+    }
+
+    /// Connection log for incident review — every successful connect, disconnect,
+    /// and (the important one) rejected-wrong-PIN attempt. Last 200 rows, newest
+    /// first, optionally restricted to the current lesson.
+    fn connection_log_tab(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.heading("Журнал подключений");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.checkbox(&mut self.log_filter_current_lesson, "Только текущий урок");
+                });
+            });
+            ui.colored_label(
+                theme::MUTED,
+                "Последние 200 записей, сначала новые. Особое внимание — попытки с неверным PIN: \
+                 повторяющиеся с одного имени/IP могут значить, что кто-то подбирает код урока.",
+            );
+            ui.add_space(10.0);
+
+            let entries: Vec<db::ConnectionLogEntry> = {
+                let guard = self.state.lock().unwrap();
+                let lesson_filter = self.log_filter_current_lesson.then_some(guard.lesson_row_id);
+                db::list_connection_log(&guard.db, lesson_filter, 200).unwrap_or_default()
+            };
+
+            if entries.is_empty() {
+                ui.colored_label(theme::MUTED, "Записей пока нет.");
+            }
+
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::Grid::new("connection_log_table").num_columns(4).striped(true).min_col_width(100.0).show(ui, |ui| {
+                    ui.colored_label(theme::MUTED, "ВРЕМЯ");
+                    ui.colored_label(theme::MUTED, "УЧЕНИК");
+                    ui.colored_label(theme::MUTED, "IP");
+                    ui.colored_label(theme::MUTED, "СОБЫТИЕ");
+                    ui.end_row();
+
+                    for entry in &entries {
+                        ui.label(format_epoch_date(entry.at));
+                        ui.label(&entry.name_raw);
+                        ui.label(&entry.ip);
+                        let (label, color) = event_label_color(&entry.event);
+                        ui.colored_label(color, label);
+                        ui.end_row();
+                    }
+                });
+            });
         });
     }
 

@@ -50,6 +50,10 @@ async fn handle_student(
         )
         .await?;
         warn!("student '{name}' from {ip} rejected: wrong PIN");
+        {
+            let guard = state.lock().unwrap();
+            let _ = db::insert_connection_log(&guard.db, guard.lesson_row_id, &name, &ip.to_string(), "rejected_pin");
+        }
         return Ok(());
     }
 
@@ -113,6 +117,7 @@ async fn handle_student(
                 roster_status,
             },
         );
+        let _ = db::insert_connection_log(&guard.db, guard.lesson_row_id, &name, &ip.to_string(), "connected");
     }
     info!("student '{name}' connected from {ip}");
 
@@ -243,6 +248,7 @@ async fn handle_student(
             }
         }
         guard.students.remove(&student_id);
+        let _ = db::insert_connection_log(&guard.db, guard.lesson_row_id, &name, &ip.to_string(), "disconnected");
     }
     info!("student '{name}' disconnected");
     Ok(())
