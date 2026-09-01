@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["common", "app", "bin-launcher", "bin-teacher", "bin-student"]
+members = ["common", "app", "bin-launcher", "bin-teacher", "bin-student", "codec-check"]
 
 [workspace.package]
 version = "0.1.0"

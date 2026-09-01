@@ -1,0 +1,22 @@
+[package]
+name = "codec-check"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# Isolated on purpose: a standalone crate rather than a module inside `app`, so
+# `openh264` (and the "compile Cisco's C encoder from source via `cc`" build
+# step that comes with it) never touches the three shipped binaries
+# (vocalis/vocalis-teacher/vocalis-student) unless/until real H.264 support
+# actually gets wired into the screen-demo feature. Until then this only proves
+# the codec builds and round-trips a frame correctly on both macOS and Windows.
+
+[[bin]]
+name = "h264-codec-check"
+path = "src/main.rs"
+
+[dependencies]
+openh264 = { version = "0.9", features = ["source"] }
+xcap = "0.9"
+image = { version = "0.25", default-features = false, features = ["png"] }
+anyhow = { workspace = true }
