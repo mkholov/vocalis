@@ -10,6 +10,7 @@ use eframe::egui;
 /// `vocalis-student` binaries skip this entirely via [`run_teacher`] / [`run_student`].
 enum VocalisApp {
     Launcher { teacher_name: String },
+    TeacherClassPicker { teacher_name: String, screen: teacher::class_picker::ClassPickerScreen },
     Teacher(Box<teacher::app::TeacherApp>),
     Student(Box<student::app::StudentApp>),
 }
@@ -40,7 +41,10 @@ impl eframe::App for VocalisApp {
                                 } else {
                                     teacher_name.trim().to_string()
                                 };
-                                pick = Some(VocalisApp::Teacher(Box::new(teacher::app::TeacherApp::launch(name))));
+                                pick = Some(VocalisApp::TeacherClassPicker {
+                                    teacher_name: name,
+                                    screen: teacher::class_picker::ClassPickerScreen::new(),
+                                });
                             }
                         });
 
@@ -58,6 +62,15 @@ impl eframe::App for VocalisApp {
                     *self = app;
                 }
             }
+            VocalisApp::TeacherClassPicker { teacher_name, screen } => {
+                if let Some((class_id, class_name)) = screen.update(ctx) {
+                    *self = VocalisApp::Teacher(Box::new(teacher::app::TeacherApp::launch(
+                        teacher_name.clone(),
+                        class_id,
+                        class_name,
+                    )));
+                }
+            }
             VocalisApp::Teacher(app) => app.update(ctx, frame),
             VocalisApp::Student(app) => app.update(ctx, frame),
         }
@@ -72,6 +85,7 @@ impl eframe::App for VocalisApp {
 /// school actually deploys.
 enum TeacherEntry {
     Auth(teacher::auth::AuthScreen),
+    ClassPicker { teacher_name: String, screen: teacher::class_picker::ClassPickerScreen },
     App(Box<teacher::app::TeacherApp>),
 }
 
@@ -80,7 +94,19 @@ impl eframe::App for TeacherEntry {
         match self {
             TeacherEntry::Auth(screen) => {
                 if let Some(name) = screen.update(ctx) {
-                    *self = TeacherEntry::App(Box::new(teacher::app::TeacherApp::launch(name)));
+                    *self = TeacherEntry::ClassPicker {
+                        teacher_name: name,
+                        screen: teacher::class_picker::ClassPickerScreen::new(),
+                    };
+                }
+            }
+            TeacherEntry::ClassPicker { teacher_name, screen } => {
+                if let Some((class_id, class_name)) = screen.update(ctx) {
+                    *self = TeacherEntry::App(Box::new(teacher::app::TeacherApp::launch(
+                        teacher_name.clone(),
+                        class_id,
+                        class_name,
+                    )));
                 }
             }
             TeacherEntry::App(app) => app.update(ctx, frame),

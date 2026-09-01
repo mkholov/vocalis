@@ -170,17 +170,26 @@ pub struct TeacherApp {
     /// Inline rename in progress on the roster list (row id, buffer) — mirrors
     /// `score_edit`'s pattern.
     roster_edit: Option<(i64, String)>,
-    /// Display name of the student whose cross-lesson history card is open, if
-    /// any — a drill-down reachable from both the roster and stats tabs, so it's
-    /// tracked independently of `tab` rather than being one itself.
-    history_card: Option<String>,
+    /// (name, class_id) of the student whose cross-lesson history card is open,
+    /// if any — a drill-down reachable from both the roster and stats tabs, so
+    /// it's tracked independently of `tab` rather than being one itself. Carries
+    /// its own `class_id` since it can be opened for a class other than the
+    /// active lesson's (e.g. browsing another class's roster).
+    history_card: Option<(String, i64)>,
     /// "Только текущий урок" toggle on the Журнал tab. Defaults on: right after
     /// class, the current lesson's log is almost always what you want first.
     log_filter_current_lesson: bool,
+    /// Which class's roster the "Список класса" tab is currently browsing/editing
+    /// — independent of `SharedState.current_class_id` (the active lesson's
+    /// class, fixed for the session) so the teacher can manage another class's
+    /// list without disturbing the running lesson. Defaults to the active class.
+    roster_view_class_id: i64,
+    /// New-class-name field for the "Создать класс" inline form on the roster tab.
+    roster_new_class_name: String,
 }
 
 impl TeacherApp {
-    fn new(state: AppState, rt: tokio::runtime::Runtime, teacher_name: Arc<str>) -> Self {
+    fn new(state: AppState, rt: tokio::runtime::Runtime, teacher_name: Arc<str>, class_id: i64) -> Self {
         Self {
             state,
             _rt: rt,
@@ -202,6 +211,8 @@ impl TeacherApp {
             roster_edit: None,
             history_card: None,
             log_filter_current_lesson: true,
+            roster_view_class_id: class_id,
+            roster_new_class_name: String::new(),
         }
     }
 
@@ -710,11 +721,27 @@ impl TeacherApp {
         if name.is_empty() {
             return;
         }
+        let view_class_id = self.roster_view_class_id;
         let mut guard = self.state.lock().unwrap();
-        let class_name = guard.class_name.clone();
-        match db::insert_roster_student(&guard.db, &class_name, &name) {
+        let class_name = match db::list_classes(&guard.db)
+            .ok()
+            .and_then(|classes| classes.into_iter().find(|c| c.id == view_class_id))
+        {
+            Some(c) => c.name,
+            None => {
+                tracing::warn!("failed to save roster student '{name}': unknown class {view_class_id}");
+                return;
+            }
+        };
+        match db::insert_roster_student(&guard.db, view_class_id, &class_name, &name) {
             Ok(id) => {
-                guard.roster.push(db::RosterEntry { id, full_name: name });
+                // The live connection-matching cache only ever reflects the
+                // active lesson's class — only sync it when the teacher is
+                // viewing that same class, otherwise it'd bleed another
+                // class's roster into student-connection matching.
+                if view_class_id == guard.current_class_id {
+                    guard.roster.push(db::RosterEntry { id, full_name: name });
+                }
                 drop(guard);
                 self.roster_input.clear();
             }
@@ -886,8 +913,8 @@ impl eframe::App for TeacherApp {
 
         self.top_bar(ctx);
 
-        if let Some(name) = self.history_card.clone() {
-            self.history_card_view(ctx, &name);
+        if let Some((name, class_id)) = self.history_card.clone() {
+            self.history_card_view(ctx, &name, class_id);
         } else if self.tab == Tab::Stats {
             self.stats_tab(ctx);
         } else if self.tab == Tab::Materials {
@@ -1450,7 +1477,7 @@ impl TeacherApp {
 
     fn stats_tab(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            let (avg_score, done_total, connected, class_size, attendance, history, roster_nonempty) = {
+            let (avg_score, done_total, connected, class_size, attendance, history, roster_nonempty, current_class_id) = {
                 let guard = self.state.lock().unwrap();
                 (
                     guard.average_score(),
@@ -1460,6 +1487,7 @@ impl TeacherApp {
                     guard.ever_connected_seats.len(),
                     guard.history,
                     !guard.roster.is_empty(),
+                    guard.current_class_id,
                 )
             };
 
@@ -1538,7 +1566,7 @@ impl TeacherApp {
                             .on_hover_text("Открыть историю по урокам")
                             .clicked()
                         {
-                            self.history_card = Some(name.clone());
+                            self.history_card = Some((name.clone(), current_class_id));
                         }
                         let (label, color) = presence_label_color(presence);
                         ui.colored_label(color, label);
@@ -1817,6 +1845,41 @@ impl TeacherApp {
             );
             ui.add_space(10.0);
 
+            let classes = {
+                let guard = self.state.lock().unwrap();
+                db::list_classes(&guard.db).unwrap_or_default()
+            };
+            // The active lesson's class may not exist in `classes` yet only if the
+            // DB was wiped out from under us mid-session — fall back to it anyway
+            // so the picker always shows *something* selected.
+            let current_name = classes
+                .iter()
+                .find(|c| c.id == self.roster_view_class_id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| "Класс".to_string());
+
+            ui.horizontal(|ui| {
+                ui.label("Класс:");
+                egui::ComboBox::from_id_salt("roster_class_picker")
+                    .selected_text(&current_name)
+                    .show_ui(ui, |ui| {
+                        for class in &classes {
+                            ui.selectable_value(&mut self.roster_view_class_id, class.id, &class.name);
+                        }
+                    });
+
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.roster_new_class_name)
+                        .desired_width(180.0)
+                        .hint_text("название нового класса"),
+                );
+                let enter_pressed = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if ui.button("➕ Создать класс").clicked() || enter_pressed {
+                    self.create_class();
+                }
+            });
+            ui.add_space(10.0);
+
             ui.horizontal(|ui| {
                 let resp = ui.add(egui::TextEdit::singleline(&mut self.roster_input).desired_width(300.0).hint_text("Фамилия Имя"));
                 let enter_pressed = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -1826,9 +1889,14 @@ impl TeacherApp {
             });
             ui.add_space(14.0);
 
+            let view_class_id = self.roster_view_class_id;
             let roster: Vec<(i64, String)> = {
                 let guard = self.state.lock().unwrap();
-                guard.roster.iter().map(|r| (r.id, r.full_name.clone())).collect()
+                db::list_roster(&guard.db, view_class_id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|r| (r.id, r.full_name))
+                    .collect()
             };
             if roster.is_empty() {
                 ui.colored_label(theme::MUTED, "Список пока пуст.");
@@ -1851,7 +1919,7 @@ impl TeacherApp {
                                 .on_hover_text("Открыть историю по урокам")
                                 .clicked()
                             {
-                                self.history_card = Some(name.clone());
+                                self.history_card = Some((name.clone(), view_class_id));
                             }
                             if ui.small_button("✏️").on_hover_text("Переименовать").clicked() {
                                 self.roster_edit = Some((*id, name.clone()));
@@ -1867,6 +1935,22 @@ impl TeacherApp {
                 self.delete_roster_student(id);
             }
         });
+    }
+
+    fn create_class(&mut self) {
+        let name = self.roster_new_class_name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let guard = self.state.lock().unwrap();
+        match db::insert_class(&guard.db, &name) {
+            Ok(id) => {
+                drop(guard);
+                self.roster_view_class_id = id;
+                self.roster_new_class_name.clear();
+            }
+            Err(e) => tracing::warn!("failed to create class '{name}': {e:#}"),
+        }
     }
 
     /// Connection log for incident review — every successful connect, disconnect,
@@ -1922,11 +2006,11 @@ impl TeacherApp {
     /// its own `student_history` query rather than taking an already-fetched
     /// slice — only happens on a click, so the extra round-trip against a small
     /// local SQLite file isn't worth threading through the render call chain for.
-    fn export_student_history(&mut self, name: &str) {
+    fn export_student_history(&mut self, name: &str, class_id: i64) {
         let normalized = db::normalize_name(name);
         let history = {
             let guard = self.state.lock().unwrap();
-            db::student_history(&guard.db, &normalized).unwrap_or_default()
+            db::student_history(&guard.db, &normalized, class_id).unwrap_or_default()
         };
         let safe_name = name.replace(['/', '\\', ':'], "_");
         let Some(path) = rfd::FileDialog::new()
@@ -1946,12 +2030,13 @@ impl TeacherApp {
     fn export_class_history(&mut self) {
         let students: Vec<(String, Vec<db::LessonHistoryEntry>)> = {
             let guard = self.state.lock().unwrap();
+            let class_id = guard.current_class_id;
             guard
                 .roster
                 .iter()
                 .map(|r| {
                     let normalized = db::normalize_name(&r.full_name);
-                    let history = db::student_history(&guard.db, &normalized).unwrap_or_default();
+                    let history = db::student_history(&guard.db, &normalized, class_id).unwrap_or_default();
                     (r.full_name.clone(), history)
                 })
                 .collect()
@@ -1977,7 +2062,7 @@ impl TeacherApp {
     /// Cross-lesson history for one student, matched by normalized name (the same
     /// comparison the roster check uses) — reachable from a click on a name in
     /// either the roster or stats tab. Simple time-ordered table, no charts.
-    fn history_card_view(&mut self, ctx: &egui::Context, name: &str) {
+    fn history_card_view(&mut self, ctx: &egui::Context, name: &str, class_id: i64) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("← Назад").clicked() {
@@ -1986,7 +2071,7 @@ impl TeacherApp {
                 ui.heading(format!("История: {name}"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("📥 Экспорт в CSV").clicked() {
-                        self.export_student_history(name);
+                        self.export_student_history(name, class_id);
                     }
                 });
             });
@@ -1995,7 +2080,7 @@ impl TeacherApp {
             let normalized = db::normalize_name(name);
             let history = {
                 let guard = self.state.lock().unwrap();
-                db::student_history(&guard.db, &normalized).unwrap_or_default()
+                db::student_history(&guard.db, &normalized, class_id).unwrap_or_default()
             };
 
             if history.is_empty() {
@@ -2084,10 +2169,11 @@ impl TeacherApp {
     /// Spins up the teacher's background tasks (discovery announcer, control server,
     /// listen-in receiver) and returns a ready-to-run app. Called once the launcher
     /// screen learns the user picked the teacher role.
-    pub fn launch(teacher_name: String) -> Self {
+    /// `class_id`/`class_name` come from the class-picker screen that runs before
+    /// this — every lesson session is for exactly one class, chosen up front.
+    pub fn launch(teacher_name: String, class_id: i64, class_name: String) -> Self {
         let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
 
-        let class_name = std::env::var("VOCALIS_CLASS_NAME").unwrap_or_else(|_| "9А · Английский язык".to_string());
         let class_size: usize = std::env::var("VOCALIS_CLASS_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(16);
         let lesson_pin = std::env::var("VOCALIS_LESSON_PIN")
             .ok()
@@ -2095,13 +2181,15 @@ impl TeacherApp {
             .unwrap_or_else(state::generate_pin);
 
         let db_conn = db::open().expect("failed to open Vocalis database");
-        let history = db::load_history_summary(&db_conn).unwrap_or_default();
-        let lesson_row_id = db::insert_lesson(&db_conn, &class_name).expect("failed to record lesson start");
+        let history = db::load_history_summary(&db_conn, class_id).unwrap_or_default();
+        let lesson_row_id =
+            db::insert_lesson(&db_conn, class_id, &class_name).expect("failed to record lesson start");
         let materials = db::list_materials(&db_conn).unwrap_or_default();
         let assignment_templates = db::list_assignment_templates(&db_conn).unwrap_or_default();
-        let roster = db::list_roster(&db_conn, &class_name).unwrap_or_default();
+        let roster = db::list_roster(&db_conn, class_id).unwrap_or_default();
 
         let state: AppState = Arc::new(Mutex::new(SharedState::new(
+            class_id,
             class_name,
             class_size,
             lesson_pin,
@@ -2143,6 +2231,6 @@ impl TeacherApp {
             });
         }
 
-        TeacherApp::new(state, rt, teacher_name)
+        TeacherApp::new(state, rt, teacher_name, class_id)
     }
 }

@@ -124,6 +124,11 @@ pub struct SharedState {
     /// student without talking to them, but not the other way around.
     pub talking_to: Option<StudentId>,
     pub chat_log: Vec<ChatEntry>,
+    /// Row id in the `classes` table — the class this lesson session was started
+    /// for (chosen on the class-picker screen before `TeacherApp::launch`).
+    /// Determines which class's roster is loaded and which class the "ЗА ВСЁ
+    /// ВРЕМЯ" stats/history are scoped to.
+    pub current_class_id: i64,
     pub class_name: String,
     pub class_size: usize,
     /// PIN a student's `Hello.pin` must match to be admitted; shown on the teacher's
@@ -195,7 +200,9 @@ pub struct ScreenDemo {
 pub type AppState = Arc<std::sync::Mutex<SharedState>>;
 
 impl SharedState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
+        current_class_id: i64,
         class_name: String,
         class_size: usize,
         lesson_pin: String,
@@ -214,6 +221,7 @@ impl SharedState {
             listening_to: None,
             talking_to: None,
             chat_log: Vec::new(),
+            current_class_id,
             class_name,
             class_size,
             lesson_pin,

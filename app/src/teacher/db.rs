@@ -23,9 +23,15 @@ pub fn open() -> Result<Connection> {
     let conn = Connection::open(&path).context("opening Vocalis database")?;
     conn.execute_batch(
         "
+        CREATE TABLE IF NOT EXISTS classes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS lessons (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             class_name TEXT NOT NULL,
+            class_id INTEGER REFERENCES classes(id),
             started_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS students (
@@ -80,6 +86,7 @@ pub fn open() -> Result<Connection> {
         CREATE TABLE IF NOT EXISTS roster (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             class_name TEXT NOT NULL,
+            class_id INTEGER REFERENCES classes(id),
             full_name TEXT NOT NULL,
             added_at INTEGER NOT NULL
         );
@@ -102,7 +109,65 @@ pub fn open() -> Result<Connection> {
         ",
     )
     .context("creating Vocalis tables")?;
+    migrate_class_ids(&conn).context("migrating pre-multi-class data")?;
     Ok(conn)
+}
+
+/// Adds `class_id` to `lessons`/`roster` for databases created before multi-class
+/// support existed, and buckets any pre-existing (now-orphaned) rows into one
+/// default class — cheap and fully idempotent, so it's safe to just run on every
+/// `open()` rather than tracking "did this already run" separately: once
+/// migrated, both checks below are no-ops.
+fn migrate_class_ids(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "lessons", "class_id")? {
+        conn.execute("ALTER TABLE lessons ADD COLUMN class_id INTEGER REFERENCES classes(id)", [])?;
+    }
+    if !column_exists(conn, "roster", "class_id")? {
+        conn.execute("ALTER TABLE roster ADD COLUMN class_id INTEGER REFERENCES classes(id)", [])?;
+    }
+
+    let has_orphans: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM lessons WHERE class_id IS NULL)
+             OR EXISTS(SELECT 1 FROM roster WHERE class_id IS NULL)",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_orphans {
+        let default_class_id = insert_class(conn, "Класс 1")?;
+        conn.execute("UPDATE lessons SET class_id = ?1 WHERE class_id IS NULL", params![default_class_id])?;
+        conn.execute("UPDATE roster SET class_id = ?1 WHERE class_id IS NULL", params![default_class_id])?;
+    }
+    Ok(())
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    // PRAGMA doesn't take bound parameters for identifiers; `table` is always one
+    // of this module's own hardcoded literals, never external input.
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(names.iter().any(|n| n == column))
+}
+
+/// One class the teacher has set up (e.g. "9А английский") — its own roster and
+/// its own lesson history, never mixed with another class's.
+pub struct ClassRow {
+    pub id: i64,
+    pub name: String,
+}
+
+pub fn insert_class(conn: &Connection, name: &str) -> Result<i64> {
+    conn.execute("INSERT INTO classes (name, created_at) VALUES (?1, ?2)", params![name, now_epoch()])?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn list_classes(conn: &Connection) -> Result<Vec<ClassRow>> {
+    let mut stmt = conn.prepare("SELECT id, name FROM classes ORDER BY created_at")?;
+    let rows = stmt
+        .query_map([], |row| Ok(ClassRow { id: row.get(0)?, name: row.get(1)? }))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 fn db_path() -> PathBuf {
@@ -149,16 +214,26 @@ pub struct HistorySummary {
     pub assignments_done: i64,
 }
 
-pub fn load_history_summary(conn: &Connection) -> Result<HistorySummary> {
-    let lessons_count = conn.query_row("SELECT COUNT(*) FROM lessons", [], |r| r.get(0))?;
+/// Scoped to one class — with multiple classes now possible, an unscoped total
+/// would blend unrelated classes' history into one misleading number.
+pub fn load_history_summary(conn: &Connection, class_id: i64) -> Result<HistorySummary> {
+    let lessons_count = conn.query_row(
+        "SELECT COUNT(*) FROM lessons WHERE class_id = ?1",
+        params![class_id],
+        |r| r.get(0),
+    )?;
     let avg_score: Option<f64> = conn.query_row(
-        "SELECT AVG(score) FROM students WHERE score IS NOT NULL",
-        [],
+        "SELECT AVG(s.score) FROM students s JOIN lessons l ON l.id = s.lesson_id
+         WHERE s.score IS NOT NULL AND l.class_id = ?1",
+        params![class_id],
         |r| r.get(0),
     )?;
     let assignments_done = conn.query_row(
-        "SELECT COUNT(*) FROM assignments WHERE done = 1",
-        [],
+        "SELECT COUNT(*) FROM assignments a
+         JOIN students s ON s.id = a.student_id
+         JOIN lessons l ON l.id = s.lesson_id
+         WHERE a.done = 1 AND l.class_id = ?1",
+        params![class_id],
         |r| r.get(0),
     )?;
     Ok(HistorySummary {
@@ -168,12 +243,13 @@ pub fn load_history_summary(conn: &Connection) -> Result<HistorySummary> {
     })
 }
 
-/// Records the start of a new lesson (one row per teacher app launch). Returns the
-/// row id, used to tie every student/score/assignment recorded this session back to it.
-pub fn insert_lesson(conn: &Connection, class_name: &str) -> Result<i64> {
+/// Records the start of a new lesson (one row per teacher app launch, for the
+/// class chosen on the class-picker screen). Returns the row id, used to tie
+/// every student/score/assignment recorded this session back to it.
+pub fn insert_lesson(conn: &Connection, class_id: i64, class_name: &str) -> Result<i64> {
     conn.execute(
-        "INSERT INTO lessons (class_name, started_at) VALUES (?1, ?2)",
-        params![class_name, now_epoch()],
+        "INSERT INTO lessons (class_name, class_id, started_at) VALUES (?1, ?2, ?3)",
+        params![class_name, class_id, now_epoch()],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -383,19 +459,18 @@ pub fn normalize_name(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
-pub fn insert_roster_student(conn: &Connection, class_name: &str, full_name: &str) -> Result<i64> {
+pub fn insert_roster_student(conn: &Connection, class_id: i64, class_name: &str, full_name: &str) -> Result<i64> {
     conn.execute(
-        "INSERT INTO roster (class_name, full_name, added_at) VALUES (?1, ?2, ?3)",
-        params![class_name, full_name, now_epoch()],
+        "INSERT INTO roster (class_name, class_id, full_name, added_at) VALUES (?1, ?2, ?3, ?4)",
+        params![class_name, class_id, full_name, now_epoch()],
     )?;
     Ok(conn.last_insert_rowid())
 }
 
-pub fn list_roster(conn: &Connection, class_name: &str) -> Result<Vec<RosterEntry>> {
-    let mut stmt =
-        conn.prepare("SELECT id, full_name FROM roster WHERE class_name = ?1 ORDER BY added_at")?;
+pub fn list_roster(conn: &Connection, class_id: i64) -> Result<Vec<RosterEntry>> {
+    let mut stmt = conn.prepare("SELECT id, full_name FROM roster WHERE class_id = ?1 ORDER BY added_at")?;
     let rows = stmt
-        .query_map(params![class_name], |row| {
+        .query_map(params![class_id], |row| {
             Ok(RosterEntry { id: row.get(0)?, full_name: row.get(1)? })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -432,23 +507,26 @@ pub struct LessonHistoryEntry {
     pub test_results: Vec<TestResultEntry>,
 }
 
-/// Every lesson a student attended, most recent first, matched across *all*
-/// lessons (not just the current class) by normalized name — the only identity a
-/// student has in this schema, since there's no login/account system. Filtering
-/// happens in Rust rather than SQL (`WHERE LOWER(name) = ...`) because SQLite's
-/// built-in `LOWER()` only folds ASCII and would silently miss Cyrillic names —
-/// `normalize_name` (the same function the roster check uses) handles that
-/// correctly. Fine to just scan the whole `students` table for this: it's a small
-/// local classroom database, not something that needs a name index.
-pub fn student_history(conn: &Connection, normalized_name: &str) -> Result<Vec<LessonHistoryEntry>> {
+/// Every lesson a student attended *within one class*, most recent first, matched
+/// by normalized name — the only identity a student has in this schema, since
+/// there's no login/account system. Scoped to `class_id` so two different
+/// students who happen to share a name in two different classes never get
+/// blended together. Filtering by name happens in Rust rather than SQL (`WHERE
+/// LOWER(name) = ...`) because SQLite's built-in `LOWER()` only folds ASCII and
+/// would silently miss Cyrillic names — `normalize_name` (the same function the
+/// roster check uses) handles that correctly. Fine to just scan the class's
+/// `students` rows for this: it's a small local classroom database, not
+/// something that needs a name index.
+pub fn student_history(conn: &Connection, normalized_name: &str, class_id: i64) -> Result<Vec<LessonHistoryEntry>> {
     let mut stmt = conn.prepare(
         "SELECT s.id, s.name, s.score, l.class_name, l.started_at
          FROM students s
          JOIN lessons l ON l.id = s.lesson_id
+         WHERE l.class_id = ?1
          ORDER BY l.started_at DESC",
     )?;
     let rows: Vec<(i64, String, Option<u32>, String, i64)> = stmt
-        .query_map([], |row| {
+        .query_map(params![class_id], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
