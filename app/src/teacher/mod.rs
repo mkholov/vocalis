@@ -1,4 +1,5 @@
 pub mod app;
+pub mod auth;
 pub mod csv_export;
 pub mod db;
 pub mod listen;

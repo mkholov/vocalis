@@ -64,6 +64,30 @@ impl eframe::App for VocalisApp {
     }
 }
 
+/// Backs the dedicated `vocalis-teacher` binary: starts on the local password
+/// gate (see `teacher::auth`) and only switches into the real console once
+/// authenticated. Deliberately separate from `VocalisApp` — the role-picker
+/// binary (`run_launcher`, "for your own machine or ad-hoc testing") skips this
+/// gate entirely, since it's a dev/testing convenience rather than the console a
+/// school actually deploys.
+enum TeacherEntry {
+    Auth(teacher::auth::AuthScreen),
+    App(Box<teacher::app::TeacherApp>),
+}
+
+impl eframe::App for TeacherEntry {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        match self {
+            TeacherEntry::Auth(screen) => {
+                if let Some(name) = screen.update(ctx) {
+                    *self = TeacherEntry::App(Box::new(teacher::app::TeacherApp::launch(name)));
+                }
+            }
+            TeacherEntry::App(app) => app.update(ctx, frame),
+        }
+    }
+}
+
 fn init_tracing() {
     // Multiple binaries share this crate; each runs in its own process, so a plain
     // `try_init` (rather than `init`) just avoids a panic if something upstream
@@ -119,19 +143,21 @@ pub fn run_launcher() -> eframe::Result<()> {
     )
 }
 
-/// `vocalis-teacher.exe`: opens straight into the teacher console — for the
-/// teacher's own machine, no picker, no way to accidentally end up in student mode.
+/// `vocalis-teacher.exe`: opens on the local password gate first (see
+/// `TeacherEntry`/`teacher::auth`), then straight into the teacher console — for
+/// the teacher's own machine, no picker, no way to accidentally end up in student
+/// mode. The teacher's name now comes from the authenticated profile rather than
+/// `VOCALIS_TEACHER_NAME`, since a stored profile makes that env var a bypass of
+/// the very check it'd be sitting next to.
 pub fn run_teacher() -> eframe::Result<()> {
     init_tracing();
-    let teacher_name =
-        std::env::var("VOCALIS_TEACHER_NAME").unwrap_or_else(|_| "Преподаватель".to_string());
 
     eframe::run_native(
         "Vocalis — консоль преподавателя",
         native_options(include_bytes!("../../assets/vocalis-logo-teacher.png")),
         Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);
-            Ok(Box::new(teacher::app::TeacherApp::launch(teacher_name)))
+            Ok(Box::new(TeacherEntry::Auth(teacher::auth::AuthScreen::new())))
         }),
     )
 }

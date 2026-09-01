@@ -34,3 +34,9 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 # and is only a few months old), while 0.5's API is the long-stable, widely-used one.
 # default-features off to skip formats we don't need (flac/ogg/vorbis/mkv/adpcm).
 symphonia = { version = "0.5", default-features = false, features = ["wav", "pcm", "mp3"] }
+# Teacher profile password hashing. Picked over argon2 deliberately: the threat
+# model here is "don't let someone who walks up to an offline school PC see the
+# class", not resisting a serious offline attacker with the SQLite file in hand —
+# for that, plain salted+iterated SHA-256 (see teacher::auth) is minimal-weight
+# and enough; argon2 would be the right call if this ever needs to be stronger.
+sha2 = "0.11"

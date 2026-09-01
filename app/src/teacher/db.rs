@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use lingua_common::AssignmentKind;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 /// Opens (creating if needed) `~/.local/share/Vocalis/vocalis.sqlite3` on
 /// macOS/Linux, or `%APPDATA%\Vocalis\vocalis.sqlite3` on Windows, and ensures the
@@ -82,6 +82,13 @@ pub fn open() -> Result<Connection> {
             class_name TEXT NOT NULL,
             full_name TEXT NOT NULL,
             added_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS teacher_profile (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            name TEXT NOT NULL,
+            salt TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at INTEGER NOT NULL
         );
         ",
     )
@@ -458,4 +465,40 @@ pub fn student_history(conn: &Connection, normalized_name: &str) -> Result<Vec<L
         entries.push(LessonHistoryEntry { class_name, started_at, score, test_results });
     }
     Ok(entries)
+}
+
+/// The local, offline "who's allowed to open this teacher console" profile — a
+/// single row (`id` is `CHECK`-constrained to 1), not a multi-user account system.
+/// `salt`/`password_hash` are hex-encoded byte strings; see `teacher::auth` for
+/// how they're produced and checked.
+pub struct TeacherProfile {
+    pub name: String,
+    pub salt: String,
+    pub password_hash: String,
+}
+
+pub fn load_teacher_profile(conn: &Connection) -> Result<Option<TeacherProfile>> {
+    conn.query_row("SELECT name, salt, password_hash FROM teacher_profile WHERE id = 1", [], |row| {
+        Ok(TeacherProfile { name: row.get(0)?, salt: row.get(1)?, password_hash: row.get(2)? })
+    })
+    .optional()
+    .context("loading teacher profile")
+}
+
+/// Creates or overwrites the (single) teacher profile row.
+pub fn save_teacher_profile(conn: &Connection, name: &str, salt: &str, password_hash: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO teacher_profile (id, name, salt, password_hash, created_at) VALUES (1, ?1, ?2, ?3, ?4)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, salt = excluded.salt,
+             password_hash = excluded.password_hash, created_at = excluded.created_at",
+        params![name, salt, password_hash, now_epoch()],
+    )?;
+    Ok(())
+}
+
+/// "Сбросить" — deletes only the profile (name + password), never touches
+/// lessons/students/scores/etc., which are lesson data, not profile data.
+pub fn delete_teacher_profile(conn: &Connection) -> Result<()> {
+    conn.execute("DELETE FROM teacher_profile", [])?;
+    Ok(())
 }
