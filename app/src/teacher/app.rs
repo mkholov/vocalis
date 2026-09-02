@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::{audio_devices, settings, theme};
 
 use super::state::{self, AppState, Presence, SharedState};
-use super::{csv_export, db, listen, materials, mic, net, screen, system_audio};
+use super::{csv_export, db, listen, materials, mic, net, onboarding, screen, system_audio};
 
 // Test/Listening/Reading now go through the "Задания" tab's authored-template
 // library (real questions/content, not a label) — this quick-send list is left
@@ -208,6 +208,12 @@ pub struct TeacherApp {
     /// doc comment for why these live in their own file rather than the
     /// lesson database.
     settings: settings::Settings,
+    /// `Some` while re-showing the first-run walkthrough on demand (see
+    /// `settings_tab`'s "Показать введение ещё раз") — the same `Onboarding`
+    /// type `TeacherEntry` shows before this app even exists, just re-entered
+    /// as an overlay instead of its own launch-sequence state. `None` the rest
+    /// of the time, i.e. almost always after the very first run.
+    onboarding: Option<onboarding::Onboarding>,
 }
 
 impl TeacherApp {
@@ -238,6 +244,7 @@ impl TeacherApp {
             roster_view_class_id: class_id,
             roster_new_class_name: String::new(),
             settings,
+            onboarding: None,
         }
     }
 
@@ -943,6 +950,13 @@ fn format_timer(elapsed: Duration) -> String {
 impl eframe::App for TeacherApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_millis(150));
+
+        if let Some(screen) = &mut self.onboarding {
+            if screen.update(ctx) {
+                self.onboarding = None;
+            }
+            return;
+        }
 
         // If the student we were privately talking to disconnected, net.rs already
         // cleared `talking_to` — drop our side of the intercom (mic capture + send
@@ -2162,6 +2176,17 @@ impl TeacherApp {
                         changed = true;
                     }
                 });
+            });
+
+            ui.add_space(14.0);
+
+            ui.group(|ui| {
+                ui.set_width(440.0);
+                ui.strong("Справка");
+                ui.add_space(6.0);
+                if ui.button("Показать введение ещё раз").clicked() {
+                    self.onboarding = Some(onboarding::Onboarding::new());
+                }
             });
 
             if changed {

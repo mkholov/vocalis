@@ -88,6 +88,10 @@ impl eframe::App for VocalisApp {
 /// school actually deploys.
 enum TeacherEntry {
     Auth(teacher::auth::AuthScreen),
+    /// Shown once, right after `Auth` succeeds, only when `Settings::first_run_completed`
+    /// is still `false` (see `settings::Settings`'s doc comment on that field) — every
+    /// later launch (or login) skips straight from `Auth` to `ClassPicker`.
+    Onboarding { teacher_name: String, screen: teacher::onboarding::Onboarding },
     ClassPicker { teacher_name: String, screen: teacher::class_picker::ClassPickerScreen },
     App(Box<teacher::app::TeacherApp>),
 }
@@ -97,8 +101,25 @@ impl eframe::App for TeacherEntry {
         match self {
             TeacherEntry::Auth(screen) => {
                 if let Some(name) = screen.update(ctx) {
+                    if settings::Settings::load().first_run_completed {
+                        *self = TeacherEntry::ClassPicker {
+                            teacher_name: name,
+                            screen: teacher::class_picker::ClassPickerScreen::new(),
+                        };
+                    } else {
+                        *self = TeacherEntry::Onboarding { teacher_name: name, screen: teacher::onboarding::Onboarding::new() };
+                    }
+                }
+            }
+            TeacherEntry::Onboarding { teacher_name, screen } => {
+                if screen.update(ctx) {
+                    let mut settings = settings::Settings::load();
+                    settings.first_run_completed = true;
+                    if let Err(e) = settings.save() {
+                        tracing::warn!("failed to save settings after onboarding: {e:#}");
+                    }
                     *self = TeacherEntry::ClassPicker {
-                        teacher_name: name,
+                        teacher_name: teacher_name.clone(),
                         screen: teacher::class_picker::ClassPickerScreen::new(),
                     };
                 }

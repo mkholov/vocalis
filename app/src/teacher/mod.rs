@@ -7,6 +7,7 @@ pub mod listen;
 pub mod materials;
 pub mod mic;
 pub mod net;
+pub mod onboarding;
 pub mod screen;
 pub mod state;
 pub mod system_audio;

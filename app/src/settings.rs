@@ -106,6 +106,14 @@ pub struct Settings {
     pub video_quality: VideoQuality,
     pub theme: Theme,
     pub language: Language,
+    /// Whether the teacher has stepped through (or skipped) the first-run
+    /// onboarding walkthrough (see `teacher::onboarding`) — `false` on a fresh
+    /// install (missing/default `Settings`), flipped to `true` once, and never
+    /// reset automatically. "Показать введение ещё раз" in Settings re-opens
+    /// the same walkthrough without touching this flag, so it still only
+    /// *auto*-shows once.
+    #[serde(default)]
+    pub first_run_completed: bool,
 }
 
 /// `~/.local/share/Vocalis/settings.json` on macOS/Linux, or
