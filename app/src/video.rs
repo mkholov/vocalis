@@ -72,13 +72,19 @@ pub struct AdaptiveQuality {
 
 impl Default for AdaptiveQuality {
     fn default() -> Self {
-        Self::new()
+        Self::new(0)
     }
 }
 
 impl AdaptiveQuality {
-    pub fn new() -> Self {
-        Self { level: 0, consecutive_overruns: 0 }
+    /// `starting_level` is a manually configured ceiling (see
+    /// `settings::VideoQuality::ladder_level`) — this ladder only ever
+    /// degrades further *down* from there under load, never back up past it,
+    /// so a teacher who already knows their machine is weak can start at a
+    /// lower step instead of waiting for `record_frame_time` to detect that.
+    /// Clamped to a valid index so an out-of-range value can't panic.
+    pub fn new(starting_level: usize) -> Self {
+        Self { level: starting_level.min(QUALITY_LADDER.len() - 1), consecutive_overruns: 0 }
     }
 
     pub fn width(&self) -> u32 {

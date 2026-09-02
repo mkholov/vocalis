@@ -3,12 +3,14 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use lingua_common::{
     crypto, new_decoder, split_audio_packet, Resampler, SequenceTracker, OPUS_SAMPLE_RATE,
     TEACHER_LISTEN_PORT,
 };
 use tokio::net::UdpSocket;
+
+use crate::audio_devices;
 
 use super::state::AppState;
 
@@ -36,8 +38,8 @@ pub fn new_listen_queue() -> ListenQueue {
 /// native rate as audio arrives, instead of re-resampling from scratch (with a phase
 /// reset — an audible click) on every single output callback.
 pub fn default_output_sample_rate() -> u32 {
-    cpal::default_host()
-        .default_output_device()
+    audio_devices::resolve_configured_output_device()
+        .ok()
         .and_then(|d| d.default_output_config().ok())
         .map(|c| c.sample_rate().0)
         .unwrap_or(OPUS_SAMPLE_RATE)
@@ -66,10 +68,7 @@ fn pull_queued(queue: &ListenQueue, count: usize) -> Vec<i16> {
 }
 
 fn run_output_stream(queue: ListenQueue) -> Result<()> {
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .context("no default output device")?;
+    let device = audio_devices::resolve_configured_output_device()?;
     // Match the device's own mix format instead of forcing mono/16kHz — most hardware
     // rejects that combination outright (see the same fix in student::audio). The
     // queue already holds samples resampled to this exact rate.

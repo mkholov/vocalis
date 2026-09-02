@@ -1,4 +1,6 @@
+pub mod audio_devices;
 pub mod screen_capture;
+pub mod settings;
 pub mod student;
 pub mod teacher;
 pub mod theme;

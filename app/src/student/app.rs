@@ -38,6 +38,15 @@ pub struct StudentApp {
     /// `None` per slot until the student picks an option for that question.
     /// Immediate-mode UI needs this to live across frames; cleared once submitted.
     test_answers: HashMap<lingua_common::AssignmentId, Vec<Option<usize>>>,
+    /// Local, per-machine preferences — see `settings::Settings`'s doc comment.
+    /// Loaded once at launch; device/language choices only take effect the
+    /// next time capture/playback actually starts (mic and output device are
+    /// both opened once for the process's whole lifetime), but the video
+    /// quality ceiling applies to the very next screen demo this student
+    /// presents, since that's started fresh each time.
+    settings: crate::settings::Settings,
+    /// Whether the "⚙ Настройки" window is currently open.
+    settings_open: bool,
 }
 
 impl StudentApp {
@@ -199,6 +208,106 @@ impl StudentApp {
             let _ = tx.send(ClientToServer::FileOffer { name, data });
         }
     }
+
+    /// Local, per-machine preferences: audio devices, and (since this student
+    /// might themselves end up presenting a screen demo — see
+    /// `screen::run_video_upload`) the same video quality ceiling the teacher
+    /// settings tab offers. Saved to disk immediately on any change, and (for
+    /// the video quality, which a live connection can pick up without a
+    /// restart) written straight through into `SharedState` too.
+    fn settings_window(&mut self, ctx: &egui::Context) {
+        if !self.settings_open {
+            return;
+        }
+        let mut open = self.settings_open;
+        let mut changed = false;
+        let mut new_video_quality = None;
+        egui::Window::new("⚙ Настройки").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.colored_label(
+                theme::MUTED,
+                "Сохраняются сразу. Выбор устройств ввода/вывода звука применяется при \
+                 следующем запуске приложения.",
+            );
+            ui.add_space(10.0);
+
+            ui.strong("Аудиоустройства");
+            ui.add_space(6.0);
+            ui.label("Микрофон:");
+            let input_names = crate::audio_devices::list_input_device_names();
+            let current_input = self.settings.input_device.clone().unwrap_or_else(|| "Системное по умолчанию".to_string());
+            egui::ComboBox::from_id_salt("student_settings_input_device").selected_text(current_input).show_ui(ui, |ui| {
+                if ui.selectable_label(self.settings.input_device.is_none(), "Системное по умолчанию").clicked() {
+                    self.settings.input_device = None;
+                    changed = true;
+                }
+                for name in &input_names {
+                    if ui.selectable_label(self.settings.input_device.as_deref() == Some(name.as_str()), name).clicked() {
+                        self.settings.input_device = Some(name.clone());
+                        changed = true;
+                    }
+                }
+            });
+            ui.add_space(6.0);
+            ui.label("Устройство вывода:");
+            let output_names = crate::audio_devices::list_output_device_names();
+            let current_output = self.settings.output_device.clone().unwrap_or_else(|| "Системное по умолчанию".to_string());
+            egui::ComboBox::from_id_salt("student_settings_output_device").selected_text(current_output).show_ui(ui, |ui| {
+                if ui.selectable_label(self.settings.output_device.is_none(), "Системное по умолчанию").clicked() {
+                    self.settings.output_device = None;
+                    changed = true;
+                }
+                for name in &output_names {
+                    if ui.selectable_label(self.settings.output_device.as_deref() == Some(name.as_str()), name).clicked() {
+                        self.settings.output_device = Some(name.clone());
+                        changed = true;
+                    }
+                }
+            });
+
+            ui.add_space(14.0);
+            ui.strong("Качество видео (если вы демонстрируете экран)");
+            ui.add_space(6.0);
+            ui.colored_label(
+                theme::MUTED,
+                "Потолок — при нехватке производительности во время демонстрации автоматическая \
+                 деградация всё равно может снижать качество дальше.",
+            );
+            ui.add_space(6.0);
+            for quality in crate::settings::VideoQuality::ALL {
+                if ui.radio_value(&mut self.settings.video_quality, quality, quality.label()).clicked() {
+                    changed = true;
+                    new_video_quality = Some(quality);
+                }
+            }
+
+            ui.add_space(14.0);
+            ui.strong("Язык интерфейса");
+            ui.add_space(6.0);
+            egui::ComboBox::from_id_salt("student_settings_language").selected_text(self.settings.language.label()).show_ui(ui, |ui| {
+                if ui
+                    .selectable_value(
+                        &mut self.settings.language,
+                        crate::settings::Language::Russian,
+                        crate::settings::Language::Russian.label(),
+                    )
+                    .clicked()
+                {
+                    changed = true;
+                }
+            });
+        });
+        self.settings_open = open;
+
+        if let Some(quality) = new_video_quality {
+            self.state.lock().unwrap().video_quality = quality;
+        }
+        if changed {
+            if let Err(e) = self.settings.save() {
+                tracing::warn!("failed to save settings: {e:#}");
+            }
+        }
+    }
 }
 
 impl eframe::App for StudentApp {
@@ -316,8 +425,15 @@ impl eframe::App for StudentApp {
                 ui.separator();
                 ui.label("🎙");
                 theme::wave_meter(ui, audio::MIC_LEVEL_MILLIS.load(Ordering::Relaxed));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("⚙ Настройки").clicked() {
+                        self.settings_open = !self.settings_open;
+                    }
+                });
             });
         });
+
+        self.settings_window(ctx);
 
         if let Some(err) = self.state.lock().unwrap().last_error.clone() {
             egui::TopBottomPanel::top("error_banner").show(ctx, |ui| {
@@ -680,8 +796,16 @@ impl StudentApp {
     /// learns the user picked the student role.
     pub fn launch() -> Self {
         let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+
+        let settings = crate::settings::Settings::load();
+        // Must happen before `audio::default_output_sample_rate()` below, or
+        // the (lazily-started, only-once-per-process) output stream — see
+        // `audio_devices::configure_output_device`'s doc comment.
+        crate::audio_devices::configure_output_device(settings.output_device.clone());
+
         let state: AppState = Arc::new(Mutex::new(SharedState {
             saved_recordings: recording::list_existing(),
+            video_quality: settings.video_quality,
             ..SharedState::default()
         }));
 
@@ -742,7 +866,7 @@ impl StudentApp {
 
         let (mic_tx, mic_rx) = mpsc::unbounded_channel::<Vec<i16>>();
         let (mic_capture, mic_sample_rate) =
-            mic::start_mic_capture(mic_tx).expect("failed to start microphone capture");
+            mic::start_mic_capture(mic_tx, settings.input_device.as_deref()).expect("failed to start microphone capture");
         {
             let state = state.clone();
             let mix = mix.clone();
@@ -774,6 +898,8 @@ impl StudentApp {
             chat_input: String::new(),
             demo_texture: None,
             test_answers: HashMap::new(),
+            settings,
+            settings_open: false,
         }
     }
 }

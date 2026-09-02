@@ -1,5 +1,5 @@
-use anyhow::{Context, Result};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use anyhow::Result;
+use cpal::traits::{DeviceTrait, StreamTrait};
 use tokio::sync::mpsc;
 use tracing::warn;
 
@@ -8,13 +8,12 @@ pub struct MicCapture {
     _stream: cpal::Stream,
 }
 
-/// Opens the default microphone and streams mono i16 chunks to `tx` as they arrive.
-/// Returns the capture handle (keep it alive) and the device's native sample rate.
-pub fn start_mic_capture(tx: mpsc::UnboundedSender<Vec<i16>>) -> Result<(MicCapture, u32)> {
-    let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .context("no default microphone found")?;
+/// Opens `device_name` (or the system default, if `None` or not found — see
+/// `audio_devices::resolve_input_device`) and streams mono i16 chunks to `tx`
+/// as they arrive. Returns the capture handle (keep it alive) and the
+/// device's native sample rate.
+pub fn start_mic_capture(tx: mpsc::UnboundedSender<Vec<i16>>, device_name: Option<&str>) -> Result<(MicCapture, u32)> {
+    let device = crate::audio_devices::resolve_input_device(device_name)?;
     let config = device.default_input_config()?;
     let sample_rate = config.sample_rate().0;
     let channels = config.channels() as usize;

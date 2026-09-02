@@ -142,6 +142,12 @@ pub struct SharedState {
     /// a frame render.
     pub demo_frame: Option<DemoFrame>,
     pub demo_frame_version: u64,
+    /// This student's own configured video quality ceiling (see
+    /// `settings::VideoQuality`), set once at launch from `Settings::load()`.
+    /// Lives here (not just on `StudentApp`) because `screen::run_video_upload`
+    /// is started from inside `net::connect_to_teacher`'s message loop, which
+    /// only has this shared state to read from, not the GUI struct.
+    pub video_quality: crate::settings::VideoQuality,
 }
 
 pub type AppState = Arc<Mutex<SharedState>>;

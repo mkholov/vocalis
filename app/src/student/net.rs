@@ -206,11 +206,14 @@ pub async fn connect_to_teacher(
                 guard.demo_frame = None;
             }
             Ok(ServerToClient::StartVideoUpload) => {
-                state.lock().unwrap().screen_boosted = true;
-                let teacher_ip = state.lock().unwrap().teacher_addr;
+                let (teacher_ip, starting_level) = {
+                    let mut guard = state.lock().unwrap();
+                    guard.screen_boosted = true;
+                    (guard.teacher_addr, guard.video_quality.ladder_level())
+                };
                 if let Some(teacher_ip) = teacher_ip {
                     _video_upload_task = Some(AbortOnDrop(tokio::spawn(async move {
-                        if let Err(e) = super::screen::run_video_upload(teacher_ip, session_key).await {
+                        if let Err(e) = super::screen::run_video_upload(teacher_ip, session_key, starting_level).await {
                             tracing::warn!("video upload task stopped: {e:#}");
                         }
                     })));

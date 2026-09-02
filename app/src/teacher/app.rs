@@ -8,7 +8,7 @@ use lingua_common::{AssignmentKind, ServerToClient, StudentId, CONTROL_PORT};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::theme;
+use crate::{audio_devices, settings, theme};
 
 use super::state::{self, AppState, Presence, SharedState};
 use super::{csv_export, db, listen, materials, mic, net, screen, system_audio};
@@ -72,6 +72,7 @@ enum Tab {
     Assignments,
     Roster,
     ConnectionLog,
+    Settings,
 }
 
 /// Which kind of assignment the "Задания" tab's editor is currently authoring.
@@ -201,10 +202,17 @@ pub struct TeacherApp {
     roster_view_class_id: i64,
     /// New-class-name field for the "Создать класс" inline form on the roster tab.
     roster_new_class_name: String,
+    /// Local, per-machine preferences (audio devices, video quality ceiling,
+    /// UI language) — loaded once at launch, saved back to disk immediately
+    /// on every change from the "Настройки" tab. See `settings::Settings`'s
+    /// doc comment for why these live in their own file rather than the
+    /// lesson database.
+    settings: settings::Settings,
 }
 
 impl TeacherApp {
-    fn new(state: AppState, rt: tokio::runtime::Runtime, teacher_name: Arc<str>, class_id: i64) -> Self {
+    #[allow(clippy::too_many_arguments)]
+    fn new(state: AppState, rt: tokio::runtime::Runtime, teacher_name: Arc<str>, class_id: i64, settings: settings::Settings) -> Self {
         Self {
             state,
             _rt: rt,
@@ -229,6 +237,7 @@ impl TeacherApp {
             log_filter_current_lesson: true,
             roster_view_class_id: class_id,
             roster_new_class_name: String::new(),
+            settings,
         }
     }
 
@@ -243,7 +252,7 @@ impl TeacherApp {
         self.stop_playback();
 
         let (tx, rx) = mpsc::unbounded_channel::<Vec<i16>>();
-        match mic::start_mic_capture(tx, &mic::MIC_LEVEL_MILLIS) {
+        match mic::start_mic_capture(tx, &mic::MIC_LEVEL_MILLIS, self.settings.input_device.as_deref()) {
             Ok((capture, sample_rate)) => {
                 let state = self.state.clone();
                 let broadcast_task = self
@@ -428,7 +437,8 @@ impl TeacherApp {
         if let state::ScreenDemoSource::Teacher = source {
             let state = self.state.clone();
             let video_targets = targets.clone();
-            let task = self._rt.spawn(async move { screen::run_own_screen_demo(state, video_targets).await });
+            let starting_level = self.settings.video_quality.ladder_level();
+            let task = self._rt.spawn(async move { screen::run_own_screen_demo(state, video_targets, starting_level).await });
             self.screen_demo_task = Some(task);
 
             self.screen_system_audio = self.start_screen_system_audio(targets);
@@ -545,7 +555,7 @@ impl TeacherApp {
         self.state.lock().unwrap().start_listening(id);
 
         let (tx, rx) = mpsc::unbounded_channel::<Vec<i16>>();
-        match mic::start_mic_capture(tx, &mic::INTERCOM_MIC_LEVEL_MILLIS) {
+        match mic::start_mic_capture(tx, &mic::INTERCOM_MIC_LEVEL_MILLIS, self.settings.input_device.as_deref()) {
             Ok((capture, sample_rate)) => {
                 let target = std::net::SocketAddr::new(ip, lingua_common::TEACHER_INTERCOM_PORT);
                 let send_task = self
@@ -969,6 +979,8 @@ impl eframe::App for TeacherApp {
             self.roster_tab(ctx);
         } else if self.tab == Tab::ConnectionLog {
             self.connection_log_tab(ctx);
+        } else if self.tab == Tab::Settings {
+            self.settings_tab(ctx);
         } else if self.focus {
             self.focus_view(ctx);
         } else {
@@ -1036,6 +1048,7 @@ impl TeacherApp {
                 ui.selectable_value(&mut self.tab, Tab::Assignments, "Задания");
                 ui.selectable_value(&mut self.tab, Tab::Roster, "Список класса");
                 ui.selectable_value(&mut self.tab, Tab::ConnectionLog, "Журнал");
+                ui.selectable_value(&mut self.tab, Tab::Settings, "⚙ Настройки");
 
                 ui.add_space(12.0);
                 let locked = self.state.lock().unwrap().mics_locked;
@@ -2046,6 +2059,105 @@ impl TeacherApp {
         });
     }
 
+    /// Local, per-machine preferences: audio devices, the screen-demo video
+    /// quality ceiling, and (for now, a single-choice placeholder) UI
+    /// language. Saved to disk immediately on any change.
+    fn settings_tab(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("Настройки");
+            ui.colored_label(
+                theme::MUTED,
+                "Сохраняются сразу. Выбор устройств ввода/вывода звука применяется при \
+                 следующем запуске захвата/воспроизведения — например, при повторном нажатии \
+                 «Транслировать», начале нового разговора с учеником, или следующем запуске \
+                 приложения.",
+            );
+            ui.add_space(14.0);
+
+            let mut changed = false;
+
+            ui.group(|ui| {
+                ui.set_width(440.0);
+                ui.strong("Аудиоустройства");
+                ui.add_space(6.0);
+
+                ui.label("Микрофон:");
+                let input_names = audio_devices::list_input_device_names();
+                let current_input = self.settings.input_device.clone().unwrap_or_else(|| "Системное по умолчанию".to_string());
+                egui::ComboBox::from_id_salt("settings_input_device").selected_text(current_input).show_ui(ui, |ui| {
+                    if ui.selectable_label(self.settings.input_device.is_none(), "Системное по умолчанию").clicked() {
+                        self.settings.input_device = None;
+                        changed = true;
+                    }
+                    for name in &input_names {
+                        if ui.selectable_label(self.settings.input_device.as_deref() == Some(name.as_str()), name).clicked() {
+                            self.settings.input_device = Some(name.clone());
+                            changed = true;
+                        }
+                    }
+                });
+                ui.add_space(8.0);
+
+                ui.label("Устройство вывода:");
+                let output_names = audio_devices::list_output_device_names();
+                let current_output = self.settings.output_device.clone().unwrap_or_else(|| "Системное по умолчанию".to_string());
+                egui::ComboBox::from_id_salt("settings_output_device").selected_text(current_output).show_ui(ui, |ui| {
+                    if ui.selectable_label(self.settings.output_device.is_none(), "Системное по умолчанию").clicked() {
+                        self.settings.output_device = None;
+                        changed = true;
+                    }
+                    for name in &output_names {
+                        if ui.selectable_label(self.settings.output_device.as_deref() == Some(name.as_str()), name).clicked() {
+                            self.settings.output_device = Some(name.clone());
+                            changed = true;
+                        }
+                    }
+                });
+            });
+
+            ui.add_space(14.0);
+
+            ui.group(|ui| {
+                ui.set_width(440.0);
+                ui.strong("Качество видео-трансляции");
+                ui.add_space(6.0);
+                ui.colored_label(
+                    theme::MUTED,
+                    "Это потолок — при нехватке производительности во время демонстрации \
+                     автоматическая деградация всё равно может снижать качество дальше.",
+                );
+                ui.add_space(6.0);
+                for quality in settings::VideoQuality::ALL {
+                    if ui.radio_value(&mut self.settings.video_quality, quality, quality.label()).clicked() {
+                        changed = true;
+                    }
+                }
+            });
+
+            ui.add_space(14.0);
+
+            ui.group(|ui| {
+                ui.set_width(440.0);
+                ui.strong("Язык интерфейса");
+                ui.add_space(6.0);
+                egui::ComboBox::from_id_salt("settings_language").selected_text(self.settings.language.label()).show_ui(ui, |ui| {
+                    if ui
+                        .selectable_value(&mut self.settings.language, settings::Language::Russian, settings::Language::Russian.label())
+                        .clicked()
+                    {
+                        changed = true;
+                    }
+                });
+            });
+
+            if changed {
+                if let Err(e) = self.settings.save() {
+                    tracing::warn!("failed to save settings: {e:#}");
+                }
+            }
+        });
+    }
+
     /// Opens a save dialog and writes `name`'s cross-lesson history as CSV. Runs
     /// its own `student_history` query rather than taking an already-fetched
     /// slice — only happens on a click, so the extra round-trip against a small
@@ -2218,6 +2330,12 @@ impl TeacherApp {
     pub fn launch(teacher_name: String, class_id: i64, class_name: String) -> Self {
         let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
 
+        let settings = settings::Settings::load();
+        // Must happen before anything below queries an output sample rate or
+        // starts the (lazily-started, only-once-per-process) output stream —
+        // see `audio_devices::configure_output_device`'s doc comment.
+        audio_devices::configure_output_device(settings.output_device.clone());
+
         let class_size: usize = std::env::var("VOCALIS_CLASS_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(16);
         let lesson_pin = std::env::var("VOCALIS_LESSON_PIN")
             .ok()
@@ -2284,6 +2402,6 @@ impl TeacherApp {
             });
         }
 
-        TeacherApp::new(state, rt, teacher_name, class_id)
+        TeacherApp::new(state, rt, teacher_name, class_id, settings)
     }
 }

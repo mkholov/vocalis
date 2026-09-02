@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use lingua_common::{
     crypto, encode_audio_packet, new_decoder, new_encoder, split_audio_packet, Resampler,
     SequenceTracker, FRAME_SAMPLES, MIC_PORT, OPUS_SAMPLE_RATE, PEER_PORT, SCREEN_AUDIO_PORT,
@@ -13,6 +13,8 @@ use lingua_common::{
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
+use crate::audio_devices;
+
 use super::state::AppState;
 
 /// Queried once at startup and threaded through every decode path, so audio is
@@ -20,8 +22,8 @@ use super::state::AppState;
 /// re-resampled from scratch (with a phase reset, i.e. an audible click) on every
 /// single output callback.
 pub fn default_output_sample_rate() -> u32 {
-    cpal::default_host()
-        .default_output_device()
+    audio_devices::resolve_configured_output_device()
+        .ok()
         .and_then(|d| d.default_output_config().ok())
         .map(|c| c.sample_rate().0)
         .unwrap_or(OPUS_SAMPLE_RATE)
@@ -99,10 +101,7 @@ fn pull_mixed(mix: &SharedMix, count: usize) -> Vec<i16> {
 }
 
 fn run_output_stream(mix: SharedMix) -> Result<()> {
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .context("no default output device")?;
+    let device = audio_devices::resolve_configured_output_device()?;
     // The device's own mix format (commonly 2ch/48kHz) — every source in `mix` has
     // already been resampled to this exact rate as it was decoded.
     let config = device

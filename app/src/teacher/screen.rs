@@ -21,13 +21,14 @@ use crate::video;
 
 use super::state::{self, AppState};
 
-/// Captures the teacher's own screen (at `video::VIDEO_FPS`, degrading to
-/// `AdaptiveQuality`'s lower steps if this machine can't keep up),
+/// Captures the teacher's own screen (starting at `starting_level` — see
+/// `settings::VideoQuality::ladder_level` — and degrading to
+/// `AdaptiveQuality`'s lower steps from there if this machine can't keep up),
 /// H.264-encodes it, and UDP-sends each frame's packets to `targets` until
 /// `state.screen_demo` is cleared (by the "Stop" button, or by starting a
 /// different demo) — checked once per capture tick rather than driven by a
 /// cancellation signal, since the loop already wakes up on that cadence anyway.
-pub async fn run_own_screen_demo(state: AppState, targets: Vec<StudentId>) {
+pub async fn run_own_screen_demo(state: AppState, targets: Vec<StudentId>, starting_level: usize) {
     let socket = match UdpSocket::bind(("0.0.0.0", 0)).await {
         Ok(s) => s,
         Err(e) => {
@@ -50,7 +51,7 @@ pub async fn run_own_screen_demo(state: AppState, targets: Vec<StudentId>) {
         }
     };
     let mut frame_seq: u32 = 0;
-    let mut quality = video::AdaptiveQuality::new();
+    let mut quality = video::AdaptiveQuality::new(starting_level);
     // `Delay` (not the default `Burst`) so a machine that falls behind just
     // ticks less often from here on, rather than firing a backlog of missed
     // ticks back-to-back the moment it catches a break — the ladder in

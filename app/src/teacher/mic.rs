@@ -1,8 +1,8 @@
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicI32, Ordering};
 
-use anyhow::{Context, Result};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use anyhow::Result;
+use cpal::traits::{DeviceTrait, StreamTrait};
 use lingua_common::{
     crypto, encode_audio_packet, new_encoder, Resampler, SessionKey, StudentId, FRAME_SAMPLES,
     OPUS_SAMPLE_RATE, SCREEN_AUDIO_PORT,
@@ -27,19 +27,19 @@ pub struct MicCapture {
     _stream: cpal::Stream,
 }
 
-/// Opens the default microphone and starts pushing mono i16 chunks to `tx` as they
-/// arrive, reporting RMS level into `level` as it goes (pass `&MIC_LEVEL_MILLIS` or
-/// `&INTERCOM_MIC_LEVEL_MILLIS` depending on which pipeline is capturing — the two
-/// can run concurrently, each with its own independent `cpal` input stream). Returns
-/// the capture handle (keep it alive) and the device's native sample rate.
+/// Opens `device_name` (or the system default, if `None` or not found — see
+/// `audio_devices::resolve_input_device`) and starts pushing mono i16 chunks
+/// to `tx` as they arrive, reporting RMS level into `level` as it goes (pass
+/// `&MIC_LEVEL_MILLIS` or `&INTERCOM_MIC_LEVEL_MILLIS` depending on which
+/// pipeline is capturing — the two can run concurrently, each with its own
+/// independent `cpal` input stream). Returns the capture handle (keep it
+/// alive) and the device's native sample rate.
 pub fn start_mic_capture(
     tx: mpsc::UnboundedSender<Vec<i16>>,
     level: &'static AtomicI32,
+    device_name: Option<&str>,
 ) -> Result<(MicCapture, u32)> {
-    let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .context("no default microphone found")?;
+    let device = crate::audio_devices::resolve_input_device(device_name)?;
     let config = device.default_input_config()?;
     let sample_rate = config.sample_rate().0;
     let channels = config.channels() as usize;

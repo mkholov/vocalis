@@ -45,14 +45,17 @@ pub async fn run_screen_capture(to_server: mpsc::UnboundedSender<ClientToServer>
 /// unchanged the whole time this is also active. `teacher_ip`/`key` are fixed
 /// for the task's lifetime (mirrors `mic::run_intercom_send`'s shape) since
 /// neither can change without the connection itself being torn down, which
-/// also tears down this task via `AbortOnDrop`.
-pub async fn run_video_upload(teacher_ip: IpAddr, key: SessionKey) -> Result<()> {
+/// also tears down this task via `AbortOnDrop`. `starting_level` is this
+/// student's own configured video quality ceiling (see
+/// `settings::VideoQuality::ladder_level`) — their own machine, their own
+/// preference, same as the teacher's own-screen path.
+pub async fn run_video_upload(teacher_ip: IpAddr, key: SessionKey, starting_level: usize) -> Result<()> {
     let socket = UdpSocket::bind(("0.0.0.0", 0)).await?;
     let target = (teacher_ip, TEACHER_SCREEN_UPLOAD_PORT);
     let capture = MonitorCapture::primary()?;
     let mut encoder = video::new_encoder()?;
     let mut frame_seq: u32 = 0;
-    let mut quality = video::AdaptiveQuality::new();
+    let mut quality = video::AdaptiveQuality::new(starting_level);
     // See `teacher::screen::run_own_screen_demo`'s matching comment: `Delay`
     // (not the default `Burst`) so a slow machine just ticks less often from
     // here on instead of firing a backlog of missed ticks back-to-back.
