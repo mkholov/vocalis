@@ -9,20 +9,24 @@
 //!   student's own encoded packets on to the audience as they arrive, never
 //!   decoding them.
 
+use std::time::Instant;
+
 use anyhow::Result;
 use lingua_common::{crypto, StudentId, SCREEN_VIDEO_PORT, TEACHER_SCREEN_UPLOAD_PORT};
 use tokio::net::UdpSocket;
+use tokio::time::MissedTickBehavior;
 
 use crate::screen_capture::MonitorCapture;
 use crate::video;
 
 use super::state::{self, AppState};
 
-/// Captures the teacher's own screen at `video::VIDEO_FPS`, H.264-encodes it,
-/// and UDP-sends each frame's packets to `targets` until `state.screen_demo`
-/// is cleared (by the "Stop" button, or by starting a different demo) —
-/// checked once per capture tick rather than driven by a cancellation signal,
-/// since the loop already wakes up on that cadence anyway.
+/// Captures the teacher's own screen (at `video::VIDEO_FPS`, degrading to
+/// `AdaptiveQuality`'s lower steps if this machine can't keep up),
+/// H.264-encodes it, and UDP-sends each frame's packets to `targets` until
+/// `state.screen_demo` is cleared (by the "Stop" button, or by starting a
+/// different demo) — checked once per capture tick rather than driven by a
+/// cancellation signal, since the loop already wakes up on that cadence anyway.
 pub async fn run_own_screen_demo(state: AppState, targets: Vec<StudentId>) {
     let socket = match UdpSocket::bind(("0.0.0.0", 0)).await {
         Ok(s) => s,
@@ -46,7 +50,15 @@ pub async fn run_own_screen_demo(state: AppState, targets: Vec<StudentId>) {
         }
     };
     let mut frame_seq: u32 = 0;
-    let mut ticker = tokio::time::interval(video::VIDEO_CAPTURE_INTERVAL);
+    let mut quality = video::AdaptiveQuality::new();
+    // `Delay` (not the default `Burst`) so a machine that falls behind just
+    // ticks less often from here on, rather than firing a backlog of missed
+    // ticks back-to-back the moment it catches a break — the ladder in
+    // `AdaptiveQuality` is what actually brings the target rate down to
+    // something sustainable; this just keeps the gap from turning into a
+    // growing queue of "already late" work in the meantime.
+    let mut ticker = tokio::time::interval(quality.capture_interval());
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
         ticker.tick().await;
@@ -57,7 +69,8 @@ pub async fn run_own_screen_demo(state: AppState, targets: Vec<StudentId>) {
             }
         }
 
-        let yuv = match video::capture_frame_yuv(&capture) {
+        let frame_started = Instant::now();
+        let yuv = match video::capture_frame_yuv(&capture, quality.width()) {
             Ok(y) => y,
             Err(e) => {
                 tracing::warn!("teacher screen capture failed: {e:#}");
@@ -71,6 +84,11 @@ pub async fn run_own_screen_demo(state: AppState, targets: Vec<StudentId>) {
                 continue;
             }
         };
+        if quality.record_frame_time(frame_started.elapsed()) {
+            ticker = tokio::time::interval(quality.capture_interval());
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        }
+
         let packets = lingua_common::encode_video_packets(frame_seq, &bitstream);
         frame_seq = frame_seq.wrapping_add(1);
 
