@@ -27,6 +27,22 @@ pub struct MonitorCapture {
     monitor: xcap::Monitor,
 }
 
+// SAFETY: on Windows, `xcap::Monitor` wraps nothing but an `HMONITOR` — an
+// opaque, thread-agnostic display identifier (a plain handle value, not a
+// COM interface pointer with apartment affinity). `windows-rs` still marks
+// handle newtypes like it `!Send` by default because they wrap a raw
+// `*mut c_void`, but no live capture session or other thread-affine state is
+// ever stored on `Monitor`/`ImplMonitor` across calls: each `capture_image()`
+// call sets up and tears down its own GDI/WGC/DXGI session entirely within
+// that one call, on whatever thread happens to invoke it. So moving a
+// `MonitorCapture` to a different thread than the one that resolved it (as
+// happens whenever a capture loop holds one across a tokio `.await` point,
+// since the async runtime may resume the task on a different worker thread)
+// is sound. On platforms where the wrapped type is already auto-`Send`
+// (macOS), this impl is simply redundant, not conflicting — Rust only
+// considers auto-derivation in the absence of an explicit impl.
+unsafe impl Send for MonitorCapture {}
+
 impl MonitorCapture {
     pub fn primary() -> Result<Self> {
         let monitors = xcap::Monitor::all().context("listing monitors")?;
