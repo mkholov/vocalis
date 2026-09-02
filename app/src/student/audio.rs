@@ -7,7 +7,8 @@ use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use lingua_common::{
     crypto, encode_audio_packet, new_decoder, new_encoder, split_audio_packet, Resampler,
-    SequenceTracker, FRAME_SAMPLES, MIC_PORT, OPUS_SAMPLE_RATE, PEER_PORT, TEACHER_INTERCOM_PORT,
+    SequenceTracker, FRAME_SAMPLES, MIC_PORT, OPUS_SAMPLE_RATE, PEER_PORT, SCREEN_AUDIO_PORT,
+    TEACHER_INTERCOM_PORT,
 };
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
@@ -43,6 +44,10 @@ pub struct MixState {
     /// if ever needed — it's mixed in exactly the same way at playback time.
     pub intercom: VecDeque<i16>,
     pub peers: HashMap<SocketAddr, VecDeque<i16>>,
+    /// The teacher's *system* audio (screen-demo sound, not their mic) — its own
+    /// queue so it stays distinct from `broadcast` even though both can be live
+    /// during a demo where the teacher also talks over it.
+    pub screen_demo_audio: VecDeque<i16>,
 }
 
 pub type SharedMix = Arc<Mutex<MixState>>;
@@ -84,6 +89,7 @@ fn pull_mixed(mix: &SharedMix, count: usize) -> Vec<i16> {
         .map(|_| {
             let mut acc: i32 = state.broadcast.pop_front().unwrap_or(0) as i32;
             acc += state.intercom.pop_front().unwrap_or(0) as i32;
+            acc += state.screen_demo_audio.pop_front().unwrap_or(0) as i32;
             for q in state.peers.values_mut() {
                 acc += q.pop_front().unwrap_or(0) as i32;
             }
@@ -202,6 +208,40 @@ pub async fn run_intercom_receiver(state: AppState, mix: SharedMix, output_rate:
         ensure_output_started(mix.clone());
         let resampled = resampler.push(&samples);
         push_capped(&mut mix.lock().unwrap().intercom, &resampled, output_rate);
+    }
+}
+
+/// Listens for the teacher's system audio (screen-demo sound, not their mic —
+/// see `teacher::system_audio`), conceals dropped packets, resamples to the
+/// speaker's native rate and mixes the result into `mix.screen_demo_audio`.
+/// Always bound, exactly like the broadcast/intercom receivers above — idle
+/// (nothing arrives) whenever no teacher-sourced demo with system audio is
+/// running, including on platforms where the teacher side never captures any
+/// (there's nothing student-side that needs to know or care why).
+pub async fn run_screen_audio_receiver(state: AppState, mix: SharedMix, output_rate: u32) -> Result<()> {
+    let socket = UdpSocket::bind(("0.0.0.0", SCREEN_AUDIO_PORT)).await?;
+    let mut decoder = new_decoder()?;
+    let mut tracker = SequenceTracker::new();
+    let mut resampler = Resampler::new(OPUS_SAMPLE_RATE, output_rate);
+    let mut buf = [0u8; 4096];
+    loop {
+        let (len, _from) = socket.recv_from(&mut buf).await?;
+        let Some(key) = state.lock().unwrap().session_key else {
+            continue;
+        };
+        let Ok(plaintext) = crypto::decrypt(&key, &buf[..len]) else {
+            continue;
+        };
+        let Some((seq, payload)) = split_audio_packet(&plaintext) else {
+            continue;
+        };
+        let samples = tracker.decode(&mut decoder, seq, payload);
+        if samples.is_empty() {
+            continue;
+        }
+        ensure_output_started(mix.clone());
+        let resampled = resampler.push(&samples);
+        push_capped(&mut mix.lock().unwrap().screen_demo_audio, &resampled, output_rate);
     }
 }
 

@@ -730,6 +730,15 @@ impl StudentApp {
                 }
             });
         }
+        {
+            let state = state.clone();
+            let mix = mix.clone();
+            rt.spawn(async move {
+                if let Err(e) = audio::run_screen_audio_receiver(state, mix, output_rate).await {
+                    tracing::warn!("screen-demo audio receiver stopped: {e:#}");
+                }
+            });
+        }
 
         let (mic_tx, mic_rx) = mpsc::unbounded_channel::<Vec<i16>>();
         let (mic_capture, mic_sample_rate) =

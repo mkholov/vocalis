@@ -44,3 +44,11 @@ sha2 = "0.11"
 # source via `cc`/`nasm-rs` — no system lib or Windows dll download needed;
 # already verified to build on both macOS and Windows (see `codec-check/`).
 openh264 = { version = "0.9", features = ["source"] }
+
+# Teacher's system-audio (WASAPI loopback) capture during a screen demo —
+# Windows-only, same pattern as winres in bin-*/Cargo.toml. `wasapi` (by the
+# CamillaDSP author) is a small, focused wrapper purpose-built for this exact
+# loopback-capture use case, rather than a general cross-platform audio crate
+# bolting loopback on as an afterthought.
+[target.'cfg(windows)'.dependencies]
+wasapi = "0.24"

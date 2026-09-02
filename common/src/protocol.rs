@@ -28,6 +28,12 @@ pub const SCREEN_VIDEO_PORT: u16 = 47996;
 /// these packets on to `SCREEN_VIDEO_PORT` for every other student without
 /// decoding them.
 pub const TEACHER_SCREEN_UPLOAD_PORT: u16 = 47997;
+/// UDP port each student listens on for the teacher's *system* audio (what's
+/// actually playing on the teacher's machine — a video's sound, etc., not the
+/// microphone) — streamed only while a teacher-sourced screen demo is active,
+/// and deliberately never on `MIC_PORT` so it can't get mixed in with a
+/// concurrent mic broadcast.
+pub const SCREEN_AUDIO_PORT: u16 = 47998;
 
 pub const DISCOVERY_MAGIC: &[u8; 8] = b"LINGUA1\0";
 

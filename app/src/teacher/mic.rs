@@ -3,7 +3,10 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use lingua_common::{crypto, encode_audio_packet, new_encoder, Resampler, SessionKey, FRAME_SAMPLES, OPUS_SAMPLE_RATE};
+use lingua_common::{
+    crypto, encode_audio_packet, new_encoder, Resampler, SessionKey, StudentId, FRAME_SAMPLES,
+    OPUS_SAMPLE_RATE, SCREEN_AUDIO_PORT,
+};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -159,6 +162,47 @@ pub async fn run_intercom_send(
             seq = seq.wrapping_add(1);
             let encrypted = crypto::encrypt(&key, &packet);
             let _ = socket.send_to(&encrypted, target).await;
+        }
+    }
+    Ok(())
+}
+
+/// Resamples to 16kHz, Opus-encodes, and fans each frame out (UDP, per-
+/// recipient encrypted) to `targets` on `SCREEN_AUDIO_PORT` — the teacher's
+/// *system* audio (see `system_audio`), streamed alongside a teacher-sourced
+/// screen demo. Structurally the same pipeline as `run_mic_broadcast`, just a
+/// separate port/stream so it never gets mixed with a concurrent mic
+/// broadcast: the teacher can talk over the video without the two merging
+/// into one. `targets` is fixed for the task's lifetime, exactly like the
+/// video demo's own target list — started and stopped together with it.
+pub async fn run_screen_audio_broadcast(
+    state: AppState,
+    mut rx: mpsc::UnboundedReceiver<Vec<i16>>,
+    native_rate: u32,
+    targets: Vec<StudentId>,
+) -> Result<()> {
+    let socket = UdpSocket::bind(("0.0.0.0", 0)).await?;
+    let mut resampler = Resampler::new(native_rate, OPUS_SAMPLE_RATE);
+    let encoder = new_encoder()?;
+    let mut seq: u32 = 0;
+    let mut pending: Vec<i16> = Vec::new();
+
+    while let Some(chunk) = rx.recv().await {
+        pending.extend(resampler.push(&chunk));
+        while pending.len() >= FRAME_SAMPLES {
+            let frame: Vec<i16> = pending.drain(..FRAME_SAMPLES).collect();
+            let mut opus_buf = [0u8; 4000];
+            let n = match encoder.encode(&frame, &mut opus_buf) {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            let packet = encode_audio_packet(seq, &opus_buf[..n]);
+            seq = seq.wrapping_add(1);
+            let addrs_with_keys = state.lock().unwrap().addrs_with_keys(&targets, SCREEN_AUDIO_PORT);
+            for (addr, key) in addrs_with_keys {
+                let encrypted = crypto::encrypt(&key, &packet);
+                let _ = socket.send_to(&encrypted, addr).await;
+            }
         }
     }
     Ok(())

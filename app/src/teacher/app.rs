@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::theme;
 
 use super::state::{self, AppState, Presence, SharedState};
-use super::{csv_export, db, listen, materials, mic, net, screen};
+use super::{csv_export, db, listen, materials, mic, net, screen, system_audio};
 
 // Test/Listening/Reading now go through the "Задания" tab's authored-template
 // library (real questions/content, not a label) — this quick-send list is left
@@ -138,6 +138,14 @@ struct MicHandle {
     _broadcast_task: tokio::task::JoinHandle<()>,
 }
 
+/// Same shape as `MicHandle` (capture handle + its broadcast task, the task
+/// ending on its own once the capture side drops its channel sender), for the
+/// teacher's system-audio stream during a self-sourced screen demo.
+struct SystemAudioHandle {
+    _capture: system_audio::SystemAudioCapture,
+    _broadcast_task: tokio::task::JoinHandle<()>,
+}
+
 pub struct TeacherApp {
     state: AppState,
     _rt: tokio::runtime::Runtime,
@@ -155,6 +163,13 @@ pub struct TeacherApp {
     /// `Teacher`. Demoing a *student's* screen instead needs no task here at all —
     /// `teacher::net` just relays that student's existing uploads as they arrive.
     screen_demo_task: Option<tokio::task::JoinHandle<()>>,
+    /// The teacher's system-audio capture, alongside `screen_demo_task` — only
+    /// ever `Some` for a `ScreenDemoSource::Teacher` demo (system audio is the
+    /// *teacher's* machine's sound; demoing a student's screen has no
+    /// equivalent to capture here). `None` whenever loopback capture isn't
+    /// available (e.g. on macOS, or a Windows machine with no default playback
+    /// device) — the video demo still runs fine without it.
+    screen_system_audio: Option<SystemAudioHandle>,
     textures: HashMap<StudentId, (u64, egui::TextureHandle)>,
     selected: HashSet<StudentId>,
     dragging: Option<StudentId>,
@@ -197,6 +212,7 @@ impl TeacherApp {
             intercom: None,
             playback: None,
             screen_demo_task: None,
+            screen_system_audio: None,
             textures: HashMap::new(),
             selected: HashSet::new(),
             dragging: None,
@@ -411,9 +427,33 @@ impl TeacherApp {
 
         if let state::ScreenDemoSource::Teacher = source {
             let state = self.state.clone();
-            let task = self._rt.spawn(async move { screen::run_own_screen_demo(state, targets).await });
+            let video_targets = targets.clone();
+            let task = self._rt.spawn(async move { screen::run_own_screen_demo(state, video_targets).await });
             self.screen_demo_task = Some(task);
+
+            self.screen_system_audio = self.start_screen_system_audio(targets);
         }
+    }
+
+    /// Starts capturing and broadcasting the teacher's system audio for a
+    /// teacher-sourced screen demo, if loopback capture is available on this
+    /// platform/machine (Windows only — see `system_audio`'s doc comment).
+    /// Returns `None` (logging why) rather than treating it as a hard error:
+    /// the video keeps working with or without this stream.
+    fn start_screen_system_audio(&mut self, targets: Vec<StudentId>) -> Option<SystemAudioHandle> {
+        let (tx, rx) = mpsc::unbounded_channel::<Vec<i16>>();
+        let (capture, native_rate) = match system_audio::start_system_audio_capture(tx) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::info!("no system audio for this screen demo: {e:#}");
+                return None;
+            }
+        };
+        let state = self.state.clone();
+        let task = self
+            ._rt
+            .spawn(async move { let _ = mic::run_screen_audio_broadcast(state, rx, native_rate, targets).await; });
+        Some(SystemAudioHandle { _capture: capture, _broadcast_task: task })
     }
 
     /// Stops whatever screen demo is currently active, if any. Safe to call when
@@ -422,6 +462,7 @@ impl TeacherApp {
         if let Some(task) = self.screen_demo_task.take() {
             task.abort();
         }
+        self.screen_system_audio = None;
         let mut guard = self.state.lock().unwrap();
         if let Some(demo) = guard.screen_demo.take() {
             for id in &demo.targets {
