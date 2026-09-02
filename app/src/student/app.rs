@@ -225,7 +225,7 @@ impl StudentApp {
         egui::Window::new("⚙ Настройки").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             ui.set_width(380.0);
             ui.colored_label(
-                theme::MUTED,
+                theme::muted(),
                 "Сохраняются сразу. Выбор устройств ввода/вывода звука применяется при \
                  следующем запуске приложения.",
             );
@@ -266,10 +266,20 @@ impl StudentApp {
             });
 
             ui.add_space(14.0);
+            ui.strong("Тема оформления");
+            ui.add_space(6.0);
+            for theme_choice in [crate::settings::Theme::Dark, crate::settings::Theme::Light] {
+                if ui.radio_value(&mut self.settings.theme, theme_choice, theme_choice.label()).clicked() {
+                    theme::apply(ctx, self.settings.theme.is_light());
+                    changed = true;
+                }
+            }
+
+            ui.add_space(14.0);
             ui.strong("Качество видео (если вы демонстрируете экран)");
             ui.add_space(6.0);
             ui.colored_label(
-                theme::MUTED,
+                theme::muted(),
                 "Потолок — при нехватке производительности во время демонстрации автоматическая \
                  деградация всё равно может снижать качество дальше.",
             );
@@ -391,7 +401,7 @@ impl eframe::App for StudentApp {
             }
             egui::TopBottomPanel::top("demo_top").show(ctx, |ui| {
                 ui.add_space(4.0);
-                ui.colored_label(theme::ACCENT, format!("🖥 Демонстрация экрана: {presenter}"));
+                ui.colored_label(theme::accent(), format!("🖥 Демонстрация экрана: {presenter}"));
                 ui.add_space(4.0);
             });
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -404,7 +414,7 @@ impl eframe::App for StudentApp {
                     });
                 } else {
                     ui.centered_and_justified(|ui| {
-                        ui.colored_label(theme::MUTED, "Ожидание изображения…");
+                        ui.colored_label(theme::muted(), "Ожидание изображения…");
                     });
                 }
             });
@@ -417,7 +427,7 @@ impl eframe::App for StudentApp {
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.heading(egui::RichText::new("Vocalis — клиент ученика").color(theme::ACCENT));
+                ui.heading(egui::RichText::new("Vocalis — клиент ученика").color(theme::accent()));
                 ui.separator();
                 if already_connected {
                     ui.label(format!("Имя: {}", self.student_name));
@@ -477,7 +487,7 @@ impl eframe::App for StudentApp {
             };
 
             if screen_boosted {
-                ui.colored_label(theme::ACCENT, "🖥 Ваш экран сейчас транслируется классу");
+                ui.colored_label(theme::accent(), "🖥 Ваш экран сейчас транслируется классу");
             }
 
             // "Модельное произношение": the teacher played (or is playing) a
@@ -485,14 +495,14 @@ impl eframe::App for StudentApp {
             // here, since this is exactly when a student would want it.
             if let Some(title) = &material_title {
                 egui::Frame::none()
-                    .fill(theme::ACCENT.linear_multiply(0.3))
+                    .fill(theme::accent().linear_multiply(0.3))
                     .rounding(egui::Rounding::same(8.0))
                     .inner_margin(egui::Margin::symmetric(12.0, 8.0))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             let verb = if material_playing { "звучит" } else { "прозвучал" };
                             ui.colored_label(
-                                theme::ACCENT_300,
+                                theme::accent_300(),
                                 format!("🎧 Сейчас {verb} материал «{title}». Повторите за диктором!"),
                             );
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -580,12 +590,12 @@ impl eframe::App for StudentApp {
                 ui.colored_label(theme::OK, format!("✅ Подключено к: {teacher_name}"));
                 if intercom_active {
                     egui::Frame::none()
-                        .fill(theme::ACCENT.linear_multiply(0.3))
+                        .fill(theme::accent().linear_multiply(0.3))
                         .rounding(egui::Rounding::same(8.0))
                         .inner_margin(egui::Margin::symmetric(12.0, 8.0))
                         .show(ui, |ui| {
                             ui.colored_label(
-                                theme::ACCENT_300,
+                                theme::accent_300(),
                                 "🎧 Преподаватель говорит с вами лично — это приватный разговор, не общий урок",
                             );
                         });
@@ -623,7 +633,7 @@ impl eframe::App for StudentApp {
                     for (id, title, kind, done, content, last_score) in &assignments {
                         ui.group(|ui| {
                             ui.horizontal(|ui| {
-                                ui.colored_label(theme::ACCENT, format!("[{}]", kind.label()));
+                                ui.colored_label(theme::accent(), format!("[{}]", kind.label()));
                                 ui.strong(title);
                             });
                             match content {
@@ -761,7 +771,7 @@ impl eframe::App for StudentApp {
                 entries.sort_by(|a, b| a.1.cmp(&b.1));
 
                 if entries.is_empty() {
-                    ui.colored_label(theme::MUTED, "Пока никого не найдено. Убедитесь, что находитесь в одной сети с преподавателем.");
+                    ui.colored_label(theme::muted(), "Пока никого не найдено. Убедитесь, что находитесь в одной сети с преподавателем.");
                 }
 
                 let mut to_connect = None;

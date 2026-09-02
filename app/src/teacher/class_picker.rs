@@ -43,7 +43,7 @@ impl ClassPickerScreen {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(60.0);
-                ui.heading(egui::RichText::new("Vocalis").size(36.0).color(theme::ACCENT));
+                ui.heading(egui::RichText::new("Vocalis").size(36.0).color(theme::accent()));
                 ui.label("Для какого класса этот урок?");
                 ui.add_space(24.0);
 
@@ -51,7 +51,7 @@ impl ClassPickerScreen {
                     ui.set_width(360.0);
 
                     if self.classes.is_empty() {
-                        ui.colored_label(theme::MUTED, "Классов пока нет — создайте первый ниже.");
+                        ui.colored_label(theme::muted(), "Классов пока нет — создайте первый ниже.");
                     } else {
                         for class in &self.classes {
                             if ui.selectable_label(self.selected_class_id == Some(class.id), &class.name).clicked() {

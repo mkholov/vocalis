@@ -164,7 +164,7 @@ pub fn run_launcher() -> eframe::Result<()> {
         "Vocalis — лингафонный кабинет",
         native_options(include_bytes!("../../assets/vocalis-logo.png")),
         Box::new(move |cc| {
-            theme::apply(&cc.egui_ctx);
+            theme::apply(&cc.egui_ctx, settings::Settings::load().theme.is_light());
             Ok(Box::new(VocalisApp::Launcher {
                 teacher_name: default_teacher_name,
             }))
@@ -185,7 +185,7 @@ pub fn run_teacher() -> eframe::Result<()> {
         "Vocalis — консоль преподавателя",
         native_options(include_bytes!("../../assets/vocalis-logo-teacher.png")),
         Box::new(move |cc| {
-            theme::apply(&cc.egui_ctx);
+            theme::apply(&cc.egui_ctx, settings::Settings::load().theme.is_light());
             Ok(Box::new(TeacherEntry::Auth(teacher::auth::AuthScreen::new())))
         }),
     )
@@ -199,7 +199,7 @@ pub fn run_student() -> eframe::Result<()> {
         "Vocalis — клиент ученика",
         native_options(include_bytes!("../../assets/vocalis-logo-student.png")),
         Box::new(move |cc| {
-            theme::apply(&cc.egui_ctx);
+            theme::apply(&cc.egui_ctx, settings::Settings::load().theme.is_light());
             Ok(Box::new(student::app::StudentApp::launch()))
         }),
     )

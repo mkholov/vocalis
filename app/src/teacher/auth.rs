@@ -87,7 +87,7 @@ impl AuthScreen {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(60.0);
-                ui.heading(egui::RichText::new("Vocalis").size(36.0).color(theme::ACCENT));
+                ui.heading(egui::RichText::new("Vocalis").size(36.0).color(theme::accent()));
                 ui.label("Лингафонный кабинет — консоль преподавателя");
                 ui.add_space(24.0);
 

@@ -1,5 +1,6 @@
 //! Local, per-machine app preferences: audio device choices, the screen-demo
-//! video quality ceiling, and (for now, a placeholder for) UI language.
+//! video quality ceiling, dark/light theme, and (for now, a placeholder for)
+//! UI language.
 //!
 //! Deliberately *not* part of the teacher's lesson SQLite database — these
 //! are "how this install is configured" facts, unrelated to any particular
@@ -71,6 +72,29 @@ impl VideoQuality {
     }
 }
 
+/// Dark is the app's original, primary theme (see `theme`'s doc comment) —
+/// light is available as a toggle, applied immediately on change (no
+/// restart) and used from launch onward via `theme::apply`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Theme {
+    #[default]
+    Dark,
+    Light,
+}
+
+impl Theme {
+    pub fn label(self) -> &'static str {
+        match self {
+            Theme::Dark => "Тёмная",
+            Theme::Light => "Светлая",
+        }
+    }
+
+    pub fn is_light(self) -> bool {
+        matches!(self, Theme::Light)
+    }
+}
+
 /// `None` on either device field means "system default" — resolved fresh
 /// each time capture/playback actually starts (see `audio_devices`), so a
 /// device that's since been unplugged or renamed never hard-fails a launch,
@@ -80,6 +104,7 @@ pub struct Settings {
     pub input_device: Option<String>,
     pub output_device: Option<String>,
     pub video_quality: VideoQuality,
+    pub theme: Theme,
     pub language: Language,
 }
 

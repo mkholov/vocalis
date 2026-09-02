@@ -24,7 +24,7 @@ const ASSIGNMENT_TEMPLATES: &[(&str, AssignmentKind)] = &[
 
 fn assignment_kind_color(kind: AssignmentKind) -> egui::Color32 {
     match kind {
-        AssignmentKind::Listening => theme::ACCENT,
+        AssignmentKind::Listening => theme::accent(),
         AssignmentKind::Test => theme::WARN,
         AssignmentKind::Dialogue => egui::Color32::from_rgb(122, 162, 247),
         AssignmentKind::Pronunciation => theme::OK,
@@ -33,9 +33,9 @@ fn assignment_kind_color(kind: AssignmentKind) -> egui::Color32 {
 
 fn presence_label_color(p: Presence) -> (&'static str, egui::Color32) {
     match p {
-        Presence::Empty => ("Не подключен", theme::MUTED),
+        Presence::Empty => ("Не подключен", theme::muted()),
         Presence::NeedsHelp => ("Просит помощь", theme::WARN),
-        Presence::Speaking => ("Говорит", theme::ACCENT),
+        Presence::Speaking => ("Говорит", theme::accent()),
         Presence::Connected => ("На связи", theme::OK),
     }
 }
@@ -43,9 +43,9 @@ fn presence_label_color(p: Presence) -> (&'static str, egui::Color32) {
 fn event_label_color(event: &str) -> (&'static str, egui::Color32) {
     match event {
         "connected" => ("Подключился", theme::OK),
-        "disconnected" => ("Отключился", theme::MUTED),
+        "disconnected" => ("Отключился", theme::muted()),
         "rejected_pin" => ("⚠ Отклонён: неверный PIN", theme::DANGER),
-        _ => ("?", theme::MUTED),
+        _ => ("?", theme::muted()),
     }
 }
 
@@ -999,12 +999,12 @@ impl TeacherApp {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.heading(egui::RichText::new("Vocalis").color(theme::ACCENT));
+                ui.heading(egui::RichText::new("Vocalis").color(theme::accent()));
                 ui.label("Лингафонный кабинет");
                 ui.add_space(8.0);
 
                 egui::Frame::none()
-                    .fill(egui::Color32::from_rgb(41, 46, 54))
+                    .fill(theme::chip_bg())
                     .rounding(egui::Rounding::same(14.0))
                     .inner_margin(egui::Margin::symmetric(10.0, 4.0))
                     .show(ui, |ui| {
@@ -1017,9 +1017,9 @@ impl TeacherApp {
                     });
 
                 ui.add_space(8.0);
-                ui.colored_label(theme::MUTED, "PIN урока:");
+                ui.colored_label(theme::muted(), "PIN урока:");
                 egui::Frame::none()
-                    .fill(egui::Color32::from_rgb(41, 46, 54))
+                    .fill(theme::chip_bg())
                     .rounding(egui::Rounding::same(14.0))
                     .inner_margin(egui::Margin::symmetric(10.0, 4.0))
                     .show(ui, |ui| {
@@ -1128,7 +1128,7 @@ impl TeacherApp {
                     }
                 });
             } else if roster_status == state::RosterStatus::AcceptedGuest {
-                ui.colored_label(theme::MUTED, "Гость (принят вручную)");
+                ui.colored_label(theme::muted(), "Гость (принят вручную)");
             }
             ui.horizontal(|ui| {
                 let btn_label = if locked { "Разблокировать" } else { "Заблокировать" };
@@ -1163,7 +1163,7 @@ impl TeacherApp {
                 }
             });
             if talking {
-                ui.colored_label(theme::MUTED, "Приватный разговор — не слышен остальному классу");
+                ui.colored_label(theme::muted(), "Приватный разговор — не слышен остальному классу");
             }
             ui.horizontal(|ui| {
                 let demo_label = if demoing_this_student { "⏹ Остановить демонстрацию" } else { "🖥 Показать классу" };
@@ -1172,7 +1172,7 @@ impl TeacherApp {
                 }
             });
             if demoing_this_student {
-                ui.colored_label(theme::MUTED, "Экран этого ученика виден остальному классу");
+                ui.colored_label(theme::muted(), "Экран этого ученика виден остальному классу");
             }
             if test_mode {
                 let (color, text) = if test_violations > 0 {
@@ -1195,11 +1195,11 @@ impl TeacherApp {
                 }
             }
         } else {
-            ui.colored_label(theme::MUTED, "Выберите ученика в сетке, чтобы прослушать его или отправить задание.");
+            ui.colored_label(theme::muted(), "Выберите ученика в сетке, чтобы прослушать его или отправить задание.");
         }
 
         ui.add_space(14.0);
-        ui.colored_label(theme::MUTED, "БЫСТРЫЕ ДЕЙСТВИЯ");
+        ui.colored_label(theme::muted(), "БЫСТРЫЕ ДЕЙСТВИЯ");
         ui.add_space(4.0);
 
         let locked = self.state.lock().unwrap().mics_locked;
@@ -1228,7 +1228,7 @@ impl TeacherApp {
         }
 
         ui.add_space(16.0);
-        ui.colored_label(theme::MUTED, "ЗАДАНИЯ");
+        ui.colored_label(theme::muted(), "ЗАДАНИЯ");
         ui.add_space(4.0);
         for (title, kind) in ASSIGNMENT_TEMPLATES {
             ui.horizontal(|ui| {
@@ -1253,7 +1253,7 @@ impl TeacherApp {
 
         ui.add_space(16.0);
         ui.separator();
-        ui.colored_label(theme::MUTED, "ЧАТ");
+        ui.colored_label(theme::muted(), "ЧАТ");
         egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
             let guard = self.state.lock().unwrap();
             for entry in &guard.chat_log {
@@ -1284,7 +1284,7 @@ impl TeacherApp {
                 if ui.add(egui::DragValue::new(&mut size).range(1..=60)).changed() {
                     self.state.lock().unwrap().class_size = size.max(1) as usize;
                 }
-                ui.colored_label(theme::MUTED, "мест:");
+                ui.colored_label(theme::muted(), "мест:");
             });
         });
         ui.add_space(10.0);
@@ -1385,7 +1385,7 @@ impl TeacherApp {
             .rounding(egui::Rounding::same(12.0))
             .inner_margin(egui::Margin::same(14.0))
             .stroke(if selected {
-                egui::Stroke::new(2.5_f32, theme::ACCENT)
+                egui::Stroke::new(2.5_f32, theme::accent())
             } else {
                 ui.style().visuals.widgets.noninteractive.bg_stroke
             });
@@ -1397,13 +1397,13 @@ impl TeacherApp {
                 match occupant {
                     None => {
                         ui.horizontal(|ui| {
-                            ui.colored_label(theme::MUTED, format!("#{seat}"));
+                            ui.colored_label(theme::muted(), format!("#{seat}"));
                         });
                         ui.centered_and_justified(|ui| {
                             if let Some(name) = &waiting_name {
                                 ui.vertical_centered(|ui| {
-                                    ui.colored_label(theme::MUTED, name);
-                                    ui.colored_label(theme::MUTED, "ожидание");
+                                    ui.colored_label(theme::muted(), name);
+                                    ui.colored_label(theme::muted(), "ожидание");
                                 });
                             } else {
                                 let (label, color) = presence_label_color(Presence::Empty);
@@ -1431,9 +1431,9 @@ impl TeacherApp {
                             }
                         };
                         ui.horizontal(|ui| {
-                            ui.colored_label(theme::MUTED, format!("#{seat}"));
+                            ui.colored_label(theme::muted(), format!("#{seat}"));
                             if group {
-                                ui.colored_label(theme::ACCENT, "🔗");
+                                ui.colored_label(theme::accent(), "🔗");
                             }
                             if unrecognized {
                                 ui.colored_label(theme::WARN, "❓").on_hover_text("Не найден(а) в списке класса");
@@ -1527,7 +1527,7 @@ impl TeacherApp {
                     ui.image((tex.id(), size * scale));
                 });
             } else {
-                ui.colored_label(theme::MUTED, "Пока нет изображения экрана.");
+                ui.colored_label(theme::muted(), "Пока нет изображения экрана.");
             }
         });
     }
@@ -1570,7 +1570,7 @@ impl TeacherApp {
             });
 
             ui.add_space(10.0);
-            ui.colored_label(theme::MUTED, "ЗА ВСЁ ВРЕМЯ (сохранено локально)");
+            ui.colored_label(theme::muted(), "ЗА ВСЁ ВРЕМЯ (сохранено локально)");
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 stat_tile(ui, "УРОКОВ ПРОВЕДЕНО", &history.lessons_count.to_string());
@@ -1583,7 +1583,7 @@ impl TeacherApp {
             });
 
             ui.add_space(16.0);
-            ui.colored_label(theme::MUTED, "ПРОГРЕСС ПО УЧЕНИКАМ");
+            ui.colored_label(theme::muted(), "ПРОГРЕСС ПО УЧЕНИКАМ");
             ui.add_space(6.0);
 
             type Row = (usize, StudentId, String, Presence, usize, Vec<(String, AssignmentKind, bool, Option<(u32, u32)>)>, Option<u32>);
@@ -1609,11 +1609,11 @@ impl TeacherApp {
 
             egui::ScrollArea::vertical().show(ui, |ui| {
                 egui::Grid::new("stats_table").num_columns(5).striped(true).min_col_width(80.0).show(ui, |ui| {
-                    ui.colored_label(theme::MUTED, "МЕСТО");
-                    ui.colored_label(theme::MUTED, "УЧЕНИК");
-                    ui.colored_label(theme::MUTED, "СТАТУС");
-                    ui.colored_label(theme::MUTED, "ЗАДАНИЙ");
-                    ui.colored_label(theme::MUTED, "СРЕДНИЙ БАЛЛ");
+                    ui.colored_label(theme::muted(), "МЕСТО");
+                    ui.colored_label(theme::muted(), "УЧЕНИК");
+                    ui.colored_label(theme::muted(), "СТАТУС");
+                    ui.colored_label(theme::muted(), "ЗАДАНИЙ");
+                    ui.colored_label(theme::muted(), "СРЕДНИЙ БАЛЛ");
                     ui.end_row();
 
                     for (seat, id, name, presence, done, assignments, score) in rows {
@@ -1631,7 +1631,7 @@ impl TeacherApp {
                         ui.label(format!("{done}/{total}"))
                             .on_hover_ui(|ui| {
                                 if assignments.is_empty() {
-                                    ui.colored_label(theme::MUTED, "Заданий пока не отправлено");
+                                    ui.colored_label(theme::muted(), "Заданий пока не отправлено");
                                 }
                                 for (title, kind, is_done, test_score) in &assignments {
                                     ui.horizontal(|ui| {
@@ -1642,7 +1642,7 @@ impl TeacherApp {
                                         ui.colored_label(assignment_kind_color(*kind), kind.label());
                                         ui.label(title);
                                         if let Some((correct, total)) = test_score {
-                                            ui.colored_label(theme::MUTED, format!("({correct}/{total})"));
+                                            ui.colored_label(theme::muted(), format!("({correct}/{total})"));
                                         }
                                     });
                                 }
@@ -1690,7 +1690,7 @@ impl TeacherApp {
             });
             ui.add_space(6.0);
             ui.colored_label(
-                theme::MUTED,
+                theme::muted(),
                 "Воспроизведение идёт по тому же каналу, что и живой микрофон: выберите учеников в разделе «Класс», чтобы включить только им — иначе прозвучит всему классу.",
             );
             ui.add_space(12.0);
@@ -1709,7 +1709,7 @@ impl TeacherApp {
             if let Some((_, title, elapsed_ms, total_ms)) = &playing {
                 egui::Frame::group(ui.style()).rounding(egui::Rounding::same(10.0)).show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.colored_label(theme::ACCENT, format!("▶ Сейчас играет: {title}"));
+                        ui.colored_label(theme::accent(), format!("▶ Сейчас играет: {title}"));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("⏹ Остановить").clicked() {
                                 self.stop_playback();
@@ -1730,7 +1730,7 @@ impl TeacherApp {
             }
 
             if materials.is_empty() {
-                ui.colored_label(theme::MUTED, "Материалов пока нет — загрузите mp3 или wav файл.");
+                ui.colored_label(theme::muted(), "Материалов пока нет — загрузите mp3 или wav файл.");
             }
 
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -1760,7 +1760,7 @@ impl TeacherApp {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("Библиотека заданий");
                 ui.colored_label(
-                    theme::MUTED,
+                    theme::muted(),
                     "Отправка — выберите учеников в разделе «Класс», иначе задание уйдёт всему классу.",
                 );
                 ui.add_space(10.0);
@@ -1771,7 +1771,7 @@ impl TeacherApp {
                 };
 
                 if templates.is_empty() {
-                    ui.colored_label(theme::MUTED, "Пока нет ни одного созданного задания — соберите его ниже.");
+                    ui.colored_label(theme::muted(), "Пока нет ни одного созданного задания — соберите его ниже.");
                 }
                 let mut to_send = None;
                 for (id, kind, title) in &templates {
@@ -1877,7 +1877,7 @@ impl TeacherApp {
                 }
             });
         if materials.is_empty() {
-            ui.colored_label(theme::MUTED, "Материалов пока нет — загрузите их во вкладке «Материалы».");
+            ui.colored_label(theme::muted(), "Материалов пока нет — загрузите их во вкладке «Материалы».");
         }
         ui.add_space(10.0);
         ui.label("Вопросы по материалу (без автопроверки — ученик просто отмечает задание выполненным):");
@@ -1896,7 +1896,7 @@ impl TeacherApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Список класса");
             ui.colored_label(
-                theme::MUTED,
+                theme::muted(),
                 "Заранее заданный список ФИО — просто для порядка и статистики посещаемости: подключение \
                  с любым другим именем всё равно проходит (по PIN-коду), но учитель увидит мягкое предупреждение.",
             );
@@ -1956,7 +1956,7 @@ impl TeacherApp {
                     .collect()
             };
             if roster.is_empty() {
-                ui.colored_label(theme::MUTED, "Список пока пуст.");
+                ui.colored_label(theme::muted(), "Список пока пуст.");
             }
 
             let mut to_delete = None;
@@ -2022,7 +2022,7 @@ impl TeacherApp {
                 });
             });
             ui.colored_label(
-                theme::MUTED,
+                theme::muted(),
                 "Последние 200 записей, сначала новые. Особое внимание — попытки с неверным PIN: \
                  повторяющиеся с одного имени/IP могут значить, что кто-то подбирает код урока.",
             );
@@ -2035,15 +2035,15 @@ impl TeacherApp {
             };
 
             if entries.is_empty() {
-                ui.colored_label(theme::MUTED, "Записей пока нет.");
+                ui.colored_label(theme::muted(), "Записей пока нет.");
             }
 
             egui::ScrollArea::vertical().show(ui, |ui| {
                 egui::Grid::new("connection_log_table").num_columns(4).striped(true).min_col_width(100.0).show(ui, |ui| {
-                    ui.colored_label(theme::MUTED, "ВРЕМЯ");
-                    ui.colored_label(theme::MUTED, "УЧЕНИК");
-                    ui.colored_label(theme::MUTED, "IP");
-                    ui.colored_label(theme::MUTED, "СОБЫТИЕ");
+                    ui.colored_label(theme::muted(), "ВРЕМЯ");
+                    ui.colored_label(theme::muted(), "УЧЕНИК");
+                    ui.colored_label(theme::muted(), "IP");
+                    ui.colored_label(theme::muted(), "СОБЫТИЕ");
                     ui.end_row();
 
                     for entry in &entries {
@@ -2066,7 +2066,7 @@ impl TeacherApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Настройки");
             ui.colored_label(
-                theme::MUTED,
+                theme::muted(),
                 "Сохраняются сразу. Выбор устройств ввода/вывода звука применяется при \
                  следующем запуске захвата/воспроизведения — например, при повторном нажатии \
                  «Транслировать», начале нового разговора с учеником, или следующем запуске \
@@ -2119,10 +2119,24 @@ impl TeacherApp {
 
             ui.group(|ui| {
                 ui.set_width(440.0);
+                ui.strong("Тема оформления");
+                ui.add_space(6.0);
+                for theme_choice in [settings::Theme::Dark, settings::Theme::Light] {
+                    if ui.radio_value(&mut self.settings.theme, theme_choice, theme_choice.label()).clicked() {
+                        theme::apply(ctx, self.settings.theme.is_light());
+                        changed = true;
+                    }
+                }
+            });
+
+            ui.add_space(14.0);
+
+            ui.group(|ui| {
+                ui.set_width(440.0);
                 ui.strong("Качество видео-трансляции");
                 ui.add_space(6.0);
                 ui.colored_label(
-                    theme::MUTED,
+                    theme::muted(),
                     "Это потолок — при нехватке производительности во время демонстрации \
                      автоматическая деградация всё равно может снижать качество дальше.",
                 );
@@ -2240,16 +2254,16 @@ impl TeacherApp {
             };
 
             if history.is_empty() {
-                ui.colored_label(theme::MUTED, "Данных пока нет — ученик ещё не участвовал в уроках под этим именем.");
+                ui.colored_label(theme::muted(), "Данных пока нет — ученик ещё не участвовал в уроках под этим именем.");
                 return;
             }
 
             egui::ScrollArea::vertical().show(ui, |ui| {
                 egui::Grid::new("history_table").num_columns(4).striped(true).min_col_width(100.0).show(ui, |ui| {
-                    ui.colored_label(theme::MUTED, "ДАТА");
-                    ui.colored_label(theme::MUTED, "КЛАСС");
-                    ui.colored_label(theme::MUTED, "ОЦЕНКА");
-                    ui.colored_label(theme::MUTED, "ТЕСТЫ");
+                    ui.colored_label(theme::muted(), "ДАТА");
+                    ui.colored_label(theme::muted(), "КЛАСС");
+                    ui.colored_label(theme::muted(), "ОЦЕНКА");
+                    ui.colored_label(theme::muted(), "ТЕСТЫ");
                     ui.end_row();
 
                     for entry in &history {
@@ -2257,7 +2271,7 @@ impl TeacherApp {
                         ui.label(&entry.class_name);
                         ui.label(entry.score.map(|v| format!("{v}%")).unwrap_or_else(|| "—".to_string()));
                         if entry.test_results.is_empty() {
-                            ui.colored_label(theme::MUTED, "—");
+                            ui.colored_label(theme::muted(), "—");
                         } else {
                             ui.vertical(|ui| {
                                 for tr in &entry.test_results {
@@ -2315,7 +2329,7 @@ fn stat_tile(ui: &mut egui::Ui, label: &str, value: &str) {
         .inner_margin(egui::Margin::symmetric(16.0, 12.0))
         .show(ui, |ui| {
             ui.set_min_width(200.0);
-            ui.colored_label(theme::MUTED, label);
+            ui.colored_label(theme::muted(), label);
             ui.add_space(4.0);
             ui.heading(value);
         });
