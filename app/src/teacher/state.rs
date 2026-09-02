@@ -285,6 +285,18 @@ impl SharedState {
             .collect()
     }
 
+    /// `ids`' addresses on `port`, each paired with that student's own session
+    /// key — the general form of `student_addrs_with_keys` for a specific
+    /// subset and port, used by the screen-demo video fan-out (own-screen send
+    /// and student-sourced relay), which unlike the mic broadcast targets a
+    /// selection rather than always the whole class.
+    pub fn addrs_with_keys(&self, ids: &[StudentId], port: u16) -> Vec<(SocketAddr, SessionKey)> {
+        ids.iter()
+            .filter_map(|id| self.students.get(id))
+            .map(|s| (SocketAddr::new(s.ip, port), s.session_key))
+            .collect()
+    }
+
     /// Puts `members` into a brand new group, notifying each member of the others.
     pub fn create_group(&mut self, members: &[StudentId]) {
         if members.len() < 2 {

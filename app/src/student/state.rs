@@ -50,6 +50,19 @@ pub struct RecordingEntry {
     pub duration_secs: f32,
 }
 
+/// One decoded frame of the live screen-demo video stream, ready to upload as
+/// an egui texture. `rgba` is `Arc`-wrapped (rather than a plain `Vec<u8>`) so
+/// the UI thread's per-frame check in `StudentApp::update` — clone if the
+/// version changed, skip otherwise — never has to memcpy a multi-megabyte
+/// buffer just to look at it; cloning an `Arc` is a refcount bump regardless
+/// of how big the frame is.
+#[derive(Clone)]
+pub struct DemoFrame {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Arc<[u8]>,
+}
+
 #[derive(Default)]
 pub struct SharedState {
     /// Keyed by the teacher's TCP control address.
@@ -112,16 +125,22 @@ pub struct SharedState {
     /// completes (`ServerToClient::MaterialStopped` arrives).
     pub reference: Option<RecordingEntry>,
     /// Set while *this* student's own screen is the one being demoed to the rest
-    /// of the class — tells `screen::run_screen_capture` to switch to demo-grade
-    /// quality/rate, and drives a small "your screen is being shown" notice.
+    /// of the class — drives a small "your screen is being shown" notice, and
+    /// gates the H.264 upload task started/stopped by `ServerToClient::Start`/
+    /// `StopVideoUpload` (see `net::connect_to_teacher`). Entirely independent
+    /// of the passive `ClientToServer::ScreenFrame` monitoring upload, which
+    /// keeps running unchanged regardless of this flag.
     pub screen_boosted: bool,
     /// Display name of whoever is presenting, while a screen demo (teacher's own
     /// or a relayed student's) is being shown to this student. `None` = no demo.
     pub demo_presenter: Option<String>,
-    /// Latest frame of the active demo, and a version counter bumped on each new
-    /// frame — same "poll and diff" pattern the teacher's grid uses for student
-    /// screen thumbnails, so the GUI only re-uploads the texture when it changes.
-    pub last_demo_frame_jpeg: Option<Vec<u8>>,
+    /// Latest decoded frame of the active demo, and a version counter bumped on
+    /// each new frame — same "poll and diff" pattern the teacher's grid uses for
+    /// student screen thumbnails, so the GUI only re-uploads the texture when it
+    /// changes. Decoding happens off the UI thread, in
+    /// `screen::run_screen_demo_receiver`, so a 15fps video stream never blocks
+    /// a frame render.
+    pub demo_frame: Option<DemoFrame>,
     pub demo_frame_version: u64,
 }
 

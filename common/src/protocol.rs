@@ -18,6 +18,16 @@ pub const TEACHER_LISTEN_PORT: u16 = 47994;
 /// its own independent Opus stream, which needs its own port rather than a
 /// discriminator byte grafted onto the shared packet format.
 pub const TEACHER_INTERCOM_PORT: u16 = 47995;
+/// UDP port each student listens on for the live screen-demo video stream —
+/// whether its source is the teacher's own screen or (relayed through the
+/// teacher, see `TEACHER_SCREEN_UPLOAD_PORT`) another student's.
+pub const SCREEN_VIDEO_PORT: u16 = 47996;
+/// UDP port the teacher listens on for a presenting student's own encoded
+/// video, when demoing *that* student's screen to the class — mirrors
+/// `TEACHER_LISTEN_PORT`'s one-student-at-a-time shape. The teacher relays
+/// these packets on to `SCREEN_VIDEO_PORT` for every other student without
+/// decoding them.
+pub const TEACHER_SCREEN_UPLOAD_PORT: u16 = 47997;
 
 pub const DISCOVERY_MAGIC: &[u8; 8] = b"LINGUA1\0";
 
@@ -184,21 +194,21 @@ pub enum ServerToClient {
     MaterialStopped,
     /// A full-class screen demonstration started — either the teacher's own
     /// screen, or (relayed through the teacher) another student's. `presenter` is
-    /// a display name for the "Демонстрация экрана: <кто>" indicator; frames
-    /// follow as `ScreenDemoFrame`.
+    /// a display name for the "Демонстрация экрана: <кто>" indicator; live H.264
+    /// video follows over UDP on `SCREEN_VIDEO_PORT`, encrypted under this
+    /// connection's session key like everything else post-handshake.
     StartScreenDemo {
         presenter: String,
     },
     StopScreenDemo,
-    /// One frame of an active screen demo (see `StartScreenDemo`).
-    ScreenDemoFrame {
-        jpeg: Vec<u8>,
-    },
-    /// Sent only to the student whose screen is being demoed to the class: raises
-    /// (or restores) their own `ScreenFrame` capture to demo-grade quality/rate —
-    /// the passive monitoring cadence is deliberately too light for the rest of
-    /// the class to actually read along.
-    SetScreenCaptureBoost(bool),
+    /// Sent only to the student whose screen is being demoed to the class: start
+    /// (or stop) capturing, H.264-encoding, and UDP-streaming their own screen to
+    /// the teacher on `TEACHER_SCREEN_UPLOAD_PORT` — mirrors
+    /// `StartMicUpload`/`StopMicUpload`'s shape. Entirely separate from the
+    /// passive monitoring `ClientToServer::ScreenFrame` upload, which keeps
+    /// running unchanged regardless.
+    StartVideoUpload,
+    StopVideoUpload,
     /// Master mic switch: while locked, the student mustn't transmit mic audio to
     /// anyone (group peers or the teacher), e.g. to keep a test quiet.
     SetMicLocked(bool),

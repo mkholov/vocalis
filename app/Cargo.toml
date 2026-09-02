@@ -40,3 +40,7 @@ symphonia = { version = "0.5", default-features = false, features = ["wav", "pcm
 # for that, plain salted+iterated SHA-256 (see teacher::auth) is minimal-weight
 # and enough; argon2 would be the right call if this ever needs to be stronger.
 sha2 = "0.11"
+# Screen-demo video codec. `source` builds Cisco's C encoder/decoder from
+# source via `cc`/`nasm-rs` — no system lib or Windows dll download needed;
+# already verified to build on both macOS and Windows (see `codec-check/`).
+openh264 = { version = "0.9", features = ["source"] }

@@ -2,6 +2,7 @@ pub mod screen_capture;
 pub mod student;
 pub mod teacher;
 pub mod theme;
+pub mod video;
 
 use eframe::egui;
 

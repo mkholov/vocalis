@@ -4564,6 +4564,7 @@ dependencies = [
  "image",
  "lingua-common",
  "open",
+ "openh264",
  "rfd",
  "rusqlite",
  "serde",

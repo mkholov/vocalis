@@ -399,7 +399,7 @@ impl TeacherApp {
             }
             if let state::ScreenDemoSource::Student(presenter_id) = source {
                 if let Some(s) = guard.students.get(&presenter_id) {
-                    let _ = s.to_client.send(ServerToClient::SetScreenCaptureBoost(true));
+                    let _ = s.to_client.send(ServerToClient::StartVideoUpload);
                 }
             }
             guard.screen_demo = Some(state::ScreenDemo {
@@ -431,7 +431,7 @@ impl TeacherApp {
             }
             if let state::ScreenDemoSource::Student(presenter_id) = demo.source {
                 if let Some(s) = guard.students.get(&presenter_id) {
-                    let _ = s.to_client.send(ServerToClient::SetScreenCaptureBoost(false));
+                    let _ = s.to_client.send(ServerToClient::StopVideoUpload);
                 }
             }
         }
@@ -2231,6 +2231,14 @@ impl TeacherApp {
             rt.spawn(async move {
                 if let Err(e) = listen::run_listen_receiver(state, listen_queue, listen_output_rate).await {
                     tracing::warn!("listen-in receiver stopped: {e:#}");
+                }
+            });
+        }
+        {
+            let state = state.clone();
+            rt.spawn(async move {
+                if let Err(e) = screen::run_screen_relay_receiver(state).await {
+                    tracing::warn!("screen-demo relay receiver stopped: {e:#}");
                 }
             });
         }

@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use crate::theme;
 
 use super::state::{self, AppState, SharedState};
-use super::{audio, mic, net, recording};
+use super::{audio, mic, net, recording, screen};
 
 pub struct StudentApp {
     state: AppState,
@@ -88,7 +88,7 @@ impl StudentApp {
         guard.reference = None;
         guard.screen_boosted = false;
         guard.demo_presenter = None;
-        guard.last_demo_frame_jpeg = None;
+        guard.demo_frame = None;
     }
 
     fn toggle_help(&mut self) {
@@ -263,21 +263,21 @@ impl eframe::App for StudentApp {
         // Screen demo takes over the whole window (not OS-level fullscreen like
         // the lock screen above — this is just informational viewing, not an
         // enforcement mechanism, so an in-window takeover is enough and simpler).
-        let (demo_presenter, demo_jpeg, demo_version) = {
-            let guard = self.state.lock().unwrap();
-            (guard.demo_presenter.clone(), guard.last_demo_frame_jpeg.clone(), guard.demo_frame_version)
-        };
+        let demo_presenter = self.state.lock().unwrap().demo_presenter.clone();
         if let Some(presenter) = demo_presenter {
-            if let Some(jpeg) = demo_jpeg {
-                let needs_update = self.demo_texture.as_ref().map(|(v, _)| *v != demo_version).unwrap_or(true);
-                if needs_update {
-                    if let Ok(img) = image::load_from_memory(&jpeg) {
-                        let rgba = img.to_rgba8();
-                        let (w, h) = rgba.dimensions();
-                        let color_image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], rgba.as_raw());
-                        let handle = ctx.load_texture("screen_demo", color_image, egui::TextureOptions::LINEAR);
-                        self.demo_texture = Some((demo_version, handle));
-                    }
+            // Decoding already happened off the UI thread in
+            // `screen::run_screen_demo_receiver`; the version check below means
+            // this only clones the (Arc-wrapped, so cheap) RGBA buffer on an
+            // actual new frame rather than every single UI redraw.
+            let demo_version = self.state.lock().unwrap().demo_frame_version;
+            let needs_update = self.demo_texture.as_ref().map(|(v, _)| *v != demo_version).unwrap_or(true);
+            if needs_update {
+                let frame = self.state.lock().unwrap().demo_frame.clone();
+                if let Some(frame) = frame {
+                    let color_image =
+                        egui::ColorImage::from_rgba_unmultiplied([frame.width as usize, frame.height as usize], &frame.rgba);
+                    let handle = ctx.load_texture("screen_demo", color_image, egui::TextureOptions::LINEAR);
+                    self.demo_texture = Some((demo_version, handle));
                 }
             }
             egui::TopBottomPanel::top("demo_top").show(ctx, |ui| {
@@ -719,6 +719,14 @@ impl StudentApp {
             rt.spawn(async move {
                 if let Err(e) = audio::run_intercom_receiver(state, mix, output_rate).await {
                     tracing::warn!("intercom receiver stopped: {e:#}");
+                }
+            });
+        }
+        {
+            let state = state.clone();
+            rt.spawn(async move {
+                if let Err(e) = screen::run_screen_demo_receiver(state).await {
+                    tracing::warn!("screen-demo video receiver stopped: {e:#}");
                 }
             });
         }
