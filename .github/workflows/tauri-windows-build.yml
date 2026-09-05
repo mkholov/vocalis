@@ -1,0 +1,63 @@
+name: Tauri app (Windows build)
+
+# Builds the tauri-app/ prototype (React + TypeScript + Tailwind frontend,
+# Tauri/Rust shell) on a real Windows host. Entirely separate crate/workspace
+# from the egui apps built by windows-build.yml — see tauri-app/src-tauri's
+# own `[workspace]` table — so this job doesn't touch, depend on, or share a
+# cache with that one.
+
+on:
+  push:
+    branches: [main]
+    paths: ["tauri-app/**", ".github/workflows/tauri-windows-build.yml"]
+  pull_request:
+    branches: [main]
+    paths: ["tauri-app/**", ".github/workflows/tauri-windows-build.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: tauri-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable, MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build output
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "tauri-app/src-tauri -> target"
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tauri-app/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      # No extra system packages needed on windows-latest: Tauri v2's Windows
+      # webview is WebView2, which ships with (or is auto-installed alongside)
+      # the runner image, and the MSI/NSIS bundlers Tauri CLI drives are
+      # fetched by the CLI itself on first use.
+      - name: npm run tauri build
+        run: npm run tauri build
+
+      - name: Upload bundled installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-app-windows-bundle
+          path: tauri-app/src-tauri/target/release/bundle/**
+          if-no-files-found: error
