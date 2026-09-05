@@ -92,21 +92,34 @@ impl Onboarding {
                 // Plain `ui.horizontal` expands to the panel's full width, which defeats
                 // `vertical_centered` (it only centers a child by its *reported* width) —
                 // pin this row to its actual content width first, same trick the text
-                // group above uses via its own `set_width`.
+                // group above uses via its own `set_width`. That width has to match
+                // whichever buttons are actually visible this frame (step 1 has no
+                // "Назад") or the row centers around a wider box than its own content
+                // and ends up visibly off-center.
+                const BACK_W: f32 = 90.0;
+                const SKIP_W: f32 = 110.0;
+                const NEXT_W: f32 = 120.0;
+                let show_back = self.step > 0;
+                let spacing = ui.spacing().item_spacing.x;
+                let content_width = if show_back {
+                    BACK_W + spacing + SKIP_W + spacing + NEXT_W
+                } else {
+                    SKIP_W + spacing + NEXT_W
+                };
                 egui::Frame::none().show(ui, |ui| {
-                    ui.set_width(340.0);
+                    ui.set_width(content_width);
                     ui.horizontal(|ui| {
-                        if self.step > 0 && ui.add_sized([90.0, 36.0], egui::Button::new("⬅ Назад")).clicked() {
+                        if show_back && ui.add_sized([BACK_W, 36.0], egui::Button::new("⬅ Назад")).clicked() {
                             self.step -= 1;
                         }
-                        if ui.add_sized([110.0, 36.0], egui::Button::new("Пропустить")).clicked() {
+                        if ui.add_sized([SKIP_W, 36.0], egui::Button::new("Пропустить")).clicked() {
                             done = true;
                         }
                         if self.step + 1 < STEPS.len() {
-                            if ui.add_sized([120.0, 36.0], egui::Button::new("Далее ➡")).clicked() {
+                            if ui.add_sized([NEXT_W, 36.0], egui::Button::new("Далее ➡")).clicked() {
                                 self.step += 1;
                             }
-                        } else if ui.add_sized([120.0, 36.0], egui::Button::new("Готово ✔")).clicked() {
+                        } else if ui.add_sized([NEXT_W, 36.0], egui::Button::new("Готово ✔")).clicked() {
                             done = true;
                         }
                     });

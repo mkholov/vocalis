@@ -4,6 +4,7 @@ pub mod settings;
 pub mod student;
 pub mod teacher;
 pub mod theme;
+pub mod ui_helpers;
 pub mod video;
 
 use eframe::egui;

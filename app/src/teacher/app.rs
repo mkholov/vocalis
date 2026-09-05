@@ -8,7 +8,7 @@ use lingua_common::{AssignmentKind, ServerToClient, StudentId, CONTROL_PORT};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::{audio_devices, settings, theme};
+use crate::{audio_devices, settings, theme, ui_helpers};
 
 use super::state::{self, AppState, Presence, SharedState};
 use super::{csv_export, db, listen, materials, mic, net, onboarding, screen, system_audio};
@@ -186,6 +186,11 @@ pub struct TeacherApp {
     /// Inline rename in progress on the roster list (row id, buffer) — mirrors
     /// `score_edit`'s pattern.
     roster_edit: Option<(i64, String)>,
+    /// Row id of the roster student pending a delete confirmation — set on the
+    /// first 🗑 click, cleared on "Отмена" or once the delete actually goes
+    /// through. Mirrors `auth::AuthScreen`'s reset-profile confirm step, applied
+    /// to this app's other permanently-destructive action.
+    roster_delete_confirm: Option<i64>,
     /// (name, class_id) of the student whose cross-lesson history card is open,
     /// if any — a drill-down reachable from both the roster and stats tabs, so
     /// it's tracked independently of `tab` rather than being one itself. Carries
@@ -239,6 +244,7 @@ impl TeacherApp {
             assignment_draft: AssignmentDraft::default(),
             roster_input: String::new(),
             roster_edit: None,
+            roster_delete_confirm: None,
             history_card: None,
             log_filter_current_lesson: true,
             roster_view_class_id: class_id,
@@ -1053,7 +1059,8 @@ impl TeacherApp {
                     .on_hover_text("Сообщите этот код ученикам — он понадобится при подключении");
 
                 let elapsed = self.state.lock().unwrap().lesson_started_at.elapsed();
-                ui.label(format_timer(elapsed));
+                let monospace_font = egui::TextStyle::Monospace.resolve(ui.style());
+                ui.label(egui::RichText::new(format_timer(elapsed)).font(monospace_font));
 
                 ui.add_space(12.0);
                 ui.selectable_value(&mut self.tab, Tab::Class, "Класс");
@@ -1213,19 +1220,8 @@ impl TeacherApp {
         }
 
         ui.add_space(14.0);
-        ui.colored_label(theme::muted(), "БЫСТРЫЕ ДЕЙСТВИЯ");
+        ui_helpers::section_header(ui, "БЫСТРЫЕ ДЕЙСТВИЯ");
         ui.add_space(4.0);
-
-        let locked = self.state.lock().unwrap().mics_locked;
-        let lock_label = if locked { "🔓 Разблокировать все микрофоны" } else { "🔒 Заблокировать все микрофоны" };
-        if ui.add_sized([ui.available_width(), 40.0], egui::Button::new(lock_label)).clicked() {
-            self.state.lock().unwrap().set_mics_locked(!locked);
-        }
-        let mic_on = self.state.lock().unwrap().mic_broadcasting;
-        let mic_label = if mic_on { "⏹ Остановить трансляцию" } else { "📡 Транслировать" };
-        if ui.add_sized([ui.available_width(), 40.0], egui::Button::new(mic_label)).clicked() {
-            self.toggle_mic();
-        }
 
         if self.grid_mode == GridMode::Groups && self.selected.len() >= 2 {
             if ui
@@ -1242,7 +1238,7 @@ impl TeacherApp {
         }
 
         ui.add_space(16.0);
-        ui.colored_label(theme::muted(), "ЗАДАНИЯ");
+        ui_helpers::section_header(ui, "ЗАДАНИЯ");
         ui.add_space(4.0);
         for (title, kind) in ASSIGNMENT_TEMPLATES {
             ui.horizontal(|ui| {
@@ -1266,8 +1262,7 @@ impl TeacherApp {
         }
 
         ui.add_space(16.0);
-        ui.separator();
-        ui.colored_label(theme::muted(), "ЧАТ");
+        ui_helpers::section_header(ui, "ЧАТ");
         egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
             let guard = self.state.lock().unwrap();
             for entry in &guard.chat_log {
@@ -1584,7 +1579,7 @@ impl TeacherApp {
             });
 
             ui.add_space(10.0);
-            ui.colored_label(theme::muted(), "ЗА ВСЁ ВРЕМЯ (сохранено локально)");
+            ui_helpers::section_header(ui, "ЗА ВСЁ ВРЕМЯ (сохранено локально)");
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 stat_tile(ui, "УРОКОВ ПРОВЕДЕНО", &history.lessons_count.to_string());
@@ -1597,7 +1592,7 @@ impl TeacherApp {
             });
 
             ui.add_space(16.0);
-            ui.colored_label(theme::muted(), "ПРОГРЕСС ПО УЧЕНИКАМ");
+            ui_helpers::section_header(ui, "ПРОГРЕСС ПО УЧЕНИКАМ");
             ui.add_space(6.0);
 
             type Row = (usize, StudentId, String, Presence, usize, Vec<(String, AssignmentKind, bool, Option<(u32, u32)>)>, Option<u32>);
@@ -1993,13 +1988,30 @@ impl TeacherApp {
                                 self.history_card = Some((name.clone(), view_class_id));
                             }
                             if ui.small_button("✏️").on_hover_text("Переименовать").clicked() {
+                                self.roster_edit = None;
+                                self.roster_delete_confirm = None;
                                 self.roster_edit = Some((*id, name.clone()));
                             }
                         }
-                        if ui.small_button("🗑").on_hover_text("Удалить").clicked() {
-                            to_delete = Some(*id);
+                        if self.roster_delete_confirm != Some(*id)
+                            && ui.small_button("🗑").on_hover_text("Удалить").clicked()
+                        {
+                            self.roster_edit = None;
+                            self.roster_delete_confirm = Some(*id);
                         }
                     });
+                    if self.roster_delete_confirm == Some(*id) {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(theme::WARN, format!("Удалить «{name}» из списка класса?"));
+                            if ui.button("Да, удалить").clicked() {
+                                to_delete = Some(*id);
+                                self.roster_delete_confirm = None;
+                            }
+                            if ui.button("Отмена").clicked() {
+                                self.roster_delete_confirm = None;
+                            }
+                        });
+                    }
                 }
             });
             if let Some(id) = to_delete {
@@ -2090,54 +2102,37 @@ impl TeacherApp {
 
             let mut changed = false;
 
-            ui.group(|ui| {
-                ui.set_width(440.0);
-                ui.strong("Аудиоустройства");
-                ui.add_space(6.0);
+            ui_helpers::section_header(ui, "Аудиоустройства");
+            ui.add_space(6.0);
 
-                ui.label("Микрофон:");
-                let input_names = audio_devices::list_input_device_names();
-                let current_input = self.settings.input_device.clone().unwrap_or_else(|| "Системное по умолчанию".to_string());
-                egui::ComboBox::from_id_salt("settings_input_device").selected_text(current_input).show_ui(ui, |ui| {
-                    if ui.selectable_label(self.settings.input_device.is_none(), "Системное по умолчанию").clicked() {
-                        self.settings.input_device = None;
+            ui.label("Микрофон:");
+            let input_names = audio_devices::list_input_device_names();
+            let current_input = self.settings.input_device.clone().unwrap_or_else(|| "Системное по умолчанию".to_string());
+            egui::ComboBox::from_id_salt("settings_input_device").selected_text(current_input).show_ui(ui, |ui| {
+                if ui.selectable_label(self.settings.input_device.is_none(), "Системное по умолчанию").clicked() {
+                    self.settings.input_device = None;
+                    changed = true;
+                }
+                for name in &input_names {
+                    if ui.selectable_label(self.settings.input_device.as_deref() == Some(name.as_str()), name).clicked() {
+                        self.settings.input_device = Some(name.clone());
                         changed = true;
                     }
-                    for name in &input_names {
-                        if ui.selectable_label(self.settings.input_device.as_deref() == Some(name.as_str()), name).clicked() {
-                            self.settings.input_device = Some(name.clone());
-                            changed = true;
-                        }
-                    }
-                });
-                ui.add_space(8.0);
-
-                ui.label("Устройство вывода:");
-                let output_names = audio_devices::list_output_device_names();
-                let current_output = self.settings.output_device.clone().unwrap_or_else(|| "Системное по умолчанию".to_string());
-                egui::ComboBox::from_id_salt("settings_output_device").selected_text(current_output).show_ui(ui, |ui| {
-                    if ui.selectable_label(self.settings.output_device.is_none(), "Системное по умолчанию").clicked() {
-                        self.settings.output_device = None;
-                        changed = true;
-                    }
-                    for name in &output_names {
-                        if ui.selectable_label(self.settings.output_device.as_deref() == Some(name.as_str()), name).clicked() {
-                            self.settings.output_device = Some(name.clone());
-                            changed = true;
-                        }
-                    }
-                });
+                }
             });
+            ui.add_space(8.0);
 
-            ui.add_space(14.0);
-
-            ui.group(|ui| {
-                ui.set_width(440.0);
-                ui.strong("Тема оформления");
-                ui.add_space(6.0);
-                for theme_choice in [settings::Theme::Dark, settings::Theme::Light] {
-                    if ui.radio_value(&mut self.settings.theme, theme_choice, theme_choice.label()).clicked() {
-                        theme::apply(ctx, self.settings.theme.is_light());
+            ui.label("Устройство вывода:");
+            let output_names = audio_devices::list_output_device_names();
+            let current_output = self.settings.output_device.clone().unwrap_or_else(|| "Системное по умолчанию".to_string());
+            egui::ComboBox::from_id_salt("settings_output_device").selected_text(current_output).show_ui(ui, |ui| {
+                if ui.selectable_label(self.settings.output_device.is_none(), "Системное по умолчанию").clicked() {
+                    self.settings.output_device = None;
+                    changed = true;
+                }
+                for name in &output_names {
+                    if ui.selectable_label(self.settings.output_device.as_deref() == Some(name.as_str()), name).clicked() {
+                        self.settings.output_device = Some(name.clone());
                         changed = true;
                     }
                 }
@@ -2145,49 +2140,51 @@ impl TeacherApp {
 
             ui.add_space(14.0);
 
-            ui.group(|ui| {
-                ui.set_width(440.0);
-                ui.strong("Качество видео-трансляции");
-                ui.add_space(6.0);
-                ui.colored_label(
-                    theme::muted(),
-                    "Это потолок — при нехватке производительности во время демонстрации \
-                     автоматическая деградация всё равно может снижать качество дальше.",
-                );
-                ui.add_space(6.0);
-                for quality in settings::VideoQuality::ALL {
-                    if ui.radio_value(&mut self.settings.video_quality, quality, quality.label()).clicked() {
-                        changed = true;
-                    }
+            ui_helpers::section_header(ui, "Тема оформления");
+            ui.add_space(6.0);
+            for theme_choice in [settings::Theme::Dark, settings::Theme::Light] {
+                if ui.radio_value(&mut self.settings.theme, theme_choice, theme_choice.label()).clicked() {
+                    theme::apply(ctx, self.settings.theme.is_light());
+                    changed = true;
+                }
+            }
+
+            ui.add_space(14.0);
+
+            ui_helpers::section_header(ui, "Качество видео-трансляции");
+            ui.add_space(6.0);
+            ui.colored_label(
+                theme::muted(),
+                "Это потолок — при нехватке производительности во время демонстрации \
+                 автоматическая деградация всё равно может снижать качество дальше.",
+            );
+            ui.add_space(6.0);
+            for quality in settings::VideoQuality::ALL {
+                if ui.radio_value(&mut self.settings.video_quality, quality, quality.label()).clicked() {
+                    changed = true;
+                }
+            }
+
+            ui.add_space(14.0);
+
+            ui_helpers::section_header(ui, "Язык интерфейса");
+            ui.add_space(6.0);
+            egui::ComboBox::from_id_salt("settings_language").selected_text(self.settings.language.label()).show_ui(ui, |ui| {
+                if ui
+                    .selectable_value(&mut self.settings.language, settings::Language::Russian, settings::Language::Russian.label())
+                    .clicked()
+                {
+                    changed = true;
                 }
             });
 
             ui.add_space(14.0);
 
-            ui.group(|ui| {
-                ui.set_width(440.0);
-                ui.strong("Язык интерфейса");
-                ui.add_space(6.0);
-                egui::ComboBox::from_id_salt("settings_language").selected_text(self.settings.language.label()).show_ui(ui, |ui| {
-                    if ui
-                        .selectable_value(&mut self.settings.language, settings::Language::Russian, settings::Language::Russian.label())
-                        .clicked()
-                    {
-                        changed = true;
-                    }
-                });
-            });
-
-            ui.add_space(14.0);
-
-            ui.group(|ui| {
-                ui.set_width(440.0);
-                ui.strong("Справка");
-                ui.add_space(6.0);
-                if ui.button("Показать введение ещё раз").clicked() {
-                    self.onboarding = Some(onboarding::Onboarding::new());
-                }
-            });
+            ui_helpers::section_header(ui, "Справка");
+            ui.add_space(6.0);
+            if ui.button("Показать введение ещё раз").clicked() {
+                self.onboarding = Some(onboarding::Onboarding::new());
+            }
 
             if changed {
                 if let Err(e) = self.settings.save() {
@@ -2444,3 +2441,4 @@ impl TeacherApp {
         TeacherApp::new(state, rt, teacher_name, class_id, settings)
     }
 }
+

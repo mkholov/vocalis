@@ -231,7 +231,7 @@ impl StudentApp {
             );
             ui.add_space(10.0);
 
-            ui.strong("Аудиоустройства");
+            crate::ui_helpers::section_header(ui, "Аудиоустройства");
             ui.add_space(6.0);
             ui.label("Микрофон:");
             let input_names = crate::audio_devices::list_input_device_names();
@@ -266,7 +266,7 @@ impl StudentApp {
             });
 
             ui.add_space(14.0);
-            ui.strong("Тема оформления");
+            crate::ui_helpers::section_header(ui, "Тема оформления");
             ui.add_space(6.0);
             for theme_choice in [crate::settings::Theme::Dark, crate::settings::Theme::Light] {
                 if ui.radio_value(&mut self.settings.theme, theme_choice, theme_choice.label()).clicked() {
@@ -276,7 +276,7 @@ impl StudentApp {
             }
 
             ui.add_space(14.0);
-            ui.strong("Качество видео (если вы демонстрируете экран)");
+            crate::ui_helpers::section_header(ui, "Качество видео (если вы демонстрируете экран)");
             ui.add_space(6.0);
             ui.colored_label(
                 theme::muted(),
@@ -292,7 +292,7 @@ impl StudentApp {
             }
 
             ui.add_space(14.0);
-            ui.strong("Язык интерфейса");
+            crate::ui_helpers::section_header(ui, "Язык интерфейса");
             ui.add_space(6.0);
             egui::ComboBox::from_id_salt("student_settings_language").selected_text(self.settings.language.label()).show_ui(ui, |ui| {
                 if ui
@@ -734,23 +734,26 @@ impl eframe::App for StudentApp {
                 }
             } else {
                 ui.label("Ваше имя и фамилия (увидит преподаватель):");
-                ui.add(egui::TextEdit::singleline(&mut self.student_name).desired_width(280.0));
-                ui.add_space(8.0);
-
-                ui.label("PIN-код урока (сообщит преподаватель):");
-                ui.add(egui::TextEdit::singleline(&mut self.pin_input).desired_width(120.0));
-                ui.add_space(8.0);
-
+                bordered_text_edit(ui, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.student_name).frame(false).desired_width(280.0));
+                });
                 let name_ready = !self.student_name.trim().is_empty();
-                let pin_trimmed = self.pin_input.trim();
-                let pin_ready = (4..=6).contains(&pin_trimmed.len())
-                    && pin_trimmed.chars().all(|c| c.is_ascii_digit());
                 if !name_ready {
                     ui.colored_label(theme::WARN, "Введите имя, чтобы можно было подключиться");
                 }
+                ui.add_space(8.0);
+
+                ui.label("PIN-код урока (сообщит преподаватель):");
+                bordered_text_edit(ui, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.pin_input).frame(false).desired_width(120.0));
+                });
+                let pin_trimmed = self.pin_input.trim().to_string();
+                let pin_ready = (4..=6).contains(&pin_trimmed.len())
+                    && pin_trimmed.chars().all(|c| c.is_ascii_digit());
                 if !pin_ready {
                     ui.colored_label(theme::WARN, "Введите PIN-код урока (4-6 цифр)");
                 }
+                ui.add_space(8.0);
 
                 ui.separator();
 
@@ -792,6 +795,19 @@ impl eframe::App for StudentApp {
             }
         });
     }
+}
+
+/// Draws a `frame(false)` text field wrapped in an explicit border — the
+/// default `TextEdit` frame's stroke barely shows up against this app's
+/// customized (very dark) backgrounds, and this is the very first field a
+/// student sees, so it needs to visibly read as an input rather than blend
+/// into the panel behind it.
+fn bordered_text_edit(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::none()
+        .stroke(egui::Stroke::new(1.0_f32, theme::muted()))
+        .rounding(egui::Rounding::same(4.0))
+        .inner_margin(egui::Margin::symmetric(6.0, 4.0))
+        .show(ui, |ui| add_contents(ui));
 }
 
 fn default_student_name() -> String {
