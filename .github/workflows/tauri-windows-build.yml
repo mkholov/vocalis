@@ -48,10 +48,22 @@ jobs:
       - name: npm ci
         run: npm ci
 
+      # Step 2 of the Tauri migration (vocalis_roadmap.md, section 8): Tauri
+      # commands bridging to the existing Rust core (vocalis/lingua-common —
+      # DB, network, audio, screen capture). These run the real command
+      # dispatch through Tauri's MockRuntime (see src-tauri/src/lib.rs's
+      # `tests` module) — no window/display needed, so this is safe to run
+      # on a headless CI runner exactly like a real webview `invoke()` call.
+      - name: cargo test (Tauri command bridge)
+        working-directory: tauri-app/src-tauri
+        run: cargo test --locked
+
       # No extra system packages needed on windows-latest: Tauri v2's Windows
       # webview is WebView2, which ships with (or is auto-installed alongside)
       # the runner image, and the MSI/NSIS bundlers Tauri CLI drives are
-      # fetched by the CLI itself on first use.
+      # fetched by the CLI itself on first use. `vocalis`'s own Windows-only
+      # deps (wasapi, openh264's "source" build) already build clean on this
+      # same runner image for the egui apps in windows-build.yml.
       - name: npm run tauri build
         run: npm run tauri build
 

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-classes"
+description = "Enables the list_classes command without any pre-configured scope."
+commands.allow = ["list_classes"]
+
+[[permission]]
+identifier = "deny-list-classes"
+description = "Denies the list_classes command without any pre-configured scope."
+commands.deny = ["list_classes"]

@@ -28,7 +28,24 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tokio = { version = "1", features = ["sync", "time"] }
 
+# The existing Rust core, reused as-is (not reimplemented): `vocalis` is the
+# same crate the egui teacher/student binaries link against (its DB, network,
+# audio-device, and screen-capture modules have no egui/eframe dependency —
+# only the UI screens themselves do, see the step-2 write-up), and
+# `lingua-common` is the shared network protocol/discovery crate both roles
+# already use. Pulling in `vocalis` does also drag its egui/eframe/rusqlite
+# dependency tree into this build even though nothing here renders with them
+# — acceptable for this bridge step, worth revisiting if it noticeably slows
+# down CI or bundle size later.
+vocalis = { path = "../../app" }
+lingua-common = { path = "../../common" }
+
+[dev-dependencies]
+# "test" gets `tauri::test` (MockRuntime + real IPC dispatch, no window needed) —
+# see src/lib.rs's `tests` module.
+tauri = { version = "2", features = ["test"] }
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
