@@ -2,8 +2,10 @@ import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Button } from "../components/ui/Button";
 import { Panel } from "../components/ui/Panel";
+import { VuMeter } from "../components/VuMeter";
 import { FlyingReactions, type FlyingReaction } from "../components/FlyingReactions";
 import { ROSTER } from "../lib/mockClassroom";
+import { useMicMeter } from "../lib/useMicMeter";
 
 interface Props {
   studentName: string;
@@ -21,17 +23,19 @@ const KIND_META: Record<AssignmentKind, { label: string; color: string }> = {
 
 const partnerOptions = ROSTER.filter((_, i) => i % 2 === 1);
 
-/** Step 6 of the Tauri migration (vocalis_roadmap.md, section 8): the
- * student's main screen — takes cues from `student::app` in the egui app
- * (lock overlay, listening/group banners, assignment card, raise-hand) but
- * isn't a port: quick reactions (👍/❓) are new, added directly on this
- * stack per the roadmap's step-8 intro. Every signal here (listening,
- * grouped-with, lock state, active assignment) is local mock state — there's
- * no session to receive them from yet (that's step 7+) — so the little
- * "Демо-переключатели" panel at the bottom exists to make every visual state
- * on this screen actually reachable for review, standing in for what will
- * eventually be driven by real teacher actions over the network. */
+/** Step 6 (screen) + step 7 part A (live mic level) of the Tauri migration
+ * (vocalis_roadmap.md, section 8) — takes cues from `student::app` in the
+ * egui app (lock overlay, listening/group banners, assignment card,
+ * raise-hand) but isn't a port: quick reactions (👍/❓) are new, added
+ * directly on this stack per the roadmap's step-8 intro. Listening/grouped-
+ * with/lock/assignment are still local mock state — there's no session
+ * delivering *those* yet — so the "Демо-переключатели" panel at the bottom
+ * exists to make every such visual state reachable for review. The one
+ * exception is the mic meter next to this student's own name: that's a real
+ * `cpal` capture (`useMicMeter`), not a mock, exactly like the egui app's own
+ * top-bar VU meter. */
 export function StudentConsole({ studentName, teacherName, onDisconnect }: Props) {
+  const mic = useMicMeter();
   const [listening, setListening] = useState(false);
   const [partner, setPartner] = useState<string | null>(null);
   const [demoActive, setDemoActive] = useState(false);
@@ -66,10 +70,21 @@ export function StudentConsole({ studentName, teacherName, onDisconnect }: Props
               <p className="text-sm text-[var(--color-text-muted)]">
                 {studentName} · подключено к {teacherName}
               </p>
+              {mic.error && <p className="text-xs text-rose-400">Микрофон недоступен: {mic.error}</p>}
             </div>
-            <Button variant="secondary" onClick={onDisconnect}>
-              Отключиться
-            </Button>
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2" title="Ваш микрофон (реальный уровень)">
+                <span>🎙</span>
+                {/* `active` always true here (unlike the teacher grid's per-student
+                    meters, which gate on crossing SPEAKING_THRESHOLD) — this is
+                    personal input monitoring, so it should move continuously with
+                    the real level rather than snapping on only once "speaking". */}
+                <VuMeter level={mic.level} active />
+              </div>
+              <Button variant="secondary" onClick={onDisconnect}>
+                Отключиться
+              </Button>
+            </div>
           </motion.header>
 
           <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-4">

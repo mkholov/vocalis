@@ -7,4 +7,6 @@
 pub mod audio;
 pub mod db;
 pub mod network;
+pub mod student_mic;
+pub mod teacher_session;
 pub mod video;

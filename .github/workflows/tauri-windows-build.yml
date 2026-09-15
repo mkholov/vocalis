@@ -54,9 +54,16 @@ jobs:
       # dispatch through Tauri's MockRuntime (see src-tauri/src/lib.rs's
       # `tests` module) — no window/display needed, so this is safe to run
       # on a headless CI runner exactly like a real webview `invoke()` call.
+      #
+      # --test-threads=1: step 7 added a test that mutates the process-global
+      # HOME/APPDATA env vars (to keep its real DB write out of a real user's
+      # data dir — see start_teacher_session_creates_a_real_class_and_pin) —
+      # running concurrently with the read-only `list_classes` test races on
+      # that same env var and flakes (confirmed locally: 1-in-3ish). These
+      # tests are few and fast, so serializing them costs nothing noticeable.
       - name: cargo test (Tauri command bridge)
         working-directory: tauri-app/src-tauri
-        run: cargo test --locked
+        run: cargo test --locked -- --test-threads=1
 
       # No extra system packages needed on windows-latest: Tauri v2's Windows
       # webview is WebView2, which ships with (or is auto-installed alongside)

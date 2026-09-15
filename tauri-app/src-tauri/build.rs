@@ -9,6 +9,10 @@ fn main() {
             "list_audio_devices",
             "discover_teachers",
             "capture_screen_preview",
+            "start_teacher_session",
+            "stop_teacher_session",
+            "start_student_mic_meter",
+            "stop_student_mic_meter",
         ]),
     );
     tauri_build::try_build(attributes).expect("failed to run tauri-build codegen");

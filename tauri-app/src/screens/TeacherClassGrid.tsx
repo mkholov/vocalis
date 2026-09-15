@@ -4,21 +4,55 @@ import { StudentCard } from "../components/StudentCard";
 import { LessonTimer } from "../components/LessonTimer";
 import { Button } from "../components/ui/Button";
 import { useMockClassroom } from "../lib/mockClassroom";
+import { useLiveClassroom } from "../lib/useLiveClassroom";
 
 interface Props {
   className: string;
   onEnd: () => void;
 }
 
-/** Step 4 of the Tauri migration (vocalis_roadmap.md, section 8): the
- * teacher's class grid. Everything a student card shows (presence, VU
- * level) is simulated locally (`useMockClassroom`) — no network, no real
- * audio/video yet (that's step 7). What *is* real here is the local UI
- * state: selecting a card, toggling its lock buttons, and the countdown
- * timer all actually work, they just don't talk to anyone yet. */
+/** Step 4 (grid/timer/lock UI) + step 7 part A (live levels) of the Tauri
+ * migration (vocalis_roadmap.md, section 8). A real teacher session
+ * (`useLiveClassroom`) starts on mount — its per-student mic levels are
+ * genuine, reported over the network exactly the way the egui console's own
+ * grid gets them (`student::audio::run_level_telemetry` →
+ * `ClientToServer::AudioLevel` → `Student::last_level`), not simulated. As
+ * long as the step-3 login screens stay mocked, nothing ever *dials into*
+ * this real session on its own, though — so `useMockClassroom`'s simulation
+ * is still what's shown until at least one real student actually connects
+ * (see the step-7 report for how that was tested: a second local process
+ * really connecting and reporting real mic levels). Lock buttons stay
+ * local-only UI state either way — only levels are wired to the network so far. */
 export function TeacherClassGrid({ className, onEnd }: Props) {
-  const { students, toggleScreenLock, toggleMicLock } = useMockClassroom(12);
+  const mock = useMockClassroom(12);
+  const live = useLiveClassroom(className);
+  const usingLiveData = live.realStudents.length > 0;
+  const baseStudents = usingLiveData ? live.realStudents : mock.students;
+
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  // Lock buttons are local-only UI state regardless of data source — nothing
+  // sends `LockScreen`/`SetMicLocked` over the network yet, so overlaying
+  // them here (rather than threading through `useMockClassroom`, which real
+  // students don't come from) works for both at once.
+  const [locks, setLocks] = useState<Map<number, { screenLocked: boolean; micLocked: boolean }>>(new Map());
+  const students = baseStudents.map((s) => ({ ...s, ...locks.get(s.id) }));
+
+  function toggleScreenLock(id: number) {
+    setLocks((prev) => {
+      const next = new Map(prev);
+      const cur = next.get(id) ?? { screenLocked: false, micLocked: false };
+      next.set(id, { ...cur, screenLocked: !cur.screenLocked });
+      return next;
+    });
+  }
+  function toggleMicLock(id: number) {
+    setLocks((prev) => {
+      const next = new Map(prev);
+      const cur = next.get(id) ?? { screenLocked: false, micLocked: false };
+      next.set(id, { ...cur, micLocked: !cur.micLocked });
+      return next;
+    });
+  }
 
   return (
     // `h-full w-full` (not `h-screen w-screen`) and `absolute` (not `fixed`)
@@ -38,8 +72,16 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">{className}</h1>
           <p className="text-sm text-[var(--color-text-muted)]">
-            {students.filter((s) => s.presence !== "empty").length} / {students.length} мест занято
+            {usingLiveData ? (
+              <span className="text-emerald-400">● живая сессия — {students.length} подключено</span>
+            ) : (
+              <>
+                {students.filter((s) => s.presence !== "empty").length} / {students.length} мест занято (демо-режим)
+              </>
+            )}
+            {live.pin && <span className="ml-3 font-mono tracking-wider text-[var(--color-text-muted)]">PIN: {live.pin}</span>}
           </p>
+          {live.error && <p className="text-xs text-rose-400">Реальная сессия недоступна: {live.error}</p>}
         </div>
 
         <LessonTimer />

@@ -32,3 +32,41 @@ export interface AudioDevicesDto {
 export function listAudioDevices(): Promise<AudioDevicesDto> {
   return invoke<AudioDevicesDto>("list_audio_devices");
 }
+
+// --- Step 7, part A (vocalis_roadmap.md, section 8): live mic levels ---
+// commands/teacher_session.rs and commands/student_mic.rs.
+
+export interface TeacherSessionInfo {
+  pin: string;
+  controlPort: number;
+  className: string;
+}
+
+export function startTeacherSession(className: string): Promise<TeacherSessionInfo> {
+  return invoke<TeacherSessionInfo>("start_teacher_session", { className });
+}
+
+export function stopTeacherSession(): Promise<void> {
+  return invoke("stop_teacher_session");
+}
+
+/** One event payload entry from the `student-levels` event — a real,
+ * currently-connected student's mic level, not a mock tick. */
+export interface StudentLevelDto {
+  id: string;
+  name: string;
+  level: number;
+  secondsSinceReport: number;
+}
+
+export function startStudentMicMeter(): Promise<void> {
+  return invoke("start_student_mic_meter");
+}
+
+export function stopStudentMicMeter(): Promise<void> {
+  return invoke("stop_student_mic_meter");
+}
+
+export interface MicLevelDto {
+  level: number;
+}

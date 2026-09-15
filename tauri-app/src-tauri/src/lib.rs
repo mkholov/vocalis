@@ -14,11 +14,17 @@ mod commands;
 fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
     builder
         .plugin(tauri_plugin_opener::init())
+        .manage(commands::teacher_session::TeacherSessionState::default())
+        .manage(commands::student_mic::MicMeterState::default())
         .invoke_handler(tauri::generate_handler![
             commands::db::list_classes,
             commands::audio::list_audio_devices,
             commands::network::discover_teachers,
             commands::video::capture_screen_preview,
+            commands::teacher_session::start_teacher_session,
+            commands::teacher_session::stop_teacher_session,
+            commands::student_mic::start_student_mic_meter,
+            commands::student_mic::stop_student_mic_meter,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -112,5 +118,87 @@ mod tests {
         // anything.
         let response = invoke("discover_teachers", serde_json::json!({"timeoutMs": 200})).expect("command should succeed");
         assert!(response.as_array().is_some(), "expected a JSON array (possibly empty)");
+    }
+
+    /// `start_teacher_session` inserts a real row into `db::open()`'s database,
+    /// same as `list_classes_returns_real_db_rows` reads one — but that one is
+    /// read-only, and this one writes, so it must not land in the developer's
+    /// real `~/.local/share/Vocalis` the way the read-only tests deliberately
+    /// do. `HOME` is process-global, so this test — and only this one — needs
+    /// `--test-threads=1` (see `tauri-windows-build.yml`) to not race whichever
+    /// other test happens to call `db::open()` at the same moment.
+    #[test]
+    fn start_teacher_session_creates_a_real_class_and_pin() {
+        let scratch_home = std::env::temp_dir().join(format!("vocalis_tauri_session_test_{}", std::process::id()));
+        std::fs::create_dir_all(&scratch_home).unwrap();
+        std::env::set_var("HOME", &scratch_home);
+        // Windows reads `%APPDATA%`, not `HOME` — see `db::db_path`'s doc
+        // comment — so both need overriding for this test to actually land in
+        // the scratch dir on every platform this CI matrix runs.
+        std::env::set_var("APPDATA", &scratch_home);
+
+        // Built once and reused for both calls below (unlike the plain
+        // `invoke` helper, which builds a fresh app — and so a fresh,
+        // independent `TeacherSessionState` — every time): idempotency is a
+        // property of *one* running app seeing two calls, e.g. a React
+        // effect double-invoked under StrictMode, not of two unrelated apps.
+        let app = super::build_app(tauri::test::mock_builder());
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            let body = match args {
+                serde_json::Value::Null => InvokeBody::default(),
+                other => InvokeBody::Json(other),
+            };
+            let request = InvokeRequest {
+                cmd: cmd.into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: if cfg!(any(windows, target_os = "android")) { "http://tauri.localhost" } else { "tauri://localhost" }
+                    .parse()
+                    .unwrap(),
+                body,
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.to_string(),
+            };
+            tauri::test::get_ipc_response(&webview, request).map(|b| b.deserialize::<serde_json::Value>().unwrap())
+        };
+
+        let response = call("start_teacher_session", serde_json::json!({"className": "Тестовый класс"}))
+            .expect("start_teacher_session should succeed");
+        let pin = response["pin"].as_str().expect("expected a pin string");
+        assert_eq!(pin.len(), 6, "generate_pin() always produces a 6-digit string");
+        assert!(pin.chars().all(|c| c.is_ascii_digit()));
+        assert_eq!(response["className"], "Тестовый класс");
+
+        // Idempotent: a second call on the *same* running app while a session
+        // is already active returns that session's existing info rather than
+        // erroring or trying to bind the control port a second time.
+        let second = call("start_teacher_session", serde_json::json!({"className": "Другое имя"})).expect("should succeed");
+        assert_eq!(second["pin"], response["pin"]);
+
+        call("stop_teacher_session", serde_json::Value::Null).expect("stop_teacher_session should succeed");
+
+        let real_class_exists = {
+            let conn = vocalis::teacher::db::open().expect("open the scratch db");
+            vocalis::teacher::db::list_classes(&conn)
+                .unwrap()
+                .iter()
+                .any(|c| c.name == "Тестовый класс")
+        };
+        assert!(real_class_exists, "the command should have inserted a real row via db::insert_class, not a stub");
+
+        std::fs::remove_dir_all(&scratch_home).ok();
+    }
+
+    /// CI runners (especially Windows ones) may have no real input device at
+    /// all — that's a legitimate environment fact, not a bug, so this doesn't
+    /// assert success. What it does assert: the command never panics, and
+    /// `stop` is always safe to call, including when `start` failed or was
+    /// never called.
+    #[test]
+    fn student_mic_meter_start_stop_does_not_panic() {
+        let _ = invoke("start_student_mic_meter", serde_json::Value::Null);
+        invoke("stop_student_mic_meter", serde_json::Value::Null).expect("stop should always succeed");
+        invoke("stop_student_mic_meter", serde_json::Value::Null).expect("stop should be idempotent");
     }
 }

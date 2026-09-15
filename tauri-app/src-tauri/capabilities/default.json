@@ -9,6 +9,10 @@
     "allow-list-classes",
     "allow-list-audio-devices",
     "allow-discover-teachers",
-    "allow-capture-screen-preview"
+    "allow-capture-screen-preview",
+    "allow-start-teacher-session",
+    "allow-stop-teacher-session",
+    "allow-start-student-mic-meter",
+    "allow-stop-student-mic-meter"
   ]
 }

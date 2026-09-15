@@ -1,0 +1,75 @@
+import { useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { startTeacherSession, stopTeacherSession, type StudentLevelDto } from "./commands";
+import type { MockStudent } from "./mockClassroom";
+
+// Same threshold `teacher::state::Student::presence()` uses to decide
+// "Speaking" vs "Connected" from `last_level` — kept in sync by reference
+// (see that function's `SPEAKING_THRESHOLD` constant) rather than re-derived.
+const SPEAKING_THRESHOLD = 120;
+// `Student::presence()` also treats a level as stale (drops back to
+// "Connected") once its `last_level_at` is old enough — `run_level_telemetry`
+// reports every 250ms, so anything much older than that means the student's
+// last report just hasn't arrived yet, not that they're still speaking.
+const STALE_AFTER_SECONDS = 1.5;
+
+/** Starts a real teacher session (step 2/7's `start_teacher_session`) on
+ * mount and turns its `student-levels` events into the same shape
+ * `useMockClassroom` produces, so `TeacherClassGrid` can render whichever is
+ * actually available — real students when any are connected, the local mock
+ * simulation otherwise. Real student IDs are UUIDs; `MockStudent.id` is a
+ * number, so this assigns each newly-seen UUID a stable sequential number
+ * (kept in a ref) rather than changing `StudentCard`'s prop type.
+ */
+export function useLiveClassroom(className: string) {
+  const [pin, setPin] = useState<string | null>(null);
+  const [error, setError] = useState<string | undefined>();
+  const [realStudents, setRealStudents] = useState<MockStudent[]>([]);
+  const idsRef = useRef(new Map<string, number>());
+  const nextIdRef = useRef(1);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    startTeacherSession(className)
+      .then((info) => {
+        if (cancelled) return;
+        setPin(info.pin);
+        return listen<StudentLevelDto[]>("student-levels", (event) => {
+          const mapped: MockStudent[] = event.payload.map((s) => {
+            let numericId = idsRef.current.get(s.id);
+            if (numericId === undefined) {
+              numericId = nextIdRef.current++;
+              idsRef.current.set(s.id, numericId);
+            }
+            const fresh = s.secondsSinceReport < STALE_AFTER_SECONDS;
+            const level = fresh ? s.level : 0;
+            return {
+              id: numericId,
+              seat: numericId,
+              name: s.name,
+              presence: level >= SPEAKING_THRESHOLD ? "speaking" : "connected",
+              level,
+              screenLocked: false,
+              micLocked: false,
+            };
+          });
+          setRealStudents(mapped);
+        });
+      })
+      .then((fn) => {
+        if (cancelled) fn?.();
+        else unlisten = fn;
+      })
+      .catch((err) => setError(String(err)));
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      stopTeacherSession().catch(() => {});
+    };
+  }, [className]);
+
+  return { pin, error, realStudents };
+}

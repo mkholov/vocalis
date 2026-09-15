@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-stop-student-mic-meter"
+description = "Enables the stop_student_mic_meter command without any pre-configured scope."
+commands.allow = ["stop_student_mic_meter"]
+
+[[permission]]
+identifier = "deny-stop-student-mic-meter"
+description = "Denies the stop_student_mic_meter command without any pre-configured scope."
+commands.deny = ["stop_student_mic_meter"]
