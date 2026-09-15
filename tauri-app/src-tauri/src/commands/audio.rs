@@ -6,6 +6,7 @@ use serde::Serialize;
 use vocalis::audio_devices;
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AudioDevicesDto {
     pub input_devices: Vec<String>,
     pub output_devices: Vec<String>,

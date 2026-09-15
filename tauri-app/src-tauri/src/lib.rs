@@ -92,8 +92,8 @@ mod tests {
         let expected_outputs = vocalis::audio_devices::list_output_device_names();
 
         let response = invoke("list_audio_devices", serde_json::Value::Null).expect("command should succeed");
-        assert_eq!(response["input_devices"], serde_json::json!(expected_inputs));
-        assert_eq!(response["output_devices"], serde_json::json!(expected_outputs));
+        assert_eq!(response["inputDevices"], serde_json::json!(expected_inputs));
+        assert_eq!(response["outputDevices"], serde_json::json!(expected_outputs));
     }
 
     #[test]

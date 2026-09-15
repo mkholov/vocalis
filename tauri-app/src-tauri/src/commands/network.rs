@@ -9,6 +9,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DiscoveredTeacherDto {
     pub ip: String,
     pub teacher_name: String,
