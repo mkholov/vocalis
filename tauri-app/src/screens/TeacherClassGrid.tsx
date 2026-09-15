@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { motion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import { StudentCard } from "../components/StudentCard";
 import { LessonTimer } from "../components/LessonTimer";
 import { Button } from "../components/ui/Button";
 import { useMockClassroom } from "../lib/mockClassroom";
 import { useLiveClassroom } from "../lib/useLiveClassroom";
+import { useScreenDemo } from "../lib/useScreenDemo";
 
 interface Props {
   className: string;
@@ -28,6 +29,15 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
   const live = useLiveClassroom(className);
   const usingLiveData = live.realStudents.length > 0;
   const baseStudents = usingLiveData ? live.realStudents : mock.students;
+
+  // Step 7 part B: own-screen self-preview, same real capture/codec/JPEG
+  // loop as the student console's demo view (`useScreenDemo`'s doc comment
+  // explains what "real" means here). Not the same thing as actually
+  // broadcasting a demo to the class — that's a separate, unbuilt network
+  // path — this just lets the teacher see what their own capture pipeline
+  // is producing before/while relying on it.
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const preview = useScreenDemo(previewOpen);
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   // Lock buttons are local-only UI state regardless of data source — nothing
@@ -86,10 +96,35 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
 
         <LessonTimer />
 
+        <Button variant="secondary" onClick={() => setPreviewOpen((v) => !v)}>
+          {previewOpen ? "Скрыть превью экрана" : "🖥 Превью своего экрана"}
+        </Button>
         <Button variant="secondary" onClick={onEnd}>
           Завершить урок
         </Button>
       </motion.header>
+
+      <AnimatePresence>
+        {previewOpen && (
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 12 }}
+            className="absolute bottom-4 left-4 z-30 w-64 overflow-hidden rounded-xl border border-[var(--color-border-subtle)] bg-black shadow-2xl"
+          >
+            <div className="relative flex aspect-video items-center justify-center">
+              {preview.frame ? (
+                <img src={preview.frame.dataUrl} alt="Ваш экран" className="h-full w-full object-contain" />
+              ) : (
+                <span className="text-xs text-white/50">{preview.error ? `Ошибка: ${preview.error}` : "Подключение…"}</span>
+              )}
+              <span className="absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-violet-300">
+                Ваш экран (превью)
+              </span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <motion.div
         className="relative z-10 grid flex-1 auto-rows-min grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4 overflow-y-auto pb-4"

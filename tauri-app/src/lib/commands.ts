@@ -70,3 +70,27 @@ export function stopStudentMicMeter(): Promise<void> {
 export interface MicLevelDto {
   level: number;
 }
+
+// --- Step 7, part B (vocalis_roadmap.md, section 8): live screen-demo video ---
+// commands/screen_demo.rs. Self-preview only (this machine's own screen, into
+// its own webview) — see that file's doc comment for why: the class-wide
+// network relay (teacher/presenting-student -> every student) isn't wired
+// into the Tauri layer yet.
+
+export function startScreenDemo(): Promise<void> {
+  return invoke("start_screen_demo");
+}
+
+export function stopScreenDemo(): Promise<void> {
+  return invoke("stop_screen_demo");
+}
+
+/** One `screen-demo-frame` event payload — a real captured/H.264-encoded/
+ * decoded/JPEG-re-encoded frame, base64-framed for direct use as an `<img
+ * src>` (see video-bench's report for why base64/emit was chosen over
+ * `tauri::ipc::Channel`). */
+export interface ScreenDemoFrameDto {
+  width: number;
+  height: number;
+  dataUrl: string;
+}

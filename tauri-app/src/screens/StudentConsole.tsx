@@ -6,6 +6,7 @@ import { VuMeter } from "../components/VuMeter";
 import { FlyingReactions, type FlyingReaction } from "../components/FlyingReactions";
 import { ROSTER } from "../lib/mockClassroom";
 import { useMicMeter } from "../lib/useMicMeter";
+import { useScreenDemo } from "../lib/useScreenDemo";
 
 interface Props {
   studentName: string;
@@ -23,22 +24,27 @@ const KIND_META: Record<AssignmentKind, { label: string; color: string }> = {
 
 const partnerOptions = ROSTER.filter((_, i) => i % 2 === 1);
 
-/** Step 6 (screen) + step 7 part A (live mic level) of the Tauri migration
- * (vocalis_roadmap.md, section 8) — takes cues from `student::app` in the
- * egui app (lock overlay, listening/group banners, assignment card,
- * raise-hand) but isn't a port: quick reactions (👍/❓) are new, added
- * directly on this stack per the roadmap's step-8 intro. Listening/grouped-
- * with/lock/assignment are still local mock state — there's no session
- * delivering *those* yet — so the "Демо-переключатели" panel at the bottom
- * exists to make every such visual state reachable for review. The one
- * exception is the mic meter next to this student's own name: that's a real
- * `cpal` capture (`useMicMeter`), not a mock, exactly like the egui app's own
- * top-bar VU meter. */
+/** Step 6 (screen) + step 7 parts A/B (live mic level, live screen-demo
+ * video) of the Tauri migration (vocalis_roadmap.md, section 8) — takes cues
+ * from `student::app` in the egui app (lock overlay, listening/group
+ * banners, assignment card, raise-hand) but isn't a port: quick reactions
+ * (👍/❓) are new, added directly on this stack per the roadmap's step-8
+ * intro. Listening/grouped-with/lock/assignment are still local mock
+ * state — there's no session delivering *those* yet — so the
+ * "Демо-переключатели" panel at the bottom exists to make every such visual
+ * state reachable for review; `demoActive`'s toggle there is what actually
+ * starts/stops the real screen-demo loop below now (see `useScreenDemo`'s
+ * doc comment for what "real" means here — genuine capture/codec/JPEG, but
+ * still a self-preview, not a network feed from the teacher). The mic meter
+ * next to this student's own name is likewise a real `cpal` capture
+ * (`useMicMeter`), not a mock, exactly like the egui app's own top-bar VU
+ * meter. */
 export function StudentConsole({ studentName, teacherName, onDisconnect }: Props) {
   const mic = useMicMeter();
   const [listening, setListening] = useState(false);
   const [partner, setPartner] = useState<string | null>(null);
   const [demoActive, setDemoActive] = useState(false);
+  const demo = useScreenDemo(demoActive);
   const [screenLocked, setScreenLocked] = useState(false);
   const [micLocked, setMicLocked] = useState(false);
   const [hasAssignment, setHasAssignment] = useState(true);
@@ -97,16 +103,31 @@ export function StudentConsole({ studentName, teacherName, onDisconnect }: Props
             <Panel className="relative flex aspect-video items-center justify-center overflow-hidden p-0">
               {demoActive ? (
                 <>
-                  <motion.div
-                    className="absolute inset-0"
-                    style={{ background: "linear-gradient(120deg, #2a2140, #1a1a2e, #241a38)", backgroundSize: "200% 200%" }}
-                    animate={{ backgroundPosition: ["0% 50%", "100% 50%", "0% 50%"] }}
-                    transition={{ duration: 6, repeat: Infinity, ease: "linear" }}
-                  />
+                  {demo.frame ? (
+                    <img
+                      src={demo.frame.dataUrl}
+                      width={demo.frame.width}
+                      height={demo.frame.height}
+                      alt="Демонстрация экрана"
+                      className="absolute inset-0 h-full w-full object-contain bg-black"
+                    />
+                  ) : (
+                    <motion.div
+                      className="absolute inset-0"
+                      style={{ background: "linear-gradient(120deg, #2a2140, #1a1a2e, #241a38)", backgroundSize: "200% 200%" }}
+                      animate={{ backgroundPosition: ["0% 50%", "100% 50%", "0% 50%"] }}
+                      transition={{ duration: 6, repeat: Infinity, ease: "linear" }}
+                    />
+                  )}
                   <span className="absolute left-3 top-3 rounded-md bg-black/50 px-2 py-1 text-xs font-medium text-violet-300 backdrop-blur">
                     🖥 Демонстрация экрана: {teacherName}
                   </span>
-                  <span className="relative text-sm text-white/60">Точное превью — шаг 7</span>
+                  {!demo.frame && !demo.error && <span className="relative text-sm text-white/60">Подключение…</span>}
+                  {demo.error && (
+                    <span className="absolute bottom-3 left-3 right-3 rounded-md bg-black/50 px-2 py-1 text-xs text-rose-300 backdrop-blur">
+                      Не удалось начать демонстрацию: {demo.error}
+                    </span>
+                  )}
                 </>
               ) : (
                 <motion.div

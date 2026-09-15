@@ -13,6 +13,8 @@
     "allow-start-teacher-session",
     "allow-stop-teacher-session",
     "allow-start-student-mic-meter",
-    "allow-stop-student-mic-meter"
+    "allow-stop-student-mic-meter",
+    "allow-start-screen-demo",
+    "allow-stop-screen-demo"
   ]
 }

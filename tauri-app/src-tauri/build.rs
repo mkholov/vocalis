@@ -13,6 +13,8 @@ fn main() {
             "stop_teacher_session",
             "start_student_mic_meter",
             "stop_student_mic_meter",
+            "start_screen_demo",
+            "stop_screen_demo",
         ]),
     );
     tauri_build::try_build(attributes).expect("failed to run tauri-build codegen");

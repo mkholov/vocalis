@@ -16,6 +16,7 @@ fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
         .plugin(tauri_plugin_opener::init())
         .manage(commands::teacher_session::TeacherSessionState::default())
         .manage(commands::student_mic::MicMeterState::default())
+        .manage(commands::screen_demo::ScreenDemoState::default())
         .invoke_handler(tauri::generate_handler![
             commands::db::list_classes,
             commands::audio::list_audio_devices,
@@ -25,6 +26,8 @@ fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
             commands::teacher_session::stop_teacher_session,
             commands::student_mic::start_student_mic_meter,
             commands::student_mic::stop_student_mic_meter,
+            commands::screen_demo::start_screen_demo,
+            commands::screen_demo::stop_screen_demo,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -200,5 +203,52 @@ mod tests {
         let _ = invoke("start_student_mic_meter", serde_json::Value::Null);
         invoke("stop_student_mic_meter", serde_json::Value::Null).expect("stop should always succeed");
         invoke("stop_student_mic_meter", serde_json::Value::Null).expect("stop should be idempotent");
+    }
+
+    /// Uses `app.listen` (via `tauri::Listener`) to capture a real emitted
+    /// event payload directly, the same technique step 7 part A's manual E2E
+    /// test used — no real webview/JS needed to check the plumbing actually
+    /// carries real values. A CI runner always has *some* primary monitor to
+    /// capture (headless or not), so unlike the mic meter this asserts success.
+    #[test]
+    fn start_screen_demo_emits_a_real_decoded_jpeg_frame() {
+        use std::sync::mpsc;
+        use tauri::Listener;
+
+        let app = super::build_app(tauri::test::mock_builder());
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
+        let call = |cmd: &str| -> Result<serde_json::Value, serde_json::Value> {
+            let request = InvokeRequest {
+                cmd: cmd.into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: if cfg!(any(windows, target_os = "android")) { "http://tauri.localhost" } else { "tauri://localhost" }
+                    .parse()
+                    .unwrap(),
+                body: InvokeBody::default(),
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.to_string(),
+            };
+            tauri::test::get_ipc_response(&webview, request).map(|b| b.deserialize::<serde_json::Value>().unwrap())
+        };
+
+        let (tx, rx) = mpsc::channel::<serde_json::Value>();
+        app.listen("screen-demo-frame", move |event| {
+            if let Ok(payload) = serde_json::from_str(event.payload()) {
+                let _ = tx.send(payload);
+            }
+        });
+
+        call("start_screen_demo").expect("start_screen_demo should succeed on a CI runner's real primary monitor");
+
+        let frame = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("a real frame should arrive within 10s");
+        let data_url = frame["dataUrl"].as_str().expect("expected a dataUrl string");
+        assert!(data_url.starts_with("data:image/jpeg;base64,"), "should be a real JPEG data URL, got: {data_url:.60}");
+        let b64 = data_url.strip_prefix("data:image/jpeg;base64,").unwrap();
+        let jpeg_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).expect("should be valid base64");
+        assert_eq!(&jpeg_bytes[0..2], &[0xFF, 0xD8], "decoded payload should start with the JPEG magic bytes");
+        assert!(frame["width"].as_u64().unwrap() > 0 && frame["height"].as_u64().unwrap() > 0);
+
+        call("stop_screen_demo").expect("stop_screen_demo should succeed");
     }
 }

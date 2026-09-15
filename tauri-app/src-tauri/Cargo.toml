@@ -28,7 +28,14 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["sync", "time"] }
+tokio = { version = "1", features = ["sync", "time", "rt"] }
+
+# Step 7 part B (vocalis_roadmap.md, section 8): re-encoding a decoded video
+# frame to JPEG for the webview, and base64-framing it for `emit`/`listen` —
+# see ../video-bench/'s benchmark for why this transport was chosen over
+# `tauri::ipc::Channel`. Same two crates that benchmark already used.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+base64 = "0.22"
 
 # The existing Rust core, reused as-is (not reimplemented): `vocalis` is the
 # same crate the egui teacher/student binaries link against (its DB, network,
