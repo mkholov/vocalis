@@ -21,8 +21,14 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
   const [selectedId, setSelectedId] = useState<number | null>(null);
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-[var(--color-app)] p-6">
-      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(167,139,250,0.08),transparent_55%)]" />
+    // `h-full w-full` (not `h-screen w-screen`) and `absolute` (not `fixed`)
+    // below — step 5 nests this screen inside the new sidebar shell
+    // (screens/TeacherConsole.tsx) instead of rendering it alone at the
+    // viewport root, so it needs to fill its parent's box, not the whole
+    // window. No other change: same design, same behavior, still full-screen
+    // in the one case (this tab, sidebar visible) that exists today.
+    <div className="relative flex h-full w-full flex-col overflow-hidden bg-[var(--color-app)] p-6">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(167,139,250,0.08),transparent_55%)]" />
 
       <motion.header
         initial={{ opacity: 0, y: -12 }}

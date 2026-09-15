@@ -17,7 +17,9 @@ export interface MockStudent {
   micLocked: boolean;
 }
 
-const ROSTER = ["Иванов Пётр", "Смирнова Анна", "Кузнецов Дмитрий", "Соколова Мария", "Попов Егор", "Волкова Дарья", "Новиков Илья", "Морозова Ксения"];
+// Exported so other mock screens (stats, chat) can reference the same names
+// without inventing a second roster.
+export const ROSTER = ["Иванов Пётр", "Смирнова Анна", "Кузнецов Дмитрий", "Соколова Мария", "Попов Егор", "Волкова Дарья", "Новиков Илья", "Морозова Ксения"];
 
 function clamp(v: number, min: number, max: number) {
   return Math.max(min, Math.min(max, v));

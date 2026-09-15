@@ -23,3 +23,12 @@ export interface DiscoveredTeacherDto {
 export function discoverTeachers(timeoutMs: number): Promise<DiscoveredTeacherDto[]> {
   return invoke<DiscoveredTeacherDto[]>("discover_teachers", { timeoutMs });
 }
+
+export interface AudioDevicesDto {
+  inputDevices: string[];
+  outputDevices: string[];
+}
+
+export function listAudioDevices(): Promise<AudioDevicesDto> {
+  return invoke<AudioDevicesDto>("list_audio_devices");
+}
