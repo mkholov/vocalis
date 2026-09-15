@@ -1,0 +1,26 @@
+{
+  "productName": "video-bench",
+  "version": "0.1.0",
+  "identifier": "com.vocalis.videobench",
+  "build": {
+    "frontendDist": "web"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "bench",
+        "url": "index.html",
+        "width": 400,
+        "height": 300,
+        "visible": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}

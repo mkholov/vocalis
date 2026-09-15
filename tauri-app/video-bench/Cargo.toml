@@ -1,0 +1,33 @@
+[package]
+name = "video-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Isolated on purpose, same reasoning as ../../codec-check/ (which this is
+# a sequel to — codec-check proved openh264 builds and round-trips a frame;
+# this measures what happens *after* that round-trip, re-encoding the decoded
+# frame for the Tauri webview path). Its own `[workspace]` keeps it out of
+# both the main egui workspace (so windows-build.yml's `cargo build
+# --workspace` never touches it) and src-tauri's workspace (so this
+# throwaway benchmark's deps — image, base64 — never end up in the shipped
+# app's dependency tree).
+[workspace]
+
+[[bin]]
+name = "video-bench"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+vocalis = { path = "../../app" }
+lingua-common = { path = "../../common" }
+openh264 = { version = "0.9", features = ["source"] }
+tauri = { version = "2", features = [] }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"

@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+  <body>
+    <script>
+      window.onerror = (msg) => {
+        try {
+          window.__TAURI__.core.invoke("debug", { msg: "onerror: " + msg });
+        } catch (e) {}
+      };
+      window.onunhandledrejection = (e) => {
+        try {
+          window.__TAURI__.core.invoke("debug", { msg: "rejection: " + e.reason });
+        } catch (err) {}
+      };
+      try {
+        const { listen } = window.__TAURI__.event;
+        const { invoke, Channel } = window.__TAURI__.core;
+        invoke("debug", { msg: "harness starting" });
+        listen("bench-frame-event", (e) => {
+          invoke("ack", { seq: e.payload.seq });
+        });
+        const channel = new Channel();
+        channel.onmessage = (data) => {
+          const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer ?? data);
+          const view = new DataView(bytes.buffer, bytes.byteOffset, 8);
+          const seq = Number(view.getBigUint64(0, true));
+          invoke("ack", { seq });
+        };
+        invoke("start_channel_bench", { channel })
+          .then(() => invoke("debug", { msg: "channel bench started" }))
+          .catch((err) => invoke("debug", { msg: "start_channel_bench failed: " + err }));
+      } catch (err) {
+        try {
+          window.__TAURI__.core.invoke("debug", { msg: "sync error: " + err });
+        } catch (e) {}
+      }
+    </script>
+  </body>
+</html>

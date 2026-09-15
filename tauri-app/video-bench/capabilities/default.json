@@ -1,0 +1,7 @@
+{
+  "$schema": "./gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the bench window",
+  "windows": ["bench"],
+  "permissions": ["core:default", "allow-ack", "allow-start-channel-bench", "allow-debug"]
+}
