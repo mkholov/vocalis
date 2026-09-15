@@ -7,11 +7,14 @@ import { discoverTeachers, type DiscoveredTeacherDto } from "../lib/commands";
 
 interface Props {
   onBack: () => void;
-  /** Called after the mocked "connect" step, with the student's name and the
-   * chosen teacher's name — lets the parent move on to the step-6 student
-   * console. Real connection is still a later roadmap step, so this is only
-   * ever a local screen transition, never a network call. */
-  onConnect?: (studentName: string, teacherName: string) => void;
+  /** Called once a real teacher is picked from the discovered list — hands
+   * back everything `useStudentSession` needs to actually dial that teacher
+   * for real (step 7 part B, `vocalis_roadmap.md` section 8): the chosen
+   * `DiscoveredTeacherDto` (ip/controlPort/teacherName) and the entered PIN,
+   * alongside the student's name. `discoverTeachers` is already a real UDP
+   * listen — this just moves on to the next screen, the actual
+   * `connect_student_session` call happens once `StudentConsole` mounts. */
+  onConnect?: (studentName: string, teacher: DiscoveredTeacherDto, pin: string) => void;
 }
 
 const DISCOVERY_TIMEOUT_MS = 2500;
@@ -70,10 +73,7 @@ export function StudentFlow({ onBack, onConnect }: Props) {
   function connect(teacher: DiscoveredTeacherDto) {
     setTouched(true);
     if (!canConnect) return;
-    // Real connection is a later roadmap step (this screen is still just the
-    // visual shell) — console.log stands in for "dial this teacher".
-    console.log("[mock] подключение:", { name, pin: pinTrimmed, teacher });
-    onConnect?.(name.trim(), teacher.teacherName);
+    onConnect?.(name.trim(), teacher, pinTrimmed);
   }
 
   return (

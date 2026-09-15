@@ -15,6 +15,10 @@
     "allow-start-student-mic-meter",
     "allow-stop-student-mic-meter",
     "allow-start-screen-demo",
-    "allow-stop-screen-demo"
+    "allow-stop-screen-demo",
+    "allow-start-own-screen-demo",
+    "allow-stop-own-screen-demo",
+    "allow-connect-student-session",
+    "allow-disconnect-student-session"
   ]
 }

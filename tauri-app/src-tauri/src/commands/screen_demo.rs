@@ -8,14 +8,14 @@
 //!
 //! This is a *self-preview* loop, not the class-wide network relay: it
 //! captures this machine's own screen and emits it into this machine's own
-//! webview. Fanning a teacher's own-screen (or a presenting student's)
-//! stream out to a whole class over the network is `teacher::screen`'s job
-//! (`run_own_screen_demo`/`run_screen_relay_receiver`) and the student's
-//! `run_screen_demo_receiver` — none of that control-message/UDP wiring
-//! exists in the Tauri layer yet, so a real cross-machine demo isn't what
-//! this drives today. What it does give both consoles is a genuinely live
-//! feed to render (real capture, real codec round trip), replacing the
-//! static placeholder gradient.
+//! webview. It was step 7 part B's own first deliverable — a pipeline check
+//! before wiring the real thing — and now backs only the teacher's own
+//! "Превью своего экрана" button (`TeacherClassGrid.tsx`). The real
+//! class-wide broadcast (teacher's own screen → every connected student) is
+//! `teacher_session.rs`'s `start_own_screen_demo` (sender) and
+//! `student_session.rs`'s `connect_student_session` (receiver), which reuse
+//! `teacher::screen::run_own_screen_demo`/`student::screen::run_screen_demo_receiver`
+//! over the real network — see those files.
 //!
 //! JPEG+base64 over plain `emit`/`listen` (not `tauri::ipc::Channel`) is a
 //! deliberate choice, not the simpler default: `../../video-bench/` measured
@@ -27,29 +27,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine;
-use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use tokio::time::MissedTickBehavior;
 use vocalis::screen_capture::MonitorCapture;
 use vocalis::video;
 
-/// Chosen (not reused from `screen_capture::MONITOR_JPEG_QUALITY`, which is
-/// documented for a different tier: 800px passive monitoring, not this
-/// 1280px live-video tier) to match exactly what `video-bench` measured its
-/// ~7-8ms JPEG-encode timing and ~90-100KB frame size at.
-const JPEG_QUALITY: u8 = 75;
-
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct ScreenDemoFrameDto {
-    pub width: u32,
-    pub height: u32,
-    /// A ready-to-use `data:image/jpeg;base64,...` URL, so the frontend can
-    /// drop it straight into an `<img src>` with no further decoding.
-    pub data_url: String,
-}
+use super::screen_frame::{jpeg_data_url, ScreenDemoFrameDto};
 
 /// `MonitorCapture` already carries its own `unsafe impl Send` justification
 /// (each `capture_image()` call is self-contained, no thread-affine state
@@ -73,15 +56,6 @@ impl Drop for ScreenDemo {
 
 #[derive(Default)]
 pub struct ScreenDemoState(pub Mutex<Option<ScreenDemo>>);
-
-fn jpeg_encode(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
-    let image = image::RgbaImage::from_raw(width, height, rgba.to_vec()).ok_or("bad rgba buffer")?;
-    let rgb = image::DynamicImage::ImageRgba8(image).to_rgb8();
-    let mut jpeg_bytes = Vec::new();
-    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_bytes, JPEG_QUALITY);
-    encoder.encode(rgb.as_raw(), width, height, image::ExtendedColorType::Rgb8).map_err(|e| e.to_string())?;
-    Ok(jpeg_bytes)
-}
 
 fn run_screen_demo_loop<R: tauri::Runtime>(app: AppHandle<R>, stop: Arc<AtomicBool>, ready_tx: std::sync::mpsc::Sender<Result<(), String>>) {
     let capture = match MonitorCapture::primary() {
@@ -157,14 +131,13 @@ fn run_screen_demo_loop<R: tauri::Runtime>(app: AppHandle<R>, stop: Arc<AtomicBo
             };
             let Some((width, height, rgba)) = decoded else { continue };
 
-            let jpeg = match jpeg_encode(width, height, &rgba) {
-                Ok(j) => j,
+            let data_url = match jpeg_data_url(width, height, &rgba) {
+                Ok(u) => u,
                 Err(e) => {
                     eprintln!("screen demo JPEG encode failed: {e:#}");
                     continue;
                 }
             };
-            let data_url = format!("data:image/jpeg;base64,{}", BASE64.encode(&jpeg));
             let _ = app.emit("screen-demo-frame", ScreenDemoFrameDto { width, height, data_url });
         }
     });

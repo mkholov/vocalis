@@ -17,6 +17,7 @@ fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
         .manage(commands::teacher_session::TeacherSessionState::default())
         .manage(commands::student_mic::MicMeterState::default())
         .manage(commands::screen_demo::ScreenDemoState::default())
+        .manage(commands::student_session::StudentSessionState::default())
         .invoke_handler(tauri::generate_handler![
             commands::db::list_classes,
             commands::audio::list_audio_devices,
@@ -24,10 +25,14 @@ fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
             commands::video::capture_screen_preview,
             commands::teacher_session::start_teacher_session,
             commands::teacher_session::stop_teacher_session,
+            commands::teacher_session::start_own_screen_demo,
+            commands::teacher_session::stop_own_screen_demo,
             commands::student_mic::start_student_mic_meter,
             commands::student_mic::stop_student_mic_meter,
             commands::screen_demo::start_screen_demo,
             commands::screen_demo::stop_screen_demo,
+            commands::student_session::connect_student_session,
+            commands::student_session::disconnect_student_session,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -250,5 +255,119 @@ mod tests {
         assert!(frame["width"].as_u64().unwrap() > 0 && frame["height"].as_u64().unwrap() > 0);
 
         call("stop_screen_demo").expect("stop_screen_demo should succeed");
+    }
+
+    /// The real end-to-end scenario for step 7 part B's network broadcast:
+    /// two independent `App`s (one hosting a real teacher session, one a
+    /// real connecting student), talking over real localhost TCP/UDP
+    /// sockets — same "two real, independently-driven sides" spirit as part
+    /// A's manual E2E test (that one used two separate tokio runtimes; here
+    /// each side's whole Tauri app, including its own `tauri::async_runtime`
+    /// background tasks, stands in for that). Calls the command functions
+    /// directly rather than through `get_ipc_response` — this test is about
+    /// the real session/network plumbing, not re-proving IPC dispatch (which
+    /// the other tests in this file already cover) — so no webview is built
+    /// for either side.
+    ///
+    /// Requires a real screen to capture, like `start_screen_demo_emits_a_
+    /// real_decoded_jpeg_frame` above — same CI assumption, not `#[ignore]`.
+    #[test]
+    fn teacher_own_screen_demo_reaches_a_real_connected_student_as_decoded_frames() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        use tauri::{Listener, Manager};
+        use crate::commands::{student_session, teacher_session};
+
+        let teacher_app = super::build_app(tauri::test::mock_builder());
+        let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
+        let session_info = teacher_session::start_teacher_session(
+            teacher_app.handle().clone(),
+            teacher_state.clone(),
+            "E2E класс".to_string(),
+        )
+        .expect("start_teacher_session should succeed");
+
+        let student_app = super::build_app(tauri::test::mock_builder());
+        let student_state = student_app.state::<student_session::StudentSessionState>();
+
+        let (frame_tx, frame_rx) = mpsc::channel::<Instant>();
+        student_app.listen("screen-demo-frame", move |_event| {
+            let _ = frame_tx.send(Instant::now());
+        });
+
+        let connected = student_session::connect_student_session(
+            student_app.handle().clone(),
+            student_state.clone(),
+            "127.0.0.1".to_string(),
+            lingua_common::CONTROL_PORT,
+            "E2E ученик".to_string(),
+            session_info.pin.clone(),
+        )
+        .expect("connect_student_session should succeed against a real running control server");
+        assert_eq!(connected.teacher_name, "Tauri (тест)", "should be the real teacher_name run_control_server was given");
+
+        // Retry rather than a fixed sleep: the student's Hello/Welcome
+        // handshake and this thread's own polling race independently, so
+        // `start_own_screen_demo` may legitimately see an empty roster on
+        // its first attempt or two even though `connect_student_session`
+        // already returned (that only waits for *this* student's handshake,
+        // not for the teacher's roster update to have landed).
+        let demo_deadline = Instant::now() + Duration::from_secs(5);
+        let demo_started_at;
+        let demo_info = loop {
+            match teacher_session::start_own_screen_demo(teacher_state.clone()) {
+                Ok(info) => {
+                    demo_started_at = Instant::now();
+                    break info;
+                }
+                Err(e) if Instant::now() < demo_deadline => {
+                    std::thread::sleep(Duration::from_millis(50));
+                    let _ = e;
+                }
+                Err(e) => panic!("start_own_screen_demo never succeeded: {e}"),
+            }
+        };
+        assert_eq!(demo_info.target_count, 1, "exactly the one real connected student");
+
+        // Collect real frames. The window is generous (15s) because this
+        // whole pipeline (capture, H.264 encode, decode, JPEG re-encode) runs
+        // *unoptimized* under `cargo test` — measured locally in `--release`,
+        // the same pipeline sustains ~14-15fps (see the roadmap report), but
+        // debug-mode CPU cost alone made 3-frames-in-6s flaky in practice
+        // (confirmed: failed 2 of 3 local debug runs at that threshold). The
+        // assertion below only checks *correctness* (a real frame arrives at
+        // all) — that's what CI can reliably verify without `--release`;
+        // throughput/fps numbers are reported for information only.
+        let collect_until = Instant::now() + Duration::from_secs(15);
+        let mut frame_times = Vec::new();
+        while Instant::now() < collect_until {
+            if let Ok(t) = frame_rx.recv_timeout(Duration::from_millis(200)) {
+                frame_times.push(t);
+            }
+        }
+
+        teacher_session::stop_own_screen_demo(teacher_state.clone());
+        student_session::disconnect_student_session(student_state);
+        teacher_session::stop_teacher_session(teacher_state);
+
+        assert!(!frame_times.is_empty(), "expected at least one real decoded frame to reach the student within 15s");
+        let first_frame_latency = frame_times[0].saturating_duration_since(demo_started_at);
+        if frame_times.len() >= 2 {
+            let span = frame_times.last().unwrap().saturating_duration_since(frame_times[0]);
+            let achieved_fps = (frame_times.len() - 1) as f64 / span.as_secs_f64();
+            println!(
+                "[e2e] real teacher->student screen demo: {} frames in {:.2}s (~{:.1} fps achieved), first frame after {:.0}ms",
+                frame_times.len(),
+                span.as_secs_f64(),
+                achieved_fps,
+                first_frame_latency.as_secs_f64() * 1000.0,
+            );
+        } else {
+            println!(
+                "[e2e] real teacher->student screen demo: only 1 frame arrived in the collection window (expected under an \
+                 unoptimized debug build — see `../../video-bench/`'s report for release-mode numbers), first frame after {:.0}ms",
+                first_frame_latency.as_secs_f64() * 1000.0,
+            );
+        }
     }
 }

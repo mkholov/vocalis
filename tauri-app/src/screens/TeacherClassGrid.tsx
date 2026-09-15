@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { StudentCard } from "../components/StudentCard";
 import { LessonTimer } from "../components/LessonTimer";
@@ -6,6 +6,7 @@ import { Button } from "../components/ui/Button";
 import { useMockClassroom } from "../lib/mockClassroom";
 import { useLiveClassroom } from "../lib/useLiveClassroom";
 import { useScreenDemo } from "../lib/useScreenDemo";
+import { startOwnScreenDemo, stopOwnScreenDemo } from "../lib/commands";
 
 interface Props {
   className: string;
@@ -38,6 +39,40 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
   // is producing before/while relying on it.
   const [previewOpen, setPreviewOpen] = useState(false);
   const preview = useScreenDemo(previewOpen);
+
+  // Step 7 part B's real class-wide broadcast (`teacher_session.rs`'s
+  // `start_own_screen_demo`/`stop_own_screen_demo`, already covered by the
+  // real two-process E2E test) — separate from `preview` above, which only
+  // ever shows the teacher their own capture locally. `broadcastingRef`
+  // mirrors `broadcasting` so the unmount-only cleanup below reads the
+  // latest value without needing to run (and needlessly re-call `stop`) on
+  // every toggle, the way a `[broadcasting]`-dependent effect would.
+  const [broadcasting, setBroadcasting] = useState(false);
+  const [broadcastError, setBroadcastError] = useState<string | undefined>();
+  const broadcastingRef = useRef(false);
+  useEffect(() => {
+    broadcastingRef.current = broadcasting;
+  }, [broadcasting]);
+  useEffect(() => {
+    return () => {
+      if (broadcastingRef.current) stopOwnScreenDemo().catch(() => {});
+    };
+  }, []);
+
+  async function toggleBroadcast() {
+    if (broadcasting) {
+      await stopOwnScreenDemo().catch(() => {});
+      setBroadcasting(false);
+      return;
+    }
+    try {
+      await startOwnScreenDemo();
+      setBroadcasting(true);
+      setBroadcastError(undefined);
+    } catch (err) {
+      setBroadcastError(String(err));
+    }
+  }
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   // Lock buttons are local-only UI state regardless of data source — nothing
@@ -92,12 +127,16 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
             {live.pin && <span className="ml-3 font-mono tracking-wider text-[var(--color-text-muted)]">PIN: {live.pin}</span>}
           </p>
           {live.error && <p className="text-xs text-rose-400">Реальная сессия недоступна: {live.error}</p>}
+          {broadcastError && <p className="text-xs text-rose-400">Не удалось начать показ: {broadcastError}</p>}
         </div>
 
         <LessonTimer />
 
         <Button variant="secondary" onClick={() => setPreviewOpen((v) => !v)}>
           {previewOpen ? "Скрыть превью экрана" : "🖥 Превью своего экрана"}
+        </Button>
+        <Button variant="secondary" onClick={toggleBroadcast}>
+          {broadcasting ? "⏹ Остановить показ" : "📡 Показать классу"}
         </Button>
         <Button variant="secondary" onClick={onEnd}>
           Завершить урок

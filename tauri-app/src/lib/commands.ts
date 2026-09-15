@@ -72,10 +72,11 @@ export interface MicLevelDto {
 }
 
 // --- Step 7, part B (vocalis_roadmap.md, section 8): live screen-demo video ---
-// commands/screen_demo.rs. Self-preview only (this machine's own screen, into
-// its own webview) — see that file's doc comment for why: the class-wide
-// network relay (teacher/presenting-student -> every student) isn't wired
-// into the Tauri layer yet.
+// commands/screen_demo.rs (self-preview: this machine's own screen, into its
+// own webview — used by TeacherClassGrid's "Превью своего экрана") and
+// commands/student_session.rs (the real class-wide broadcast: teacher's own
+// screen -> every connected student, over the real network). Both emit the
+// identical `screen-demo-frame` event shape below.
 
 export function startScreenDemo(): Promise<void> {
   return invoke("start_screen_demo");
@@ -93,4 +94,29 @@ export interface ScreenDemoFrameDto {
   width: number;
   height: number;
   dataUrl: string;
+}
+
+export function startOwnScreenDemo(): Promise<{ targetCount: number }> {
+  return invoke("start_own_screen_demo");
+}
+
+export function stopOwnScreenDemo(): Promise<void> {
+  return invoke("stop_own_screen_demo");
+}
+
+export interface StudentSessionInfo {
+  teacherName: string;
+}
+
+/** Connects for real to a teacher's control channel (same Hello/Welcome
+ * handshake, same session-key derivation as the egui student app) and starts
+ * the always-on decoded-frame receiver — idle until the teacher actually
+ * starts a demo, at which point real frames start arriving as
+ * `screen-demo-frame` events (see `commands/student_session.rs`). */
+export function connectStudentSession(teacherIp: string, controlPort: number, studentName: string, pin: string): Promise<StudentSessionInfo> {
+  return invoke<StudentSessionInfo>("connect_student_session", { teacherIp, controlPort, studentName, pin });
+}
+
+export function disconnectStudentSession(): Promise<void> {
+  return invoke("disconnect_student_session");
 }

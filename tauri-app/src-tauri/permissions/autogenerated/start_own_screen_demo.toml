@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-own-screen-demo"
+description = "Enables the start_own_screen_demo command without any pre-configured scope."
+commands.allow = ["start_own_screen_demo"]
+
+[[permission]]
+identifier = "deny-start-own-screen-demo"
+description = "Denies the start_own_screen_demo command without any pre-configured scope."
+commands.deny = ["start_own_screen_demo"]

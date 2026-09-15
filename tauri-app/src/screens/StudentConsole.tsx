@@ -6,11 +6,13 @@ import { VuMeter } from "../components/VuMeter";
 import { FlyingReactions, type FlyingReaction } from "../components/FlyingReactions";
 import { ROSTER } from "../lib/mockClassroom";
 import { useMicMeter } from "../lib/useMicMeter";
-import { useScreenDemo } from "../lib/useScreenDemo";
+import { useStudentSession } from "../lib/useStudentSession";
 
 interface Props {
   studentName: string;
-  teacherName: string;
+  teacherIp: string;
+  controlPort: number;
+  pin: string;
   onDisconnect: () => void;
 }
 
@@ -32,19 +34,24 @@ const partnerOptions = ROSTER.filter((_, i) => i % 2 === 1);
  * intro. Listening/grouped-with/lock/assignment are still local mock
  * state — there's no session delivering *those* yet — so the
  * "Демо-переключатели" panel at the bottom exists to make every such visual
- * state reachable for review; `demoActive`'s toggle there is what actually
- * starts/stops the real screen-demo loop below now (see `useScreenDemo`'s
- * doc comment for what "real" means here — genuine capture/codec/JPEG, but
- * still a self-preview, not a network feed from the teacher). The mic meter
- * next to this student's own name is likewise a real `cpal` capture
- * (`useMicMeter`), not a mock, exactly like the egui app's own top-bar VU
- * meter. */
-export function StudentConsole({ studentName, teacherName, onDisconnect }: Props) {
+ * state reachable for review (its "Демонстрация экрана" toggle is now purely
+ * a manual placeholder-preview trigger, since real demos start themselves —
+ * see below). `useStudentSession` connects for real on mount
+ * (`commands/student_session.rs`, the same Hello/Welcome handshake and
+ * session key the egui student app uses) and its `frame` is the teacher's
+ * *actual* screen, broadcast to the whole class over the real network — not
+ * a local capture, unlike the self-preview `useScreenDemo` hook this used
+ * before that path existed. The mic meter next to this student's own name is
+ * likewise a real `cpal` capture (`useMicMeter`), not a mock, exactly like
+ * the egui app's own top-bar VU meter. */
+export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDisconnect }: Props) {
   const mic = useMicMeter();
+  const session = useStudentSession({ studentName, teacherIp, controlPort, pin });
+  const teacherLabel = session.teacherName ?? "подключение…";
   const [listening, setListening] = useState(false);
   const [partner, setPartner] = useState<string | null>(null);
   const [demoActive, setDemoActive] = useState(false);
-  const demo = useScreenDemo(demoActive);
+  const showingDemo = demoActive || Boolean(session.frame);
   const [screenLocked, setScreenLocked] = useState(false);
   const [micLocked, setMicLocked] = useState(false);
   const [hasAssignment, setHasAssignment] = useState(true);
@@ -74,9 +81,10 @@ export function StudentConsole({ studentName, teacherName, onDisconnect }: Props
             <div>
               <h1 className="text-xl font-semibold tracking-tight text-violet-400">Vocalis — ученик</h1>
               <p className="text-sm text-[var(--color-text-muted)]">
-                {studentName} · подключено к {teacherName}
+                {studentName} · подключено к {teacherLabel}
               </p>
               {mic.error && <p className="text-xs text-rose-400">Микрофон недоступен: {mic.error}</p>}
+              {session.error && <p className="text-xs text-rose-400">Не удалось подключиться: {session.error}</p>}
             </div>
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2" title="Ваш микрофон (реальный уровень)">
@@ -101,13 +109,13 @@ export function StudentConsole({ studentName, teacherName, onDisconnect }: Props
             </AnimatePresence>
 
             <Panel className="relative flex aspect-video items-center justify-center overflow-hidden p-0">
-              {demoActive ? (
+              {showingDemo ? (
                 <>
-                  {demo.frame ? (
+                  {session.frame ? (
                     <img
-                      src={demo.frame.dataUrl}
-                      width={demo.frame.width}
-                      height={demo.frame.height}
+                      src={session.frame.dataUrl}
+                      width={session.frame.width}
+                      height={session.frame.height}
                       alt="Демонстрация экрана"
                       className="absolute inset-0 h-full w-full object-contain bg-black"
                     />
@@ -120,14 +128,9 @@ export function StudentConsole({ studentName, teacherName, onDisconnect }: Props
                     />
                   )}
                   <span className="absolute left-3 top-3 rounded-md bg-black/50 px-2 py-1 text-xs font-medium text-violet-300 backdrop-blur">
-                    🖥 Демонстрация экрана: {teacherName}
+                    🖥 Демонстрация экрана: {teacherLabel}
                   </span>
-                  {!demo.frame && !demo.error && <span className="relative text-sm text-white/60">Подключение…</span>}
-                  {demo.error && (
-                    <span className="absolute bottom-3 left-3 right-3 rounded-md bg-black/50 px-2 py-1 text-xs text-rose-300 backdrop-blur">
-                      Не удалось начать демонстрацию: {demo.error}
-                    </span>
-                  )}
+                  {!session.frame && <span className="relative text-sm text-white/60">Подключение…</span>}
                 </>
               ) : (
                 <motion.div

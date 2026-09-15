@@ -5,27 +5,38 @@ import { TeacherFlow } from "./screens/TeacherFlow";
 import { StudentFlow } from "./screens/StudentFlow";
 import { TeacherConsole } from "./screens/TeacherConsole";
 import { StudentConsole } from "./screens/StudentConsole";
+import type { DiscoveredTeacherDto } from "./lib/commands";
 
 type Role = "picker" | "teacher" | "student" | "teacherConsole" | "studentConsole";
 
-// Steps 3-6 of the Tauri migration (vocalis_roadmap.md, section 8): auth/
+// Steps 3-7 of the Tauri migration (vocalis_roadmap.md, section 8): auth/
 // connect for both roles (step 3), then the teacher console (steps 4-5) or
-// student console (step 6) once the respective mock "start"/"connect" step
-// is confirmed. `list_classes`/`discover_teachers`/`list_audio_devices` are
-// real step-2 commands; everything past that point in either console is
-// still local mock state (no network, no real audio/video) until a later
-// step.
+// student console (step 6) once the respective "start"/"connect" step is
+// confirmed. `list_classes`/`discover_teachers`/`list_audio_devices` are real
+// step-2 commands; `StudentFlow`'s "connect" step is a real
+// `discover_teachers` pick too (step 7 part B) — the actual
+// `connect_student_session` dial happens once `StudentConsole` mounts, using
+// the teacher/pin this component threads through below.
 function App() {
   const [role, setRole] = useState<Role>("picker");
   const [className, setClassName] = useState("");
   const [studentName, setStudentName] = useState("");
-  const [connectedTeacher, setConnectedTeacher] = useState("");
+  const [connectedTeacher, setConnectedTeacher] = useState<DiscoveredTeacherDto | null>(null);
+  const [pin, setPin] = useState("");
 
   if (role === "teacherConsole") {
     return <TeacherConsole className={className} onEnd={() => setRole("picker")} />;
   }
-  if (role === "studentConsole") {
-    return <StudentConsole studentName={studentName} teacherName={connectedTeacher} onDisconnect={() => setRole("picker")} />;
+  if (role === "studentConsole" && connectedTeacher) {
+    return (
+      <StudentConsole
+        studentName={studentName}
+        teacherIp={connectedTeacher.ip}
+        controlPort={connectedTeacher.controlPort}
+        pin={pin}
+        onDisconnect={() => setRole("picker")}
+      />
+    );
   }
 
   return (
@@ -49,9 +60,10 @@ function App() {
           <StudentFlow
             key="student"
             onBack={() => setRole("picker")}
-            onConnect={(name, teacher) => {
+            onConnect={(name, teacher, pinCode) => {
               setStudentName(name);
               setConnectedTeacher(teacher);
+              setPin(pinCode);
               setRole("studentConsole");
             }}
           />

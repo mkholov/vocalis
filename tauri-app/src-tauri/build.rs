@@ -15,6 +15,10 @@ fn main() {
             "stop_student_mic_meter",
             "start_screen_demo",
             "stop_screen_demo",
+            "start_own_screen_demo",
+            "stop_own_screen_demo",
+            "connect_student_session",
+            "disconnect_student_session",
         ]),
     );
     tauri_build::try_build(attributes).expect("failed to run tauri-build codegen");
