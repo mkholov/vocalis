@@ -6,25 +6,28 @@ import { Button } from "../components/ui/Button";
 import { useMockClassroom } from "../lib/mockClassroom";
 import { useLiveClassroom } from "../lib/useLiveClassroom";
 import { useScreenDemo } from "../lib/useScreenDemo";
-import { startOwnScreenDemo, stopOwnScreenDemo } from "../lib/commands";
+import { startOwnScreenDemo, stopOwnScreenDemo, startMicBroadcast, stopMicBroadcast } from "../lib/commands";
 
 interface Props {
   className: string;
   onEnd: () => void;
 }
 
-/** Step 4 (grid/timer/lock UI) + step 7 part A (live levels) of the Tauri
- * migration (vocalis_roadmap.md, section 8). A real teacher session
- * (`useLiveClassroom`) starts on mount — its per-student mic levels are
- * genuine, reported over the network exactly the way the egui console's own
- * grid gets them (`student::audio::run_level_telemetry` →
- * `ClientToServer::AudioLevel` → `Student::last_level`), not simulated. As
- * long as the step-3 login screens stay mocked, nothing ever *dials into*
- * this real session on its own, though — so `useMockClassroom`'s simulation
- * is still what's shown until at least one real student actually connects
- * (see the step-7 report for how that was tested: a second local process
- * really connecting and reporting real mic levels). Lock buttons stay
- * local-only UI state either way — only levels are wired to the network so far. */
+/** Step 4 (grid/timer/lock UI) + step 7/7.5 (live levels, screen-demo
+ * broadcast, mic broadcast) of the Tauri migration (vocalis_roadmap.md,
+ * section 8). A real teacher session (`useLiveClassroom`) starts on
+ * mount — its per-student mic levels are genuine, reported over the network
+ * exactly the way the egui console's own grid gets them
+ * (`student::audio::run_level_telemetry` → `ClientToServer::AudioLevel` →
+ * `Student::last_level`), not simulated. As long as the step-3 login screens
+ * stay mocked, nothing ever *dials into* this real session on its own,
+ * though — so `useMockClassroom`'s simulation is still what's shown until at
+ * least one real student actually connects (see the step-7 report for how
+ * that was tested: a second local process really connecting and reporting
+ * real mic levels). "Показать классу" and "Говорить с классом" broadcast
+ * for real to whoever's really connected at the time — same caveat. Lock
+ * buttons are the one remaining local-only UI state — nothing sends
+ * `LockScreen`/`SetMicLocked` over the network yet. */
 export function TeacherClassGrid({ className, onEnd }: Props) {
   const mock = useMockClassroom(12);
   const live = useLiveClassroom(className);
@@ -71,6 +74,37 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
       setBroadcastError(undefined);
     } catch (err) {
       setBroadcastError(String(err));
+    }
+  }
+
+  // Step 7.5: teacher's mic broadcast to the whole class
+  // (`teacher_session.rs`'s `start_mic_broadcast`/`stop_mic_broadcast`,
+  // reusing `teacher::mic::run_mic_broadcast` unchanged) — same
+  // start/stop/error/unmount-cleanup shape as `broadcasting` above.
+  const [micBroadcasting, setMicBroadcasting] = useState(false);
+  const [micBroadcastError, setMicBroadcastError] = useState<string | undefined>();
+  const micBroadcastingRef = useRef(false);
+  useEffect(() => {
+    micBroadcastingRef.current = micBroadcasting;
+  }, [micBroadcasting]);
+  useEffect(() => {
+    return () => {
+      if (micBroadcastingRef.current) stopMicBroadcast().catch(() => {});
+    };
+  }, []);
+
+  async function toggleMicBroadcast() {
+    if (micBroadcasting) {
+      await stopMicBroadcast().catch(() => {});
+      setMicBroadcasting(false);
+      return;
+    }
+    try {
+      await startMicBroadcast();
+      setMicBroadcasting(true);
+      setMicBroadcastError(undefined);
+    } catch (err) {
+      setMicBroadcastError(String(err));
     }
   }
 
@@ -128,6 +162,7 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
           </p>
           {live.error && <p className="text-xs text-rose-400">Реальная сессия недоступна: {live.error}</p>}
           {broadcastError && <p className="text-xs text-rose-400">Не удалось начать показ: {broadcastError}</p>}
+          {micBroadcastError && <p className="text-xs text-rose-400">Не удалось включить микрофон: {micBroadcastError}</p>}
         </div>
 
         <LessonTimer />
@@ -137,6 +172,9 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
         </Button>
         <Button variant="secondary" onClick={toggleBroadcast}>
           {broadcasting ? "⏹ Остановить показ" : "📡 Показать классу"}
+        </Button>
+        <Button variant="secondary" onClick={toggleMicBroadcast}>
+          {micBroadcasting ? "🔇 Выключить микрофон" : "🎙 Говорить с классом"}
         </Button>
         <Button variant="secondary" onClick={onEnd}>
           Завершить урок

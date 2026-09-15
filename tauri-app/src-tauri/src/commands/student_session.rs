@@ -1,13 +1,19 @@
-//! Real network connection to a teacher's session, for the live screen-demo
-//! video receiver (step 7 part B — `vocalis_roadmap.md`, section 8). Reuses
-//! `student::net::connect_to_teacher` and `student::screen::run_screen_demo_receiver`
-//! unchanged — the exact same handshake/session-key derivation and H.264
-//! receive/decode path the egui student app uses; nothing about the network
-//! protocol is reimplemented here. What's new is only the "poll the decoded
-//! frame for changes, JPEG-encode it, emit it to the webview" glue, reusing
+//! Real network connection to a teacher's session — the screen-demo video
+//! receiver (step 7 part B) and the class-wide mic-broadcast receiver (step
+//! 7.5), `vocalis_roadmap.md` section 8. Reuses `student::net::
+//! connect_to_teacher`, `student::screen::run_screen_demo_receiver`, and
+//! `student::audio::run_mic_broadcast_receiver` unchanged — the exact same
+//! handshake/session-key derivation and H.264/Opus receive/decode paths the
+//! egui student app uses; nothing about either network protocol is
+//! reimplemented here. What's new is only the "poll the decoded frame for
+//! changes, JPEG-encode it, emit it to the webview" glue for video, reusing
 //! `screen_frame`'s helper — the same one `screen_demo.rs`'s self-preview
 //! uses — so both paths emit the identical `screen-demo-frame` event shape
-//! and the frontend needs no changes to tell them apart.
+//! and the frontend needs no changes to tell them apart. Mic audio needs no
+//! such glue: `run_mic_broadcast_receiver` already mixes decoded samples
+//! into a `SharedMix` and starts a real speaker output stream on its own
+//! (`ensure_output_started`) — this only has to create that `SharedMix` and
+//! keep the receiver task running.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -15,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
-use vocalis::student::{net, screen, state};
+use vocalis::student::{audio, net, screen, state};
 
 use super::screen_frame::jpeg_data_url;
 
@@ -37,6 +43,16 @@ pub struct StudentSession {
     // real bug if a future change removed one of those clones, so it stays.
     #[allow(dead_code)]
     app_state: state::AppState,
+    /// `pub(crate)` (not private) solely so the real two-process E2E test in
+    /// `lib.rs` can read `mix.lock().unwrap().broadcast.len()` as proof that
+    /// real decoded audio actually arrived — there's no webview event to
+    /// observe here the way `screen-demo-frame` lets the video path prove
+    /// itself, since mixing/playback happens entirely inside
+    /// `student::audio` (real speakers, not something to route through IPC).
+    /// Only that test ever reads it outside of the clone already passed into
+    /// the receiver task below, hence `#[allow(dead_code)]` for non-test builds.
+    #[allow(dead_code)]
+    pub(crate) mix: audio::SharedMix,
     teacher_name: String,
     tasks: Vec<tauri::async_runtime::JoinHandle<()>>,
 }
@@ -123,6 +139,21 @@ pub fn connect_student_session<R: tauri::Runtime>(
             }
         }));
     }
+    let mix = audio::new_mix_state();
+    {
+        // Always-on, idle until the teacher actually broadcasts — exactly
+        // like `student::app::StudentApp::new` spawning this unconditionally
+        // at startup. `default_output_sample_rate()` queries the real
+        // configured output device once, same as the egui app.
+        let recv_state = app_state.clone();
+        let recv_mix = mix.clone();
+        let output_rate = audio::default_output_sample_rate();
+        tasks.push(tauri::async_runtime::spawn(async move {
+            if let Err(e) = audio::run_mic_broadcast_receiver(recv_state, recv_mix, output_rate).await {
+                eprintln!("[student_session] mic-broadcast receiver stopped: {e:#}");
+            }
+        }));
+    }
     {
         let poll_state = app_state.clone();
         tasks.push(tauri::async_runtime::spawn(async move {
@@ -162,7 +193,7 @@ pub fn connect_student_session<R: tauri::Runtime>(
     }
 
     let info = StudentSessionInfo { teacher_name: teacher_name.clone() };
-    *guard = Some(StudentSession { app_state, teacher_name, tasks });
+    *guard = Some(StudentSession { app_state, mix, teacher_name, tasks });
     Ok(info)
 }
 

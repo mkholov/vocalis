@@ -17,6 +17,8 @@ fn main() {
             "stop_screen_demo",
             "start_own_screen_demo",
             "stop_own_screen_demo",
+            "start_mic_broadcast",
+            "stop_mic_broadcast",
             "connect_student_session",
             "disconnect_student_session",
         ]),

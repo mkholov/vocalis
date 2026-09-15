@@ -27,6 +27,8 @@ fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
             commands::teacher_session::stop_teacher_session,
             commands::teacher_session::start_own_screen_demo,
             commands::teacher_session::stop_own_screen_demo,
+            commands::teacher_session::start_mic_broadcast,
+            commands::teacher_session::stop_mic_broadcast,
             commands::student_mic::start_student_mic_meter,
             commands::student_mic::stop_student_mic_meter,
             commands::screen_demo::start_screen_demo,
@@ -369,5 +371,73 @@ mod tests {
                 first_frame_latency.as_secs_f64() * 1000.0,
             );
         }
+    }
+
+    /// Real end-to-end scenario for step 7.5's mic broadcast: two independent
+    /// `App`s again (same shape as the screen-demo E2E test above), this time
+    /// verifying real captured audio — resampled, Opus-encoded, UDP-sent,
+    /// decrypted, decoded, resampled again — lands in the student's real
+    /// output mix queue. There's no webview event to observe here (mixing/
+    /// playback happens entirely in `student::audio`, not something routed
+    /// through IPC — see `StudentSession.mix`'s doc comment), so this reads
+    /// `mix.broadcast`'s length directly.
+    ///
+    /// Unlike the screen-demo tests, this does NOT assert success: a CI
+    /// runner may genuinely have no default input device at all (same
+    /// well-established fact `student_mic_meter_start_stop_does_not_panic`
+    /// already works around) — `start_mic_broadcast` failing for that reason
+    /// is a real environment limitation, not a bug, so the test just reports
+    /// it and returns early instead of failing.
+    #[test]
+    fn teacher_mic_broadcast_reaches_a_real_connected_student() {
+        use std::time::{Duration, Instant};
+        use tauri::Manager;
+        use crate::commands::{student_session, teacher_session};
+
+        let teacher_app = super::build_app(tauri::test::mock_builder());
+        let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
+        let session_info =
+            teacher_session::start_teacher_session(teacher_app.handle().clone(), teacher_state.clone(), "E2E класс (аудио)".to_string())
+                .expect("start_teacher_session should succeed");
+
+        let student_app = super::build_app(tauri::test::mock_builder());
+        let student_state = student_app.state::<student_session::StudentSessionState>();
+        let connected = student_session::connect_student_session(
+            student_app.handle().clone(),
+            student_state.clone(),
+            "127.0.0.1".to_string(),
+            lingua_common::CONTROL_PORT,
+            "E2E ученик (аудио)".to_string(),
+            session_info.pin.clone(),
+        )
+        .expect("connect_student_session should succeed against a real running control server");
+        assert_eq!(connected.teacher_name, "Tauri (тест)");
+
+        if let Err(e) = teacher_session::start_mic_broadcast(teacher_state.clone()) {
+            println!("[e2e] skipping mic-broadcast verification: no real input device on this runner ({e})");
+            teacher_session::stop_teacher_session(teacher_state);
+            student_session::disconnect_student_session(student_state);
+            return;
+        }
+
+        // Give real audio real time to flow through the whole chain (capture
+        // -> resample -> Opus encode -> UDP -> decrypt -> decode -> resample
+        // -> mixed into the student's output queue) before checking.
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut queued_samples = 0usize;
+        while Instant::now() < deadline {
+            queued_samples = student_state.0.lock().unwrap().as_ref().map(|s| s.mix.lock().unwrap().broadcast.len()).unwrap_or(0);
+            if queued_samples > 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        teacher_session::stop_mic_broadcast(teacher_state.clone());
+        teacher_session::stop_teacher_session(teacher_state);
+        student_session::disconnect_student_session(student_state);
+
+        assert!(queued_samples > 0, "expected real decoded audio samples to reach the student's mix queue within 8s");
+        println!("[e2e] real teacher->student mic broadcast: {queued_samples} samples queued for playback");
     }
 }

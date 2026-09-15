@@ -120,3 +120,19 @@ export function connectStudentSession(teacherIp: string, controlPort: number, st
 export function disconnectStudentSession(): Promise<void> {
   return invoke("disconnect_student_session");
 }
+
+// --- Step 7.5 (vocalis_roadmap.md, section 8): teacher's mic broadcast ---
+// commands/teacher_session.rs. Reuses teacher::mic::{start_mic_capture,
+// run_mic_broadcast} unchanged — same capture/resample/Opus-encode/UDP
+// pipeline the egui teacher console's own mic toggle uses. The receiving
+// side needs no frontend wiring at all: `connect_student_session` already
+// starts the real mic-broadcast receiver, which plays through real speakers
+// on its own (`student::audio::ensure_output_started`).
+
+export function startMicBroadcast(): Promise<void> {
+  return invoke("start_mic_broadcast");
+}
+
+export function stopMicBroadcast(): Promise<void> {
+  return invoke("stop_mic_broadcast");
+}

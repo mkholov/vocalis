@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-stop-mic-broadcast"
+description = "Enables the stop_mic_broadcast command without any pre-configured scope."
+commands.allow = ["stop_mic_broadcast"]
+
+[[permission]]
+identifier = "deny-stop-mic-broadcast"
+description = "Denies the stop_mic_broadcast command without any pre-configured scope."
+commands.deny = ["stop_mic_broadcast"]

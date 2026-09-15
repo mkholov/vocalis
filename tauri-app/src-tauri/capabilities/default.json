@@ -18,6 +18,8 @@
     "allow-stop-screen-demo",
     "allow-start-own-screen-demo",
     "allow-stop-own-screen-demo",
+    "allow-start-mic-broadcast",
+    "allow-stop-mic-broadcast",
     "allow-connect-student-session",
     "allow-disconnect-student-session"
   ]

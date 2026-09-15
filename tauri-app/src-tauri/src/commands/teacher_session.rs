@@ -1,12 +1,18 @@
-//! Live per-student mic levels for the teacher's class grid (step 7, part A —
-//! `vocalis_roadmap.md`, section 8). Reuses the real network/session stack
-//! unchanged: `teacher::state::SharedState`, `teacher::net::run_control_server`,
-//! `lingua_common::run_teacher_announcer` are exactly what the egui teacher
-//! console uses to accept connections and update `Student::last_level` from
-//! each student's `ClientToServer::AudioLevel` telemetry (see
-//! `student::audio::run_level_telemetry`) — nothing about that pipeline is
-//! reimplemented here, this module only starts it and periodically reads
-//! `SharedState.students` out into a Tauri event.
+//! The teacher's live session (`vocalis_roadmap.md`, section 8, step 7 and
+//! 7.5) — everything that needs a real, currently-running
+//! `teacher::state::SharedState` to act on. `start_teacher_session`/
+//! `stop_teacher_session` (part A) start the actual network/session stack
+//! unchanged: `teacher::net::run_control_server`, `lingua_common::
+//! run_teacher_announcer` are exactly what the egui teacher console uses to
+//! accept connections and update `Student::last_level` from each student's
+//! `ClientToServer::AudioLevel` telemetry — nothing about that pipeline is
+//! reimplemented here, this only starts it and periodically reads
+//! `SharedState.students` out into a Tauri event. `start_own_screen_demo`/
+//! `stop_own_screen_demo` (part B) and `start_mic_broadcast`/
+//! `stop_mic_broadcast` (step 7.5) act on that same running session to
+//! reuse, respectively, `teacher::screen::run_own_screen_demo` and
+//! `teacher::mic::run_mic_broadcast` — again unchanged, same pipelines the
+//! egui console's own toggles use.
 //!
 //! Because the step-3 login screens are still mocked, nothing in the real UI
 //! flow ever calls `start_teacher_session` today — `TeacherClassGrid.tsx`
@@ -15,12 +21,14 @@
 //! it already had. See the step-7 report for how this was exercised with a
 //! second, real local process actually connecting and reporting real levels.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use lingua_common::{ServerToClient, StudentId};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
-use vocalis::teacher::{db, net, screen, state};
+use vocalis::teacher::{db, mic, net, screen, state};
 
 const LEVEL_EMIT_INTERVAL_MS: u64 = 150;
 // A fresh `SharedState`'s `class_size` doesn't matter for this step — nothing
@@ -32,6 +40,23 @@ const TEST_CLASS_SIZE: usize = 30;
 /// `start_teacher_session`'s doc comment), so this is a fixed placeholder,
 /// same spirit as `"Tauri (тест)"` below for discovery announcements.
 const SCREEN_DEMO_PRESENTER_NAME: &str = "Преподаватель";
+
+/// The teacher's class-wide mic broadcast (step 7.5 — `vocalis_roadmap.md`,
+/// section 8). `teacher::mic::MicCapture` wraps a `cpal::Stream`, which isn't
+/// `Send` on macOS (see `student_mic.rs`'s matching comment) — confined here
+/// to one dedicated OS thread for its whole lifetime, exactly like
+/// `student_mic.rs`'s `MicMeter`, rather than trying to move it into a
+/// `tauri::async_runtime` task.
+pub struct MicBroadcast {
+    stop: Arc<AtomicBool>,
+    _thread: std::thread::JoinHandle<()>,
+}
+
+impl Drop for MicBroadcast {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
 
 pub struct TeacherSession {
     // Read directly by `start_own_screen_demo`/`stop_own_screen_demo` (the
@@ -45,6 +70,10 @@ pub struct TeacherSession {
     /// from `tasks` because it starts/stops independently of the session
     /// itself — mirrors `teacher::app::TeacherApp::screen_demo_task`.
     screen_demo_task: Option<tauri::async_runtime::JoinHandle<()>>,
+    /// The teacher's mic broadcast (step 7.5), same independent start/stop
+    /// lifetime as `screen_demo_task` — dropping this (or the whole
+    /// `TeacherSession`) stops it via `MicBroadcast`'s own `Drop`.
+    mic_broadcast: Option<MicBroadcast>,
 }
 
 impl Drop for TeacherSession {
@@ -166,7 +195,7 @@ pub fn start_teacher_session<R: tauri::Runtime>(
     }
 
     let info = TeacherSessionInfo { pin: pin.clone(), control_port: lingua_common::CONTROL_PORT, class_name: class_name.clone() };
-    *guard = Some(TeacherSession { app_state, pin, class_name, tasks, screen_demo_task: None });
+    *guard = Some(TeacherSession { app_state, pin, class_name, tasks, screen_demo_task: None, mic_broadcast: None });
     Ok(info)
 }
 
@@ -248,5 +277,89 @@ pub fn stop_own_screen_demo(session: State<TeacherSessionState>) {
                 let _ = s.to_client.send(ServerToClient::StopScreenDemo);
             }
         }
+    }
+}
+
+/// Polls `stop` every 100ms — `teacher::mic::run_mic_broadcast` has no
+/// cancellation of its own (it just loops on `rx.recv()` until the channel
+/// closes), so `run_mic_broadcast_thread` races it against this inside a
+/// `tokio::select!` to stop promptly when `stop_mic_broadcast` is called,
+/// without needing to modify `app/`.
+async fn wait_for_stop(stop: Arc<AtomicBool>) {
+    while !stop.load(Ordering::Relaxed) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn run_mic_broadcast_thread(state: state::AppState, stop: Arc<AtomicBool>, ready_tx: std::sync::mpsc::Sender<Result<(), String>>) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let (capture, native_rate) = match mic::start_mic_capture(tx, &mic::MIC_LEVEL_MILLIS, None) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = ready_tx.send(Err(e.to_string()));
+            return;
+        }
+    };
+    let _ = ready_tx.send(Ok(()));
+
+    // `enable_all` (not just `enable_time`, unlike `student_mic.rs`'s mini
+    // runtime): `run_mic_broadcast` does real UDP I/O, so this needs the IO
+    // driver too, not just timers.
+    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("[teacher_session] mic broadcast runtime failed to start: {e:#}");
+            return;
+        }
+    };
+    rt.block_on(async {
+        tokio::select! {
+            res = mic::run_mic_broadcast(state, rx, native_rate) => {
+                if let Err(e) = res {
+                    eprintln!("[teacher_session] mic broadcast stopped: {e:#}");
+                }
+            }
+            _ = wait_for_stop(stop) => {}
+        }
+    });
+    drop(capture); // explicit: dies on this same thread, where it was created
+}
+
+/// Starts the teacher's mic broadcast to the whole class (step 7.5 —
+/// `vocalis_roadmap.md`, section 8): reuses `teacher::mic::start_mic_capture`
+/// + `teacher::mic::run_mic_broadcast` unchanged — the same capture/
+/// resample/Opus-encode/UDP-fan-out pipeline the egui teacher console's own
+/// mic-broadcast toggle uses. Unlike the screen demo, no `ServerToClient`
+/// announcement is needed first: `run_mic_broadcast` just reads
+/// `SharedState.student_addrs_with_keys()` fresh on every frame, so students
+/// who join mid-broadcast are picked up automatically.
+#[tauri::command]
+pub fn start_mic_broadcast(session: State<TeacherSessionState>) -> Result<(), String> {
+    let mut guard = session.0.lock().unwrap();
+    let teacher_session = guard.as_mut().ok_or("нет активной сессии преподавателя")?;
+    if teacher_session.mic_broadcast.is_some() {
+        return Ok(());
+    }
+
+    let app_state = teacher_session.app_state.clone();
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = stop.clone();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
+    let thread = std::thread::spawn(move || run_mic_broadcast_thread(app_state, thread_stop, ready_tx));
+
+    match ready_rx.recv() {
+        Ok(Ok(())) => {
+            teacher_session.mic_broadcast = Some(MicBroadcast { stop, _thread: thread });
+            Ok(())
+        }
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err("mic broadcast thread exited before reporting readiness".to_string()),
+    }
+}
+
+#[tauri::command]
+pub fn stop_mic_broadcast(session: State<TeacherSessionState>) {
+    if let Some(teacher_session) = session.0.lock().unwrap().as_mut() {
+        teacher_session.mic_broadcast = None;
     }
 }
