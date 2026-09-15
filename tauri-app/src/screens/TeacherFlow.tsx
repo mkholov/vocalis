@@ -7,16 +7,21 @@ import { listClasses, type ClassDto } from "../lib/commands";
 
 interface Props {
   onBack: () => void;
+  /** Called after the mocked "start lesson" step, with the chosen class's
+   * name — lets the parent move on to the step-4 class grid. Real
+   * network/session start is still a later roadmap step, so this is only
+   * ever a local screen transition, never a network call. */
+  onStart?: (className: string) => void;
 }
 
 type Step = "password" | "classes";
 
 /** Teacher flow: password → class picker, matching the egui console's own
  * order (`teacher::auth::AuthScreen` then `teacher::class_picker`) — same
- * two gates, new look. Real login/session-start is still step 4+ territory
- * (see the roadmap); `onStart` below is a deliberate `console.log` stand-in,
- * not a stub for something that was supposed to work already. */
-export function TeacherFlow({ onBack }: Props) {
+ * two gates, new look. Real login/session-start is still a later roadmap
+ * step; the `console.log` below is a deliberate stand-in, not a stub for
+ * something that was supposed to work already. */
+export function TeacherFlow({ onBack, onStart }: Props) {
   const [step, setStep] = useState<Step>("password");
   const [password, setPassword] = useState("");
   const [passwordError, setPasswordError] = useState<string | undefined>();
@@ -50,6 +55,7 @@ export function TeacherFlow({ onBack }: Props) {
     // Real network/session start is a later roadmap step — this is still just
     // the visual shell, so a console.log stands in for "start the lesson".
     console.log("[mock] начать урок для класса:", chosen);
+    if (chosen) onStart?.(chosen.name);
   }
 
   return (

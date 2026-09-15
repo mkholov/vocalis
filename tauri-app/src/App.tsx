@@ -3,18 +3,23 @@ import { AnimatePresence } from "framer-motion";
 import { RolePicker } from "./screens/RolePicker";
 import { TeacherFlow } from "./screens/TeacherFlow";
 import { StudentFlow } from "./screens/StudentFlow";
+import { TeacherClassGrid } from "./screens/TeacherClassGrid";
 
-type Role = "picker" | "teacher" | "student";
+type Role = "picker" | "teacher" | "student" | "teacherGrid";
 
-// Step 3 of the Tauri migration (vocalis_roadmap.md, section 8): the first
-// real screen on the new stack — auth/connect for both roles in one app,
-// switching between them rather than duplicating the shared UI primitives
-// (components/ui/) across two separate apps. `list_classes` and
-// `discover_teachers` (screens/TeacherFlow.tsx, screens/StudentFlow.tsx) are
-// the real step-2 commands; what happens after a successful pick is still a
-// mocked console.log — starting a real lesson/session is a later step.
+// Steps 3-4 of the Tauri migration (vocalis_roadmap.md, section 8): auth/
+// connect for both roles (step 3), then the teacher's class grid (step 4)
+// once "Начать урок" is confirmed. `list_classes` and `discover_teachers`
+// (screens/TeacherFlow.tsx, screens/StudentFlow.tsx) are real step-2
+// commands; the class grid itself is still a local mock (no network, no real
+// audio/video — see screens/TeacherClassGrid.tsx) until a later step.
 function App() {
   const [role, setRole] = useState<Role>("picker");
+  const [className, setClassName] = useState("");
+
+  if (role === "teacherGrid") {
+    return <TeacherClassGrid className={className} onEnd={() => setRole("picker")} />;
+  }
 
   return (
     <main className="relative flex h-screen w-screen items-center justify-center overflow-hidden bg-[var(--color-app)] p-6">
@@ -23,7 +28,16 @@ function App() {
 
       <AnimatePresence mode="wait">
         {role === "picker" && <RolePicker key="picker" onPick={setRole} />}
-        {role === "teacher" && <TeacherFlow key="teacher" onBack={() => setRole("picker")} />}
+        {role === "teacher" && (
+          <TeacherFlow
+            key="teacher"
+            onBack={() => setRole("picker")}
+            onStart={(name) => {
+              setClassName(name);
+              setRole("teacherGrid");
+            }}
+          />
+        )}
         {role === "student" && <StudentFlow key="student" onBack={() => setRole("picker")} />}
       </AnimatePresence>
     </main>
