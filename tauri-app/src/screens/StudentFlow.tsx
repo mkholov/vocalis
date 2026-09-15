@@ -7,6 +7,11 @@ import { discoverTeachers, type DiscoveredTeacherDto } from "../lib/commands";
 
 interface Props {
   onBack: () => void;
+  /** Called after the mocked "connect" step, with the student's name and the
+   * chosen teacher's name — lets the parent move on to the step-6 student
+   * console. Real connection is still a later roadmap step, so this is only
+   * ever a local screen transition, never a network call. */
+  onConnect?: (studentName: string, teacherName: string) => void;
 }
 
 const DISCOVERY_TIMEOUT_MS = 2500;
@@ -17,7 +22,7 @@ const DISCOVERY_TIMEOUT_MS = 2500;
  * batched at the bottom — see `app.rs`'s student connect-screen polish
  * pass). `discover_teachers` re-polls itself on a timer since discovery is
  * a point-in-time UDP listen, not a subscription. */
-export function StudentFlow({ onBack }: Props) {
+export function StudentFlow({ onBack, onConnect }: Props) {
   const [name, setName] = useState("");
   const [pin, setPin] = useState("");
   const [touched, setTouched] = useState(false);
@@ -68,6 +73,7 @@ export function StudentFlow({ onBack }: Props) {
     // Real connection is a later roadmap step (this screen is still just the
     // visual shell) — console.log stands in for "dial this teacher".
     console.log("[mock] подключение:", { name, pin: pinTrimmed, teacher });
+    onConnect?.(name.trim(), teacher.teacherName);
   }
 
   return (
