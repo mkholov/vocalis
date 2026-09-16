@@ -1,27 +1,30 @@
 //! Real network connection to a teacher's session — the screen-demo video
-//! receiver (step 7 part B) and the class-wide mic-broadcast receiver (step
-//! 7.5), `vocalis_roadmap.md` section 8. Reuses `student::net::
-//! connect_to_teacher`, `student::screen::run_screen_demo_receiver`, and
-//! `student::audio::run_mic_broadcast_receiver` unchanged — the exact same
-//! handshake/session-key derivation and H.264/Opus receive/decode paths the
-//! egui student app uses; nothing about either network protocol is
+//! receiver (step 7 part B), the class-wide mic-broadcast receiver (step
+//! 7.5), and this student's own outbound mic for listen-in/groups/intercom
+//! (also step 7.5), `vocalis_roadmap.md` section 8. Reuses `student::net::
+//! connect_to_teacher`, `student::screen::run_screen_demo_receiver`,
+//! `student::audio::run_mic_broadcast_receiver`, and `student::audio::
+//! run_outbound_and_group_audio` unchanged — the exact same handshake/
+//! session-key derivation and H.264/Opus send/receive/decode paths the egui
+//! student app uses; nothing about any of these network protocols is
 //! reimplemented here. What's new is only the "poll the decoded frame for
 //! changes, JPEG-encode it, emit it to the webview" glue for video, reusing
 //! `screen_frame`'s helper — the same one `screen_demo.rs`'s self-preview
 //! uses — so both paths emit the identical `screen-demo-frame` event shape
-//! and the frontend needs no changes to tell them apart. Mic audio needs no
-//! such glue: `run_mic_broadcast_receiver` already mixes decoded samples
-//! into a `SharedMix` and starts a real speaker output stream on its own
-//! (`ensure_output_started`) — this only has to create that `SharedMix` and
-//! keep the receiver task running.
+//! and the frontend needs no changes to tell them apart. Audio needs no such
+//! glue: mixing/playback (`run_mic_broadcast_receiver`) and mic capture/
+//! upload (`run_outbound_and_group_audio`) happen entirely inside
+//! `student::audio`/real speakers — this only has to create the shared
+//! `SharedMix`, start the real mic capture, and keep the tasks running.
 
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
-use vocalis::student::{audio, net, screen, state};
+use vocalis::student::{audio, mic, net, screen, state};
 
 use super::screen_frame::jpeg_data_url;
 
@@ -35,6 +38,22 @@ const DEMO_POLL_INTERVAL_MS: u64 = 20;
 /// Hello/Welcome handshake succeeds, then runs its receive loop forever. This
 /// bounds how long `connect_student_session` polls for that before giving up.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// This student's own mic, feeding `student::audio::run_outbound_and_group_audio`
+/// (listen-in, groups, intercom — step 7.5). `student::mic::MicCapture`
+/// wraps a `cpal::Stream`, which isn't `Send` on macOS — same reasoning as
+/// `teacher_session.rs`'s `MicBroadcast`, confined to one dedicated OS
+/// thread rather than moved into a `tauri::async_runtime` task.
+pub(crate) struct OutboundMic {
+    stop: Arc<AtomicBool>,
+    _thread: std::thread::JoinHandle<()>,
+}
+
+impl Drop for OutboundMic {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
 
 pub struct StudentSession {
     // Kept alive only for its `Arc` refcount — the spawned tasks each hold
@@ -55,6 +74,15 @@ pub struct StudentSession {
     pub(crate) mix: audio::SharedMix,
     teacher_name: String,
     tasks: Vec<tauri::async_runtime::JoinHandle<()>>,
+    /// `None` if this machine has no usable input device — listen-in/
+    /// groups/intercom simply aren't available then, same non-fatal
+    /// treatment `student_mic.rs`'s meter already gives a missing mic.
+    /// `pub(crate)` so the real E2E test can check whether it's `Some`
+    /// before asserting that listen-in audio actually arrived — a CI runner
+    /// with no input device is an environment limitation, not a bug, same
+    /// reasoning as `student_mic_meter_start_stop_does_not_panic`.
+    #[allow(dead_code)]
+    pub(crate) outbound_mic: Option<OutboundMic>,
 }
 
 impl Drop for StudentSession {
@@ -72,6 +100,53 @@ pub struct StudentSessionState(pub Mutex<Option<StudentSession>>);
 #[serde(rename_all = "camelCase")]
 pub struct StudentSessionInfo {
     pub teacher_name: String,
+}
+
+/// Polls `stop` every 100ms — `run_outbound_and_group_audio` has no
+/// cancellation of its own (loops on `mic_rx.recv()` until the channel
+/// closes), so this races it inside a `tokio::select!`, same pattern as
+/// `teacher_session.rs`'s `wait_for_stop` for the mic broadcast.
+async fn wait_for_stop(stop: Arc<AtomicBool>) {
+    while !stop.load(Ordering::Relaxed) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn run_outbound_mic_thread(
+    state: state::AppState,
+    mix: audio::SharedMix,
+    output_rate: u32,
+    stop: Arc<AtomicBool>,
+    ready_tx: std::sync::mpsc::Sender<Result<(), String>>,
+) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let (capture, native_rate) = match mic::start_mic_capture(tx, None) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = ready_tx.send(Err(e.to_string()));
+            return;
+        }
+    };
+    let _ = ready_tx.send(Ok(()));
+
+    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("[student_session] outbound mic runtime failed to start: {e:#}");
+            return;
+        }
+    };
+    rt.block_on(async {
+        tokio::select! {
+            res = audio::run_outbound_and_group_audio(state, mix, rx, native_rate, output_rate) => {
+                if let Err(e) = res {
+                    eprintln!("[student_session] outbound/group audio stopped: {e:#}");
+                }
+            }
+            _ = wait_for_stop(stop) => {}
+        }
+    });
+    drop(capture); // explicit: dies on this same thread, where it was created
 }
 
 /// Connects to a real teacher session over the network — same Hello/Welcome
@@ -140,6 +215,7 @@ pub fn connect_student_session<R: tauri::Runtime>(
         }));
     }
     let mix = audio::new_mix_state();
+    let output_rate = audio::default_output_sample_rate();
     {
         // Always-on, idle until the teacher actually broadcasts — exactly
         // like `student::app::StudentApp::new` spawning this unconditionally
@@ -147,13 +223,35 @@ pub fn connect_student_session<R: tauri::Runtime>(
         // configured output device once, same as the egui app.
         let recv_state = app_state.clone();
         let recv_mix = mix.clone();
-        let output_rate = audio::default_output_sample_rate();
         tasks.push(tauri::async_runtime::spawn(async move {
             if let Err(e) = audio::run_mic_broadcast_receiver(recv_state, recv_mix, output_rate).await {
                 eprintln!("[student_session] mic-broadcast receiver stopped: {e:#}");
             }
         }));
     }
+
+    // This student's own mic, feeding listen-in/groups/intercom (step 7.5) —
+    // non-fatal if this machine has no usable input device, same as
+    // `student_mic.rs`'s meter: the rest of the session still works.
+    let outbound_mic = {
+        let mic_state = app_state.clone();
+        let mic_mix = mix.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = stop.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
+        let thread = std::thread::spawn(move || run_outbound_mic_thread(mic_state, mic_mix, output_rate, thread_stop, ready_tx));
+        match ready_rx.recv() {
+            Ok(Ok(())) => Some(OutboundMic { stop, _thread: thread }),
+            Ok(Err(e)) => {
+                eprintln!("[student_session] no microphone available for listen-in/groups: {e}");
+                None
+            }
+            Err(_) => {
+                eprintln!("[student_session] outbound mic thread exited before reporting readiness");
+                None
+            }
+        }
+    };
     {
         let poll_state = app_state.clone();
         tasks.push(tauri::async_runtime::spawn(async move {
@@ -193,7 +291,7 @@ pub fn connect_student_session<R: tauri::Runtime>(
     }
 
     let info = StudentSessionInfo { teacher_name: teacher_name.clone() };
-    *guard = Some(StudentSession { app_state, mix, teacher_name, tasks });
+    *guard = Some(StudentSession { app_state, mix, teacher_name, tasks, outbound_mic });
     Ok(info)
 }
 

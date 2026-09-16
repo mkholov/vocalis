@@ -136,3 +136,20 @@ export function startMicBroadcast(): Promise<void> {
 export function stopMicBroadcast(): Promise<void> {
   return invoke("stop_mic_broadcast");
 }
+
+// --- Step 7.5 (vocalis_roadmap.md, section 8): listen in on a student ---
+// commands/teacher_session.rs. Reuses `SharedState::start_listening`
+// unchanged. `studentId` must be the real UUID (`StudentLevelDto.id` /
+// `LiveStudent.realId`, not the synthetic numeric id `StudentCard` uses).
+// The student's own outbound mic (real capture, started automatically by
+// `connectStudentSession`) starts sending audio the instant the teacher's
+// `ServerToClient::StartMicUpload` arrives — no frontend action needed on
+// the student side.
+
+export function startListen(studentId: string): Promise<void> {
+  return invoke("start_listen", { studentId });
+}
+
+export function stopListen(): Promise<void> {
+  return invoke("stop_listen");
+}

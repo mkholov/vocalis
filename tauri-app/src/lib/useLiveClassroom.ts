@@ -13,6 +13,15 @@ const SPEAKING_THRESHOLD = 120;
 // last report just hasn't arrived yet, not that they're still speaking.
 const STALE_AFTER_SECONDS = 1.5;
 
+/** One `useLiveClassroom` student — `MockStudent` plus the real UUID
+ * `StudentLevelDto.id` behind the synthetic numeric `id` (see this module's
+ * doc comment for why that mapping exists). Step 7.5's `start_listen` needs
+ * the real UUID string, not the numeric one `StudentCard` was already built
+ * around. */
+export interface LiveStudent extends MockStudent {
+  realId: string;
+}
+
 /** Starts a real teacher session (step 2/7's `start_teacher_session`) on
  * mount and turns its `student-levels` events into the same shape
  * `useMockClassroom` produces, so `TeacherClassGrid` can render whichever is
@@ -24,7 +33,7 @@ const STALE_AFTER_SECONDS = 1.5;
 export function useLiveClassroom(className: string) {
   const [pin, setPin] = useState<string | null>(null);
   const [error, setError] = useState<string | undefined>();
-  const [realStudents, setRealStudents] = useState<MockStudent[]>([]);
+  const [realStudents, setRealStudents] = useState<LiveStudent[]>([]);
   const idsRef = useRef(new Map<string, number>());
   const nextIdRef = useRef(1);
 
@@ -37,7 +46,7 @@ export function useLiveClassroom(className: string) {
         if (cancelled) return;
         setPin(info.pin);
         return listen<StudentLevelDto[]>("student-levels", (event) => {
-          const mapped: MockStudent[] = event.payload.map((s) => {
+          const mapped: LiveStudent[] = event.payload.map((s) => {
             let numericId = idsRef.current.get(s.id);
             if (numericId === undefined) {
               numericId = nextIdRef.current++;
@@ -47,6 +56,7 @@ export function useLiveClassroom(className: string) {
             const level = fresh ? s.level : 0;
             return {
               id: numericId,
+              realId: s.id,
               seat: numericId,
               name: s.name,
               presence: level >= SPEAKING_THRESHOLD ? "speaking" : "connected",

@@ -29,6 +29,8 @@ fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
             commands::teacher_session::stop_own_screen_demo,
             commands::teacher_session::start_mic_broadcast,
             commands::teacher_session::stop_mic_broadcast,
+            commands::teacher_session::start_listen,
+            commands::teacher_session::stop_listen,
             commands::student_mic::start_student_mic_meter,
             commands::student_mic::stop_student_mic_meter,
             commands::screen_demo::start_screen_demo,
@@ -439,5 +441,90 @@ mod tests {
 
         assert!(queued_samples > 0, "expected real decoded audio samples to reach the student's mix queue within 8s");
         println!("[e2e] real teacher->student mic broadcast: {queued_samples} samples queued for playback");
+    }
+
+    /// Real end-to-end scenario for step 7.5's listen-in: the teacher picks
+    /// the (real) connected student out of a real `student-levels` event
+    /// (same technique as reading any other real event in this file — no
+    /// need to reach into `TeacherSession`'s private `app_state` just to
+    /// find a student id), tells them to start uploading via
+    /// `start_listen`, and verifies real captured/Opus-encoded/decoded audio
+    /// lands in the teacher's own real listen-in queue.
+    ///
+    /// Depends on the *student's* mic this time (not the teacher's, unlike
+    /// the broadcast test) — `connect_student_session` already treats a
+    /// missing input device as non-fatal (logs and continues), so this
+    /// checks `StudentSession.outbound_mic` directly to tell "no real mic on
+    /// this runner" apart from "the pipeline is actually broken" before
+    /// asserting anything.
+    #[test]
+    fn teacher_listens_in_on_a_real_connected_student() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        use tauri::{Listener, Manager};
+        use crate::commands::{student_session, teacher_session};
+
+        let teacher_app = super::build_app(tauri::test::mock_builder());
+        let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
+        let session_info = teacher_session::start_teacher_session(
+            teacher_app.handle().clone(),
+            teacher_state.clone(),
+            "E2E класс (прослушка)".to_string(),
+        )
+        .expect("start_teacher_session should succeed");
+
+        let (id_tx, id_rx) = mpsc::channel::<String>();
+        teacher_app.listen("student-levels", move |event| {
+            if let Ok(levels) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+                if let Some(id) = levels.as_array().and_then(|arr| arr.first()).and_then(|s| s["id"].as_str()) {
+                    let _ = id_tx.send(id.to_string());
+                }
+            }
+        });
+
+        let student_app = super::build_app(tauri::test::mock_builder());
+        let student_state = student_app.state::<student_session::StudentSessionState>();
+        let connected = student_session::connect_student_session(
+            student_app.handle().clone(),
+            student_state.clone(),
+            "127.0.0.1".to_string(),
+            lingua_common::CONTROL_PORT,
+            "E2E ученик (прослушка)".to_string(),
+            session_info.pin.clone(),
+        )
+        .expect("connect_student_session should succeed against a real running control server");
+        assert_eq!(connected.teacher_name, "Tauri (тест)");
+
+        let has_mic = student_state.0.lock().unwrap().as_ref().map(|s| s.outbound_mic.is_some()).unwrap_or(false);
+        if !has_mic {
+            println!("[e2e] skipping listen-in verification: no real input device on this runner (student side)");
+            teacher_session::stop_teacher_session(teacher_state);
+            student_session::disconnect_student_session(student_state);
+            return;
+        }
+
+        let student_id = id_rx.recv_timeout(Duration::from_secs(5)).expect("a real student-levels event naming this student should arrive");
+
+        teacher_session::start_listen(teacher_state.clone(), student_id).expect("start_listen should succeed for a real connected student");
+
+        // Give real audio real time to flow (capture -> resample -> Opus
+        // encode -> UDP -> decrypt -> decode -> resample -> queued for
+        // playback) before checking.
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut queued_samples = 0usize;
+        while Instant::now() < deadline {
+            queued_samples = teacher_state.0.lock().unwrap().as_ref().map(|s| s.listen_queue.lock().unwrap().len()).unwrap_or(0);
+            if queued_samples > 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        teacher_session::stop_listen(teacher_state.clone());
+        teacher_session::stop_teacher_session(teacher_state);
+        student_session::disconnect_student_session(student_state);
+
+        assert!(queued_samples > 0, "expected real decoded listen-in audio to reach the teacher's queue within 8s");
+        println!("[e2e] real listen-in: {queued_samples} samples queued for the teacher's playback");
     }
 }

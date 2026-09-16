@@ -28,7 +28,7 @@ use std::time::Duration;
 use lingua_common::{ServerToClient, StudentId};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
-use vocalis::teacher::{db, mic, net, screen, state};
+use vocalis::teacher::{db, listen, mic, net, screen, state};
 
 const LEVEL_EMIT_INTERVAL_MS: u64 = 150;
 // A fresh `SharedState`'s `class_size` doesn't matter for this step — nothing
@@ -74,6 +74,14 @@ pub struct TeacherSession {
     /// lifetime as `screen_demo_task` — dropping this (or the whole
     /// `TeacherSession`) stops it via `MicBroadcast`'s own `Drop`.
     mic_broadcast: Option<MicBroadcast>,
+    /// Decoded listen-in audio, ready for real local speaker playback —
+    /// `listen::run_listen_receiver` (spawned once below, always-on and idle
+    /// until `listening_to` names someone) plays it automatically via its
+    /// own `ensure_output_started`. `pub(crate)` (not private) solely so the
+    /// real E2E test can read its length as proof real audio arrived — same
+    /// reasoning as `student_session.rs`'s `mix` field.
+    #[allow(dead_code)]
+    pub(crate) listen_queue: listen::ListenQueue,
 }
 
 impl Drop for TeacherSession {
@@ -194,8 +202,23 @@ pub fn start_teacher_session<R: tauri::Runtime>(
         }));
     }
 
+    // Always-on, idle until `start_listen` sets `listening_to` — exactly the
+    // same shape as `teacher::app::TeacherApp::new` spawning this once at
+    // startup (see that function's own listen-in setup).
+    let listen_queue = listen::new_listen_queue();
+    {
+        let app_state = app_state.clone();
+        let listen_queue = listen_queue.clone();
+        let output_rate = listen::default_output_sample_rate();
+        tasks.push(tauri::async_runtime::spawn(async move {
+            if let Err(e) = listen::run_listen_receiver(app_state, listen_queue, output_rate).await {
+                eprintln!("[teacher_session] listen-in receiver stopped: {e:#}");
+            }
+        }));
+    }
+
     let info = TeacherSessionInfo { pin: pin.clone(), control_port: lingua_common::CONTROL_PORT, class_name: class_name.clone() };
-    *guard = Some(TeacherSession { app_state, pin, class_name, tasks, screen_demo_task: None, mic_broadcast: None });
+    *guard = Some(TeacherSession { app_state, pin, class_name, tasks, screen_demo_task: None, mic_broadcast: None, listen_queue });
     Ok(info)
 }
 
@@ -361,5 +384,43 @@ pub fn start_mic_broadcast(session: State<TeacherSessionState>) -> Result<(), St
 pub fn stop_mic_broadcast(session: State<TeacherSessionState>) {
     if let Some(teacher_session) = session.0.lock().unwrap().as_mut() {
         teacher_session.mic_broadcast = None;
+    }
+}
+
+/// Starts listening in on one connected student's mic in real time (step
+/// 7.5 — `vocalis_roadmap.md`, section 8): reuses `SharedState::
+/// start_listening` unchanged — the same method `teacher::app::
+/// TeacherApp::toggle_listen`'s "start" path calls, which sends the target
+/// `ServerToClient::StartMicUpload` (and whoever was previously being
+/// listened to, if different, `StopMicUpload`) and updates `listening_to`,
+/// which `run_listen_receiver` (already running, spawned in
+/// `start_teacher_session`) checks on every incoming packet to know whose
+/// session key to decrypt with.
+#[tauri::command]
+pub fn start_listen(session: State<TeacherSessionState>, student_id: String) -> Result<(), String> {
+    let id: StudentId = student_id.parse().map_err(|_| format!("invalid student id: {student_id}"))?;
+    let guard = session.0.lock().unwrap();
+    let teacher_session = guard.as_ref().ok_or("нет активной сессии преподавателя")?;
+    let mut state_guard = teacher_session.app_state.lock().unwrap();
+    if !state_guard.students.contains_key(&id) {
+        return Err("ученик не подключён".to_string());
+    }
+    state_guard.start_listening(id);
+    Ok(())
+}
+
+/// Stops listening in, if anyone's currently being listened to — mirrors
+/// `toggle_listen`'s "stop" path (`SharedState` has no symmetric
+/// `stop_listening` method of its own, only `start_listening`, so this
+/// replicates those same three lines rather than adding one to `app/`).
+#[tauri::command]
+pub fn stop_listen(session: State<TeacherSessionState>) {
+    let guard = session.0.lock().unwrap();
+    let Some(teacher_session) = guard.as_ref() else { return };
+    let mut state_guard = teacher_session.app_state.lock().unwrap();
+    if let Some(id) = state_guard.listening_to.take() {
+        if let Some(s) = state_guard.students.get(&id) {
+            let _ = s.to_client.send(ServerToClient::StopMicUpload);
+        }
     }
 }

@@ -20,9 +20,14 @@ interface Props {
   onSelect: () => void;
   onToggleScreenLock: () => void;
   onToggleMicLock: () => void;
+  /** Step 7.5: real-time listen-in (`teacher_session.rs`'s `start_listen`/
+   * `stop_listen`) — `undefined` hides the button entirely (mock-mode
+   * students have no real session to listen in on). */
+  listening?: boolean;
+  onToggleListen?: () => void;
 }
 
-export function StudentCard({ student, selected, onSelect, onToggleScreenLock, onToggleMicLock }: Props) {
+export function StudentCard({ student, selected, onSelect, onToggleScreenLock, onToggleMicLock, listening, onToggleListen }: Props) {
   const empty = student.presence === "empty";
   const presence = PRESENCE[student.presence];
 
@@ -96,6 +101,21 @@ export function StudentCard({ student, selected, onSelect, onToggleScreenLock, o
             >
               {student.micLocked ? "🔇 Мик" : "🎤 Мик"}
             </button>
+            {onToggleListen && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleListen();
+                }}
+                className={
+                  "flex-1 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors active:scale-95 " +
+                  (listening ? "bg-violet-400/20 text-violet-300" : "bg-white/5 text-[var(--color-text-muted)] hover:bg-white/10")
+                }
+              >
+                {listening ? "⏹ Слушаю" : "🎧 Слушать"}
+              </button>
+            )}
           </div>
         </>
       )}

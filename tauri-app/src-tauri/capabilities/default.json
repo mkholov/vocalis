@@ -20,6 +20,8 @@
     "allow-stop-own-screen-demo",
     "allow-start-mic-broadcast",
     "allow-stop-mic-broadcast",
+    "allow-start-listen",
+    "allow-stop-listen",
     "allow-connect-student-session",
     "allow-disconnect-student-session"
   ]

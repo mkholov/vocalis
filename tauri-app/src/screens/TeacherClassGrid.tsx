@@ -4,9 +4,9 @@ import { StudentCard } from "../components/StudentCard";
 import { LessonTimer } from "../components/LessonTimer";
 import { Button } from "../components/ui/Button";
 import { useMockClassroom } from "../lib/mockClassroom";
-import { useLiveClassroom } from "../lib/useLiveClassroom";
+import { useLiveClassroom, type LiveStudent } from "../lib/useLiveClassroom";
 import { useScreenDemo } from "../lib/useScreenDemo";
-import { startOwnScreenDemo, stopOwnScreenDemo, startMicBroadcast, stopMicBroadcast } from "../lib/commands";
+import { startOwnScreenDemo, stopOwnScreenDemo, startMicBroadcast, stopMicBroadcast, startListen, stopListen } from "../lib/commands";
 
 interface Props {
   className: string;
@@ -108,6 +108,40 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
     }
   }
 
+  // Step 7.5: real-time listen-in on one selected student — `listeningId`
+  // holds the real UUID (`LiveStudent.realId`), not the synthetic numeric
+  // `MockStudent.id` `selectedId` below uses, since `start_listen` needs the
+  // real one. Switching to a different student's "🎧 Слушать" is a single
+  // `startListen` call — `SharedState::start_listening` already tells
+  // whoever was previously listened to (if different) to stop, so no
+  // explicit `stopListen` is needed first.
+  const [listeningId, setListeningId] = useState<string | null>(null);
+  const [listenError, setListenError] = useState<string | undefined>();
+  const listeningIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    listeningIdRef.current = listeningId;
+  }, [listeningId]);
+  useEffect(() => {
+    return () => {
+      if (listeningIdRef.current) stopListen().catch(() => {});
+    };
+  }, []);
+
+  async function toggleListen(realId: string) {
+    if (listeningId === realId) {
+      await stopListen().catch(() => {});
+      setListeningId(null);
+      return;
+    }
+    try {
+      await startListen(realId);
+      setListeningId(realId);
+      setListenError(undefined);
+    } catch (err) {
+      setListenError(String(err));
+    }
+  }
+
   const [selectedId, setSelectedId] = useState<number | null>(null);
   // Lock buttons are local-only UI state regardless of data source — nothing
   // sends `LockScreen`/`SetMicLocked` over the network yet, so overlaying
@@ -163,6 +197,7 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
           {live.error && <p className="text-xs text-rose-400">Реальная сессия недоступна: {live.error}</p>}
           {broadcastError && <p className="text-xs text-rose-400">Не удалось начать показ: {broadcastError}</p>}
           {micBroadcastError && <p className="text-xs text-rose-400">Не удалось включить микрофон: {micBroadcastError}</p>}
+          {listenError && <p className="text-xs text-rose-400">Не удалось начать прослушку: {listenError}</p>}
         </div>
 
         <LessonTimer />
@@ -209,16 +244,24 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
         animate="visible"
         variants={{ visible: { transition: { staggerChildren: 0.04 } } }}
       >
-        {students.map((s) => (
-          <StudentCard
-            key={s.id}
-            student={s}
-            selected={selectedId === s.id}
-            onSelect={() => setSelectedId((cur) => (cur === s.id ? null : s.id))}
-            onToggleScreenLock={() => toggleScreenLock(s.id)}
-            onToggleMicLock={() => toggleMicLock(s.id)}
-          />
-        ))}
+        {students.map((s) => {
+          // Only real students carry a `realId` (see `LiveStudent`) — mock
+          // ones don't, so `listening`/`onToggleListen` stay `undefined` and
+          // `StudentCard` simply doesn't render the button for them.
+          const realId = usingLiveData ? (s as LiveStudent).realId : undefined;
+          return (
+            <StudentCard
+              key={s.id}
+              student={s}
+              selected={selectedId === s.id}
+              onSelect={() => setSelectedId((cur) => (cur === s.id ? null : s.id))}
+              onToggleScreenLock={() => toggleScreenLock(s.id)}
+              onToggleMicLock={() => toggleMicLock(s.id)}
+              listening={realId ? listeningId === realId : undefined}
+              onToggleListen={realId ? () => toggleListen(realId) : undefined}
+            />
+          );
+        })}
       </motion.div>
     </div>
   );
