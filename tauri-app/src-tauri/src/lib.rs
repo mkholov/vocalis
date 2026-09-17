@@ -33,6 +33,8 @@ fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
             commands::teacher_session::stop_listen,
             commands::teacher_session::start_intercom,
             commands::teacher_session::stop_intercom,
+            commands::teacher_session::create_group,
+            commands::teacher_session::leave_group,
             commands::student_mic::start_student_mic_meter,
             commands::student_mic::stop_student_mic_meter,
             commands::screen_demo::start_screen_demo,
@@ -618,5 +620,109 @@ mod tests {
         } else {
             println!("[e2e] skipping student -> teacher leg: no real input device on this runner (student side)");
         }
+    }
+
+    /// Real end-to-end scenario for step 7.5's groups/pairs: three real
+    /// independently-driven Tauri apps this time — one teacher, two
+    /// students — since grouping is inherently peer-to-peer, not
+    /// teacher-mediated. Verifies the protocol level: `create_group` really
+    /// sent a `ServerToClient::JoinGroup` to each student, and
+    /// `student::net::connect_to_teacher` (unchanged) really derived each
+    /// peer's session key from it — checked by reading `peer_addrs`/
+    /// `peer_keys` directly off each student's real `SharedState` (see
+    /// `StudentSession.app_state`'s doc comment for why that field is
+    /// reachable from here). Deliberately stops there rather than also
+    /// verifying real peer-to-peer *audio* — see the comment further down,
+    /// after `create_group` succeeds, for why that specifically can't be
+    /// simulated with two students on one test machine.
+    #[test]
+    fn creating_a_group_relays_real_peer_info_to_both_real_students() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        use tauri::{Listener, Manager};
+        use crate::commands::{student_session, teacher_session};
+
+        let teacher_app = super::build_app(tauri::test::mock_builder());
+        let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
+        let session_info = teacher_session::start_teacher_session(
+            teacher_app.handle().clone(),
+            teacher_state.clone(),
+            "E2E класс (группы)".to_string(),
+        )
+        .expect("start_teacher_session should succeed");
+
+        let (ids_tx, ids_rx) = mpsc::channel::<Vec<String>>();
+        teacher_app.listen("student-levels", move |event| {
+            if let Ok(levels) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+                if let Some(arr) = levels.as_array() {
+                    if arr.len() >= 2 {
+                        let ids: Vec<String> = arr.iter().filter_map(|s| s["id"].as_str().map(str::to_string)).collect();
+                        let _ = ids_tx.send(ids);
+                    }
+                }
+            }
+        });
+
+        let student_a_app = super::build_app(tauri::test::mock_builder());
+        let student_a_state = student_a_app.state::<student_session::StudentSessionState>();
+        student_session::connect_student_session(
+            student_a_app.handle().clone(),
+            student_a_state.clone(),
+            "127.0.0.1".to_string(),
+            lingua_common::CONTROL_PORT,
+            "E2E ученик A (группы)".to_string(),
+            session_info.pin.clone(),
+        )
+        .expect("student A should connect to the real running control server");
+
+        let student_b_app = super::build_app(tauri::test::mock_builder());
+        let student_b_state = student_b_app.state::<student_session::StudentSessionState>();
+        student_session::connect_student_session(
+            student_b_app.handle().clone(),
+            student_b_state.clone(),
+            "127.0.0.1".to_string(),
+            lingua_common::CONTROL_PORT,
+            "E2E ученик B (группы)".to_string(),
+            session_info.pin.clone(),
+        )
+        .expect("student B should connect to the real running control server");
+
+        let ids = ids_rx.recv_timeout(Duration::from_secs(5)).expect("a real student-levels event naming both students should arrive");
+        assert_eq!(ids.len(), 2, "expected exactly the two real connected students");
+
+        let group_info = teacher_session::create_group(teacher_state.clone(), ids).expect("create_group should succeed for two real connected students");
+        assert_eq!(group_info.member_count, 2);
+
+        // Give the real JoinGroup control messages time to arrive and be
+        // processed by each student's own `connect_to_teacher` message loop.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut a_peers, mut b_peers) = (0, 0);
+        while Instant::now() < deadline {
+            a_peers = student_a_state.0.lock().unwrap().as_ref().map(|s| s.app_state.lock().unwrap().peer_addrs.len()).unwrap_or(0);
+            b_peers = student_b_state.0.lock().unwrap().as_ref().map(|s| s.app_state.lock().unwrap().peer_addrs.len()).unwrap_or(0);
+            if a_peers > 0 && b_peers > 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(a_peers, 1, "student A should have real peer info for exactly one peer (student B)");
+        assert_eq!(b_peers, 1, "student B should have real peer info for exactly one peer (student A)");
+        println!("[e2e] real group: JoinGroup delivered to both students, each with 1 real peer");
+
+        // Deliberately no audio-level verification here, unlike the other
+        // step 7.5 tests: `run_outbound_and_group_audio` binds a *fixed*
+        // `PEER_PORT` per student, which is fine in real use (each student
+        // is a separate machine) but means two real students on *one* test
+        // machine can't both bind it — confirmed: the second one's task
+        // fails immediately with "Address already in use", logged but not
+        // fatal (the rest of that student's session — receiving group audio,
+        // teacher audio, etc. — keeps working, only *sending* group audio to
+        // peers is unavailable). Simulating real two-way peer audio here
+        // would need two actually separate machines, not two processes on
+        // one — so this test stops at the protocol-level proof above, which
+        // needs no such assumption.
+        teacher_session::stop_teacher_session(teacher_state);
+        student_session::disconnect_student_session(student_a_state);
+        student_session::disconnect_student_session(student_b_state);
     }
 }

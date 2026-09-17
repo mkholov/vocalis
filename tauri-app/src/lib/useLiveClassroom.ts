@@ -20,6 +20,7 @@ const STALE_AFTER_SECONDS = 1.5;
  * around. */
 export interface LiveStudent extends MockStudent {
   realId: string;
+  group: number | null;
 }
 
 /** Starts a real teacher session (step 2/7's `start_teacher_session`) on
@@ -63,6 +64,7 @@ export function useLiveClassroom(className: string) {
               level,
               screenLocked: false,
               micLocked: false,
+              group: s.group,
             };
           });
           setRealStudents(mapped);

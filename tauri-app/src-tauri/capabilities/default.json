@@ -24,6 +24,8 @@
     "allow-stop-listen",
     "allow-start-intercom",
     "allow-stop-intercom",
+    "allow-create-group",
+    "allow-leave-group",
     "allow-connect-student-session",
     "allow-disconnect-student-session"
   ]

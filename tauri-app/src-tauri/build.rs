@@ -23,6 +23,8 @@ fn main() {
             "stop_listen",
             "start_intercom",
             "stop_intercom",
+            "create_group",
+            "leave_group",
             "connect_student_session",
             "disconnect_student_session",
         ]),

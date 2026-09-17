@@ -57,6 +57,9 @@ export interface StudentLevelDto {
   name: string;
   level: number;
   secondsSinceReport: number;
+  /** Step 7.5's groups/pairs: which group (if any) this student is
+   * currently in, straight from the real `Student::group`. */
+  group: number | null;
 }
 
 export function startStudentMicMeter(): Promise<void> {
@@ -172,4 +175,25 @@ export function startIntercom(studentId: string): Promise<IntercomInfo> {
 
 export function stopIntercom(): Promise<void> {
   return invoke("stop_intercom");
+}
+
+// --- Step 7.5 (vocalis_roadmap.md, section 8): groups/pairs ---
+// commands/teacher_session.rs. Reuses `SharedState::create_group`/
+// `leave_group` unchanged — the same methods the egui teacher console's
+// drag-and-drop grouping UI calls, sending each member a real
+// `ServerToClient::JoinGroup`/`LeaveGroup`. The student side needs no
+// frontend wiring at all: `connect_student_session` already starts
+// `student::audio::run_outbound_and_group_audio`, which starts sending/
+// receiving real peer audio the moment `JoinGroup` arrives.
+
+export interface CreateGroupInfo {
+  memberCount: number;
+}
+
+export function createGroup(studentIds: string[]): Promise<CreateGroupInfo> {
+  return invoke<CreateGroupInfo>("create_group", { studentIds });
+}
+
+export function leaveGroup(studentId: string): Promise<void> {
+  return invoke("leave_group", { studentId });
 }

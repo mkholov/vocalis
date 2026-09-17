@@ -15,6 +15,8 @@ import {
   stopListen,
   startIntercom,
   stopIntercom,
+  createGroup,
+  leaveGroup,
 } from "../lib/commands";
 
 interface Props {
@@ -23,11 +25,11 @@ interface Props {
 }
 
 /** Step 4 (grid/timer/lock UI) + step 7/7.5 (live levels, screen-demo
- * broadcast, mic broadcast, listen-in, private intercom) of the Tauri
- * migration (vocalis_roadmap.md, section 8). A real teacher session
- * (`useLiveClassroom`) starts on mount — its per-student mic levels are
- * genuine, reported over the network
- * exactly the way the egui console's own grid gets them
+ * broadcast, mic broadcast, listen-in, private intercom, groups/pairs) of
+ * the Tauri migration (vocalis_roadmap.md, section 8). A real teacher
+ * session (`useLiveClassroom`) starts on mount — its per-student mic levels
+ * are genuine, reported over the network exactly the way the egui console's
+ * own grid gets them
  * (`student::audio::run_level_telemetry` → `ClientToServer::AudioLevel` →
  * `Student::last_level`), not simulated. As long as the step-3 login screens
  * stay mocked, nothing ever *dials into* this real session on its own,
@@ -186,6 +188,40 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
     }
   }
 
+  // Step 7.5: groups/pairs — a minimal list-with-checkboxes UI (drag-and-drop
+  // wasn't required), calling `SharedState::create_group`/`leave_group`
+  // unchanged. Only meaningful for real students (`live.realStudents`), so
+  // the panel lists those directly rather than the merged mock/live
+  // `students` below. `groupSelection` holds real UUIDs, cleared after a
+  // successful `createGroup` call.
+  const [groupPanelOpen, setGroupPanelOpen] = useState(false);
+  const [groupSelection, setGroupSelection] = useState<Set<string>>(new Set());
+  const [groupError, setGroupError] = useState<string | undefined>();
+
+  function toggleGroupSelection(realId: string) {
+    setGroupSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(realId)) next.delete(realId);
+      else next.add(realId);
+      return next;
+    });
+  }
+
+  async function handleCreateGroup() {
+    if (groupSelection.size < 2) return;
+    try {
+      await createGroup(Array.from(groupSelection));
+      setGroupSelection(new Set());
+      setGroupError(undefined);
+    } catch (err) {
+      setGroupError(String(err));
+    }
+  }
+
+  async function handleLeaveGroup(realId: string) {
+    await leaveGroup(realId).catch((err) => setGroupError(String(err)));
+  }
+
   const [selectedId, setSelectedId] = useState<number | null>(null);
   // Lock buttons are local-only UI state regardless of data source — nothing
   // sends `LockScreen`/`SetMicLocked` over the network yet, so overlaying
@@ -243,6 +279,7 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
           {micBroadcastError && <p className="text-xs text-rose-400">Не удалось включить микрофон: {micBroadcastError}</p>}
           {listenError && <p className="text-xs text-rose-400">Не удалось начать прослушку: {listenError}</p>}
           {intercomError && <p className="text-xs text-rose-400">Не удалось начать интерком: {intercomError}</p>}
+          {groupError && <p className="text-xs text-rose-400">Ошибка группировки: {groupError}</p>}
         </div>
 
         <LessonTimer />
@@ -255,6 +292,9 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
         </Button>
         <Button variant="secondary" onClick={toggleMicBroadcast}>
           {micBroadcasting ? "🔇 Выключить микрофон" : "🎙 Говорить с классом"}
+        </Button>
+        <Button variant="secondary" onClick={() => setGroupPanelOpen((v) => !v)}>
+          {groupPanelOpen ? "Скрыть группы" : "👥 Группы"}
         </Button>
         <Button variant="secondary" onClick={onEnd}>
           Завершить урок
@@ -279,6 +319,50 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
                 Ваш экран (превью)
               </span>
             </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {groupPanelOpen && (
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 12 }}
+            className="absolute bottom-4 right-4 z-30 w-72 rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-card-solid)] p-4 shadow-2xl"
+          >
+            <div className="mb-3 text-xs font-medium text-[var(--color-text-muted)]">Пары и группы</div>
+            {live.realStudents.length === 0 ? (
+              <p className="text-sm text-[var(--color-text-muted)]">Нет подключённых учеников.</p>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {live.realStudents.map((s) => (
+                  <div key={s.realId} className="flex items-center justify-between gap-2 text-sm">
+                    <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={groupSelection.has(s.realId)}
+                        onChange={() => toggleGroupSelection(s.realId)}
+                        className="accent-violet-400"
+                      />
+                      <span className="truncate">{s.name}</span>
+                    </label>
+                    {s.group !== null && (
+                      <button
+                        type="button"
+                        onClick={() => handleLeaveGroup(s.realId)}
+                        className="shrink-0 rounded-md bg-white/5 px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-white/10"
+                      >
+                        Группа {s.group} · выйти
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            <Button variant="secondary" className="mt-3 w-full" disabled={groupSelection.size < 2} onClick={handleCreateGroup}>
+              Создать пару/группу
+            </Button>
           </motion.div>
         )}
       </AnimatePresence>

@@ -139,6 +139,10 @@ pub struct StudentLevelDto {
     /// does with `last_level_at`, without needing its own clock synced to
     /// the backend's.
     pub seconds_since_report: f32,
+    /// Step 7.5's groups/pairs: which group (if any) this student is
+    /// currently in, straight from `Student::group` — lets the frontend
+    /// show a badge and a "leave group" action without a separate command.
+    pub group: Option<usize>,
 }
 
 fn emit_levels<R: tauri::Runtime>(app: &AppHandle<R>, app_state: &state::AppState) {
@@ -151,6 +155,7 @@ fn emit_levels<R: tauri::Runtime>(app: &AppHandle<R>, app_state: &state::AppStat
             name: s.name.clone(),
             level: s.last_level,
             seconds_since_report: s.last_level_at.map(|at| at.elapsed().as_secs_f32()).unwrap_or(f32::MAX),
+            group: s.group,
         })
         .collect();
     drop(guard);
@@ -565,4 +570,53 @@ pub fn stop_intercom(session: State<TeacherSessionState>) {
     if let Some(s) = state_guard.students.get(&intercom.student_id) {
         let _ = s.to_client.send(ServerToClient::StopIntercom);
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupInfo {
+    pub member_count: usize,
+}
+
+/// Puts the given real students into a shared group/pair (step 7.5 —
+/// `vocalis_roadmap.md`, section 8): reuses `SharedState::create_group`
+/// unchanged — the same method the egui teacher console's drag-and-drop
+/// grouping UI calls. It sends each member a real `ServerToClient::
+/// JoinGroup` naming their peers' address/name/salt, which
+/// `student::net::connect_to_teacher` (already reused unchanged for every
+/// connected student) uses to derive each peer's real session key, and
+/// `student::audio::run_outbound_and_group_audio` (already running for
+/// every connected student — see `student_session.rs`) starts sending/
+/// receiving group audio on `PEER_PORT` on its own. No student-side wiring
+/// was needed for this feature at all.
+#[tauri::command]
+pub fn create_group(session: State<TeacherSessionState>, student_ids: Vec<String>) -> Result<GroupInfo, String> {
+    let ids: Vec<StudentId> =
+        student_ids.iter().map(|s| s.parse().map_err(|_| format!("invalid student id: {s}"))).collect::<Result<_, String>>()?;
+    if ids.len() < 2 {
+        return Err("нужно минимум два ученика для группы".to_string());
+    }
+    let guard = session.0.lock().unwrap();
+    let teacher_session = guard.as_ref().ok_or("нет активной сессии преподавателя")?;
+    let mut state_guard = teacher_session.app_state.lock().unwrap();
+    for id in &ids {
+        if !state_guard.students.contains_key(id) {
+            return Err("один из учеников не подключён".to_string());
+        }
+    }
+    state_guard.create_group(&ids);
+    Ok(GroupInfo { member_count: ids.len() })
+}
+
+/// Removes one student from whatever group they're in, if any — reuses
+/// `SharedState::leave_group` unchanged (sends `ServerToClient::LeaveGroup`
+/// to them, and re-announces the remaining members' peer lists if the group
+/// still has 2+ people left, or dissolves it otherwise).
+#[tauri::command]
+pub fn leave_group(session: State<TeacherSessionState>, student_id: String) -> Result<(), String> {
+    let id: StudentId = student_id.parse().map_err(|_| format!("invalid student id: {student_id}"))?;
+    let guard = session.0.lock().unwrap();
+    let teacher_session = guard.as_ref().ok_or("нет активной сессии преподавателя")?;
+    teacher_session.app_state.lock().unwrap().leave_group(id);
+    Ok(())
 }

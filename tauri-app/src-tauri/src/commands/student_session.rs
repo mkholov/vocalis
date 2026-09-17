@@ -57,12 +57,13 @@ impl Drop for OutboundMic {
 }
 
 pub struct StudentSession {
-    // Kept alive only for its `Arc` refcount — the spawned tasks each hold
-    // their own clone and are the only things that ever read from it. Not
-    // read directly through this field, but dropping it early would be a
-    // real bug if a future change removed one of those clones, so it stays.
+    // Kept alive for its `Arc` refcount (the spawned tasks each hold their
+    // own clone) and, since step 7.5's groups, also for the real E2E test to
+    // read `peer_addrs`/`peer_keys` off directly — real protocol-level proof
+    // that a `JoinGroup` control message actually arrived, independent of
+    // whether either student has a real mic to also verify audio with.
     #[allow(dead_code)]
-    app_state: state::AppState,
+    pub(crate) app_state: state::AppState,
     /// `pub(crate)` (not private) solely so the real two-process E2E test in
     /// `lib.rs` can read `mix.lock().unwrap().broadcast.len()` as proof that
     /// real decoded audio actually arrived — there's no webview event to
