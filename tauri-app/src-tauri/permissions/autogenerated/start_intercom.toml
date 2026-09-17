@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-intercom"
+description = "Enables the start_intercom command without any pre-configured scope."
+commands.allow = ["start_intercom"]
+
+[[permission]]
+identifier = "deny-start-intercom"
+description = "Denies the start_intercom command without any pre-configured scope."
+commands.deny = ["start_intercom"]

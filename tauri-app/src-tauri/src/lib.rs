@@ -31,6 +31,8 @@ fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
             commands::teacher_session::stop_mic_broadcast,
             commands::teacher_session::start_listen,
             commands::teacher_session::stop_listen,
+            commands::teacher_session::start_intercom,
+            commands::teacher_session::stop_intercom,
             commands::student_mic::start_student_mic_meter,
             commands::student_mic::stop_student_mic_meter,
             commands::screen_demo::start_screen_demo,
@@ -526,5 +528,95 @@ mod tests {
 
         assert!(queued_samples > 0, "expected real decoded listen-in audio to reach the teacher's queue within 8s");
         println!("[e2e] real listen-in: {queued_samples} samples queued for the teacher's playback");
+    }
+
+    /// Real end-to-end scenario for step 7.5's private intercom: verifies
+    /// both legs independently — the teacher's own voice reaching the
+    /// student (`mix.intercom`, needs the *teacher's* mic, which
+    /// `start_intercom` itself requires to succeed at all) and the
+    /// student's voice reaching the teacher (`listen_queue`, needs the
+    /// *student's* mic — checked via `outbound_mic` before asserting, same
+    /// as the plain listen-in test, since a CI runner might have one real
+    /// input device but not two independently-addressable ones).
+    #[test]
+    fn teacher_and_student_hear_each_other_over_a_real_intercom() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        use tauri::{Listener, Manager};
+        use crate::commands::{student_session, teacher_session};
+
+        let teacher_app = super::build_app(tauri::test::mock_builder());
+        let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
+        let session_info = teacher_session::start_teacher_session(
+            teacher_app.handle().clone(),
+            teacher_state.clone(),
+            "E2E класс (интерком)".to_string(),
+        )
+        .expect("start_teacher_session should succeed");
+
+        let (id_tx, id_rx) = mpsc::channel::<String>();
+        teacher_app.listen("student-levels", move |event| {
+            if let Ok(levels) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+                if let Some(id) = levels.as_array().and_then(|arr| arr.first()).and_then(|s| s["id"].as_str()) {
+                    let _ = id_tx.send(id.to_string());
+                }
+            }
+        });
+
+        let student_app = super::build_app(tauri::test::mock_builder());
+        let student_state = student_app.state::<student_session::StudentSessionState>();
+        let connected = student_session::connect_student_session(
+            student_app.handle().clone(),
+            student_state.clone(),
+            "127.0.0.1".to_string(),
+            lingua_common::CONTROL_PORT,
+            "E2E ученик (интерком)".to_string(),
+            session_info.pin.clone(),
+        )
+        .expect("connect_student_session should succeed against a real running control server");
+        assert_eq!(connected.teacher_name, "Tauri (тест)");
+
+        let student_id = id_rx.recv_timeout(Duration::from_secs(5)).expect("a real student-levels event naming this student should arrive");
+
+        let intercom_info = match teacher_session::start_intercom(teacher_state.clone(), student_id) {
+            Ok(info) => info,
+            Err(e) => {
+                println!("[e2e] skipping intercom verification: no real input device on this runner (teacher side) ({e})");
+                teacher_session::stop_teacher_session(teacher_state);
+                student_session::disconnect_student_session(student_state);
+                return;
+            }
+        };
+        assert_eq!(intercom_info.student_name, "E2E ученик (интерком)");
+
+        let student_has_mic = student_state.0.lock().unwrap().as_ref().map(|s| s.outbound_mic.is_some()).unwrap_or(false);
+
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut teacher_hears_student = 0usize;
+        let mut student_hears_teacher = 0usize;
+        while Instant::now() < deadline {
+            student_hears_teacher = student_state.0.lock().unwrap().as_ref().map(|s| s.mix.lock().unwrap().intercom.len()).unwrap_or(0);
+            if student_has_mic {
+                teacher_hears_student = teacher_state.0.lock().unwrap().as_ref().map(|s| s.listen_queue.lock().unwrap().len()).unwrap_or(0);
+            }
+            let done = student_hears_teacher > 0 && (!student_has_mic || teacher_hears_student > 0);
+            if done {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        teacher_session::stop_intercom(teacher_state.clone());
+        teacher_session::stop_teacher_session(teacher_state);
+        student_session::disconnect_student_session(student_state);
+
+        assert!(student_hears_teacher > 0, "expected the student to receive real decoded intercom audio from the teacher within 8s");
+        println!("[e2e] real intercom, teacher -> student: {student_hears_teacher} samples queued for the student's playback");
+        if student_has_mic {
+            assert!(teacher_hears_student > 0, "expected the teacher to receive real decoded intercom audio from the student within 8s");
+            println!("[e2e] real intercom, student -> teacher: {teacher_hears_student} samples queued for the teacher's playback");
+        } else {
+            println!("[e2e] skipping student -> teacher leg: no real input device on this runner (student side)");
+        }
     }
 }

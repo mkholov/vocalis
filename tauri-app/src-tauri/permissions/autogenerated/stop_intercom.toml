@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-stop-intercom"
+description = "Enables the stop_intercom command without any pre-configured scope."
+commands.allow = ["stop_intercom"]
+
+[[permission]]
+identifier = "deny-stop-intercom"
+description = "Denies the stop_intercom command without any pre-configured scope."
+commands.deny = ["stop_intercom"]

@@ -25,9 +25,23 @@ interface Props {
    * students have no real session to listen in on). */
   listening?: boolean;
   onToggleListen?: () => void;
+  /** Step 7.5: private two-way intercom (`start_intercom`/`stop_intercom`) —
+   * same `undefined`-hides-the-button convention as `listening` above. */
+  intercomActive?: boolean;
+  onToggleIntercom?: () => void;
 }
 
-export function StudentCard({ student, selected, onSelect, onToggleScreenLock, onToggleMicLock, listening, onToggleListen }: Props) {
+export function StudentCard({
+  student,
+  selected,
+  onSelect,
+  onToggleScreenLock,
+  onToggleMicLock,
+  listening,
+  onToggleListen,
+  intercomActive,
+  onToggleIntercom,
+}: Props) {
   const empty = student.presence === "empty";
   const presence = PRESENCE[student.presence];
 
@@ -101,22 +115,41 @@ export function StudentCard({ student, selected, onSelect, onToggleScreenLock, o
             >
               {student.micLocked ? "🔇 Мик" : "🎤 Мик"}
             </button>
-            {onToggleListen && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggleListen();
-                }}
-                className={
-                  "flex-1 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors active:scale-95 " +
-                  (listening ? "bg-violet-400/20 text-violet-300" : "bg-white/5 text-[var(--color-text-muted)] hover:bg-white/10")
-                }
-              >
-                {listening ? "⏹ Слушаю" : "🎧 Слушать"}
-              </button>
-            )}
           </div>
+          {(onToggleListen || onToggleIntercom) && (
+            <div className="mt-2 flex gap-2">
+              {onToggleListen && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleListen();
+                  }}
+                  className={
+                    "flex-1 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors active:scale-95 " +
+                    (listening ? "bg-violet-400/20 text-violet-300" : "bg-white/5 text-[var(--color-text-muted)] hover:bg-white/10")
+                  }
+                >
+                  {listening ? "⏹ Слушаю" : "🎧 Слушать"}
+                </button>
+              )}
+              {onToggleIntercom && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleIntercom();
+                  }}
+                  className={
+                    "flex-1 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors active:scale-95 " +
+                    (intercomActive ? "bg-emerald-400/20 text-emerald-300" : "bg-white/5 text-[var(--color-text-muted)] hover:bg-white/10")
+                  }
+                >
+                  {intercomActive ? "📵 Завершить" : "📞 Интерком"}
+                </button>
+              )}
+            </div>
+          )}
         </>
       )}
     </motion.div>

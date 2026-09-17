@@ -21,6 +21,8 @@ fn main() {
             "stop_mic_broadcast",
             "start_listen",
             "stop_listen",
+            "start_intercom",
+            "stop_intercom",
             "connect_student_session",
             "disconnect_student_session",
         ]),

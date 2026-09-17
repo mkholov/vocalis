@@ -1,9 +1,10 @@
 //! Real network connection to a teacher's session — the screen-demo video
-//! receiver (step 7 part B), the class-wide mic-broadcast receiver (step
-//! 7.5), and this student's own outbound mic for listen-in/groups/intercom
-//! (also step 7.5), `vocalis_roadmap.md` section 8. Reuses `student::net::
-//! connect_to_teacher`, `student::screen::run_screen_demo_receiver`,
-//! `student::audio::run_mic_broadcast_receiver`, and `student::audio::
+//! receiver (step 7 part B), the class-wide mic-broadcast and private
+//! intercom receivers, and this student's own outbound mic for listen-in/
+//! groups/intercom (all step 7.5), `vocalis_roadmap.md` section 8. Reuses
+//! `student::net::connect_to_teacher`, `student::screen::
+//! run_screen_demo_receiver`, `student::audio::run_mic_broadcast_receiver`,
+//! `student::audio::run_intercom_receiver`, and `student::audio::
 //! run_outbound_and_group_audio` unchanged — the exact same handshake/
 //! session-key derivation and H.264/Opus send/receive/decode paths the egui
 //! student app uses; nothing about any of these network protocols is
@@ -226,6 +227,18 @@ pub fn connect_student_session<R: tauri::Runtime>(
         tasks.push(tauri::async_runtime::spawn(async move {
             if let Err(e) = audio::run_mic_broadcast_receiver(recv_state, recv_mix, output_rate).await {
                 eprintln!("[student_session] mic-broadcast receiver stopped: {e:#}");
+            }
+        }));
+    }
+    {
+        // Always-on, idle until the teacher opens a private intercom with
+        // this student — same shape as the mic-broadcast receiver above,
+        // just mixing into `mix.intercom` instead of `mix.broadcast`.
+        let recv_state = app_state.clone();
+        let recv_mix = mix.clone();
+        tasks.push(tauri::async_runtime::spawn(async move {
+            if let Err(e) = audio::run_intercom_receiver(recv_state, recv_mix, output_rate).await {
+                eprintln!("[student_session] intercom receiver stopped: {e:#}");
             }
         }));
     }

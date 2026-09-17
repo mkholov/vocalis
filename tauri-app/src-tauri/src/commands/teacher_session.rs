@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lingua_common::{ServerToClient, StudentId};
+use lingua_common::{ServerToClient, StudentId, TEACHER_INTERCOM_PORT};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use vocalis::teacher::{db, listen, mic, net, screen, state};
@@ -58,6 +58,23 @@ impl Drop for MicBroadcast {
     }
 }
 
+/// The teacher's private two-way intercom with one student (step 7.5).
+/// Structurally identical to `MicBroadcast` — a second, independent `cpal`
+/// capture (so it doesn't interfere with a concurrent class-wide broadcast,
+/// exactly like `teacher::app::TeacherApp::toggle_intercom`), confined to
+/// its own OS thread for the same non-`Send`-stream reason.
+pub struct Intercom {
+    student_id: StudentId,
+    stop: Arc<AtomicBool>,
+    _thread: std::thread::JoinHandle<()>,
+}
+
+impl Drop for Intercom {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
 pub struct TeacherSession {
     // Read directly by `start_own_screen_demo`/`stop_own_screen_demo` (the
     // student roster, `screen_demo` field) in addition to being cloned into
@@ -74,6 +91,9 @@ pub struct TeacherSession {
     /// lifetime as `screen_demo_task` — dropping this (or the whole
     /// `TeacherSession`) stops it via `MicBroadcast`'s own `Drop`.
     mic_broadcast: Option<MicBroadcast>,
+    /// The teacher's private intercom, if any (step 7.5) — independent of
+    /// `mic_broadcast` (separate `cpal` capture, separate atomic level).
+    intercom: Option<Intercom>,
     /// Decoded listen-in audio, ready for real local speaker playback —
     /// `listen::run_listen_receiver` (spawned once below, always-on and idle
     /// until `listening_to` names someone) plays it automatically via its
@@ -218,7 +238,16 @@ pub fn start_teacher_session<R: tauri::Runtime>(
     }
 
     let info = TeacherSessionInfo { pin: pin.clone(), control_port: lingua_common::CONTROL_PORT, class_name: class_name.clone() };
-    *guard = Some(TeacherSession { app_state, pin, class_name, tasks, screen_demo_task: None, mic_broadcast: None, listen_queue });
+    *guard = Some(TeacherSession {
+        app_state,
+        pin,
+        class_name,
+        tasks,
+        screen_demo_task: None,
+        mic_broadcast: None,
+        intercom: None,
+        listen_queue,
+    });
     Ok(info)
 }
 
@@ -422,5 +451,118 @@ pub fn stop_listen(session: State<TeacherSessionState>) {
         if let Some(s) = state_guard.students.get(&id) {
             let _ = s.to_client.send(ServerToClient::StopMicUpload);
         }
+    }
+}
+
+fn run_intercom_thread(
+    target_ip: std::net::IpAddr,
+    key: lingua_common::SessionKey,
+    stop: Arc<AtomicBool>,
+    ready_tx: std::sync::mpsc::Sender<Result<(), String>>,
+) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let (capture, native_rate) = match mic::start_mic_capture(tx, &mic::INTERCOM_MIC_LEVEL_MILLIS, None) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = ready_tx.send(Err(e.to_string()));
+            return;
+        }
+    };
+    let _ = ready_tx.send(Ok(()));
+
+    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("[teacher_session] intercom runtime failed to start: {e:#}");
+            return;
+        }
+    };
+    let target = std::net::SocketAddr::new(target_ip, TEACHER_INTERCOM_PORT);
+    rt.block_on(async {
+        tokio::select! {
+            res = mic::run_intercom_send(rx, native_rate, target, key) => {
+                if let Err(e) = res {
+                    eprintln!("[teacher_session] intercom send stopped: {e:#}");
+                }
+            }
+            _ = wait_for_stop(stop) => {}
+        }
+    });
+    drop(capture); // explicit: dies on this same thread, where it was created
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntercomInfo {
+    pub student_name: String,
+}
+
+/// Opens (or switches to a different student) a private two-way intercom
+/// (step 7.5): reuses `teacher::mic::run_intercom_send` unchanged for the
+/// teacher's own voice going to just this student — a second, independent
+/// mic capture, so a concurrent class-wide broadcast (if running) is
+/// untouched — and `SharedState::start_listening` (the same method plain
+/// listen-in uses) so the teacher hears them back. Mirrors
+/// `TeacherApp::toggle_intercom`'s orchestration exactly, including
+/// stopping any previous intercom first.
+#[tauri::command]
+pub fn start_intercom(session: State<TeacherSessionState>, student_id: String) -> Result<IntercomInfo, String> {
+    let id: StudentId = student_id.parse().map_err(|_| format!("invalid student id: {student_id}"))?;
+    let mut guard = session.0.lock().unwrap();
+    let teacher_session = guard.as_mut().ok_or("нет активной сессии преподавателя")?;
+
+    if let Some(prev) = teacher_session.intercom.take() {
+        let mut state_guard = teacher_session.app_state.lock().unwrap();
+        if state_guard.talking_to == Some(prev.student_id) {
+            state_guard.talking_to = None;
+        }
+        if let Some(s) = state_guard.students.get(&prev.student_id) {
+            let _ = s.to_client.send(ServerToClient::StopIntercom);
+        }
+        drop(state_guard);
+        drop(prev); // stops the previous mic capture/send task
+    }
+
+    let (name, ip, key) = {
+        let state_guard = teacher_session.app_state.lock().unwrap();
+        let s = state_guard.students.get(&id).ok_or("ученик не подключён")?;
+        (s.name.clone(), s.ip, s.session_key)
+    };
+    teacher_session.app_state.lock().unwrap().start_listening(id);
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = stop.clone();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
+    let thread = std::thread::spawn(move || run_intercom_thread(ip, key, thread_stop, ready_tx));
+
+    match ready_rx.recv() {
+        Ok(Ok(())) => {
+            teacher_session.intercom = Some(Intercom { student_id: id, stop, _thread: thread });
+            let mut state_guard = teacher_session.app_state.lock().unwrap();
+            state_guard.talking_to = Some(id);
+            if let Some(s) = state_guard.students.get(&id) {
+                let _ = s.to_client.send(ServerToClient::StartIntercom);
+            }
+            Ok(IntercomInfo { student_name: name })
+        }
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err("intercom thread exited before reporting readiness".to_string()),
+    }
+}
+
+/// Closes the intercom, if one's open. Leaves plain listen-in
+/// (`listening_to`) alone — mirrors `TeacherApp::stop_intercom`'s own doc
+/// comment on why: the two are independent once intercom has started.
+#[tauri::command]
+pub fn stop_intercom(session: State<TeacherSessionState>) {
+    let mut guard = session.0.lock().unwrap();
+    let Some(teacher_session) = guard.as_mut() else { return };
+    let Some(intercom) = teacher_session.intercom.take() else { return };
+    let mut state_guard = teacher_session.app_state.lock().unwrap();
+    if state_guard.talking_to == Some(intercom.student_id) {
+        state_guard.talking_to = None;
+    }
+    if let Some(s) = state_guard.students.get(&intercom.student_id) {
+        let _ = s.to_client.send(ServerToClient::StopIntercom);
     }
 }

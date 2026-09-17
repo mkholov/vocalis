@@ -153,3 +153,23 @@ export function startListen(studentId: string): Promise<void> {
 export function stopListen(): Promise<void> {
   return invoke("stop_listen");
 }
+
+// --- Step 7.5 (vocalis_roadmap.md, section 8): private teacher<->student intercom ---
+// commands/teacher_session.rs. Reuses `teacher::mic::run_intercom_send`
+// unchanged (a second, independent mic capture from the class-wide
+// broadcast) plus `SharedState::start_listening` so the teacher hears the
+// student back over the same mechanism plain listen-in uses. The student's
+// side needs no frontend wiring: `connect_student_session` already starts
+// the real intercom receiver, which plays through real speakers on its own.
+
+export interface IntercomInfo {
+  studentName: string;
+}
+
+export function startIntercom(studentId: string): Promise<IntercomInfo> {
+  return invoke<IntercomInfo>("start_intercom", { studentId });
+}
+
+export function stopIntercom(): Promise<void> {
+  return invoke("stop_intercom");
+}

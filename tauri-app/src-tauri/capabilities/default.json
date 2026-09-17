@@ -22,6 +22,8 @@
     "allow-stop-mic-broadcast",
     "allow-start-listen",
     "allow-stop-listen",
+    "allow-start-intercom",
+    "allow-stop-intercom",
     "allow-connect-student-session",
     "allow-disconnect-student-session"
   ]

@@ -6,7 +6,16 @@ import { Button } from "../components/ui/Button";
 import { useMockClassroom } from "../lib/mockClassroom";
 import { useLiveClassroom, type LiveStudent } from "../lib/useLiveClassroom";
 import { useScreenDemo } from "../lib/useScreenDemo";
-import { startOwnScreenDemo, stopOwnScreenDemo, startMicBroadcast, stopMicBroadcast, startListen, stopListen } from "../lib/commands";
+import {
+  startOwnScreenDemo,
+  stopOwnScreenDemo,
+  startMicBroadcast,
+  stopMicBroadcast,
+  startListen,
+  stopListen,
+  startIntercom,
+  stopIntercom,
+} from "../lib/commands";
 
 interface Props {
   className: string;
@@ -14,9 +23,10 @@ interface Props {
 }
 
 /** Step 4 (grid/timer/lock UI) + step 7/7.5 (live levels, screen-demo
- * broadcast, mic broadcast) of the Tauri migration (vocalis_roadmap.md,
- * section 8). A real teacher session (`useLiveClassroom`) starts on
- * mount — its per-student mic levels are genuine, reported over the network
+ * broadcast, mic broadcast, listen-in, private intercom) of the Tauri
+ * migration (vocalis_roadmap.md, section 8). A real teacher session
+ * (`useLiveClassroom`) starts on mount — its per-student mic levels are
+ * genuine, reported over the network
  * exactly the way the egui console's own grid gets them
  * (`student::audio::run_level_telemetry` → `ClientToServer::AudioLevel` →
  * `Student::last_level`), not simulated. As long as the step-3 login screens
@@ -142,6 +152,40 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
     }
   }
 
+  // Step 7.5: private two-way intercom — same real-UUID shape as
+  // `listeningId` above. `start_intercom` also calls `SharedState::
+  // start_listening` internally (so the teacher hears the student back over
+  // the same mechanism plain listen-in uses), so this keeps `listeningId` in
+  // sync too — otherwise the "🎧 Слушать" button on this card would show as
+  // inactive while the backend is, in fact, listening.
+  const [intercomId, setIntercomId] = useState<string | null>(null);
+  const [intercomError, setIntercomError] = useState<string | undefined>();
+  const intercomIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    intercomIdRef.current = intercomId;
+  }, [intercomId]);
+  useEffect(() => {
+    return () => {
+      if (intercomIdRef.current) stopIntercom().catch(() => {});
+    };
+  }, []);
+
+  async function toggleIntercom(realId: string) {
+    if (intercomId === realId) {
+      await stopIntercom().catch(() => {});
+      setIntercomId(null);
+      return;
+    }
+    try {
+      await startIntercom(realId);
+      setIntercomId(realId);
+      setListeningId(realId);
+      setIntercomError(undefined);
+    } catch (err) {
+      setIntercomError(String(err));
+    }
+  }
+
   const [selectedId, setSelectedId] = useState<number | null>(null);
   // Lock buttons are local-only UI state regardless of data source — nothing
   // sends `LockScreen`/`SetMicLocked` over the network yet, so overlaying
@@ -198,6 +242,7 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
           {broadcastError && <p className="text-xs text-rose-400">Не удалось начать показ: {broadcastError}</p>}
           {micBroadcastError && <p className="text-xs text-rose-400">Не удалось включить микрофон: {micBroadcastError}</p>}
           {listenError && <p className="text-xs text-rose-400">Не удалось начать прослушку: {listenError}</p>}
+          {intercomError && <p className="text-xs text-rose-400">Не удалось начать интерком: {intercomError}</p>}
         </div>
 
         <LessonTimer />
@@ -259,6 +304,8 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
               onToggleMicLock={() => toggleMicLock(s.id)}
               listening={realId ? listeningId === realId : undefined}
               onToggleListen={realId ? () => toggleListen(realId) : undefined}
+              intercomActive={realId ? intercomId === realId : undefined}
+              onToggleIntercom={realId ? () => toggleIntercom(realId) : undefined}
             />
           );
         })}
