@@ -45,7 +45,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// wraps a `cpal::Stream`, which isn't `Send` on macOS — same reasoning as
 /// `teacher_session.rs`'s `MicBroadcast`, confined to one dedicated OS
 /// thread rather than moved into a `tauri::async_runtime` task.
-pub(crate) struct OutboundMic {
+pub struct OutboundMic {
     stop: Arc<AtomicBool>,
     _thread: std::thread::JoinHandle<()>,
 }
@@ -63,9 +63,9 @@ pub struct StudentSession {
     // that a `JoinGroup` control message actually arrived, independent of
     // whether either student has a real mic to also verify audio with.
     #[allow(dead_code)]
-    pub(crate) app_state: state::AppState,
-    /// `pub(crate)` (not private) solely so the real two-process E2E test in
-    /// `lib.rs` can read `mix.lock().unwrap().broadcast.len()` as proof that
+    pub app_state: state::AppState,
+    /// `pub` (not private) solely so the real two-process E2E test in
+    /// `tests/command_bridge.rs` can read `mix.lock().unwrap().broadcast.len()` as proof that
     /// real decoded audio actually arrived — there's no webview event to
     /// observe here the way `screen-demo-frame` lets the video path prove
     /// itself, since mixing/playback happens entirely inside
@@ -73,18 +73,18 @@ pub struct StudentSession {
     /// Only that test ever reads it outside of the clone already passed into
     /// the receiver task below, hence `#[allow(dead_code)]` for non-test builds.
     #[allow(dead_code)]
-    pub(crate) mix: audio::SharedMix,
+    pub mix: audio::SharedMix,
     teacher_name: String,
     tasks: Vec<tauri::async_runtime::JoinHandle<()>>,
     /// `None` if this machine has no usable input device — listen-in/
     /// groups/intercom simply aren't available then, same non-fatal
     /// treatment `student_mic.rs`'s meter already gives a missing mic.
-    /// `pub(crate)` so the real E2E test can check whether it's `Some`
+    /// `pub` so the real E2E test can check whether it's `Some`
     /// before asserting that listen-in audio actually arrived — a CI runner
     /// with no input device is an environment limitation, not a bug, same
     /// reasoning as `student_mic_meter_start_stop_does_not_panic`.
     #[allow(dead_code)]
-    pub(crate) outbound_mic: Option<OutboundMic>,
+    pub outbound_mic: Option<OutboundMic>,
 }
 
 impl Drop for StudentSession {

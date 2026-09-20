@@ -97,11 +97,11 @@ pub struct TeacherSession {
     /// Decoded listen-in audio, ready for real local speaker playback —
     /// `listen::run_listen_receiver` (spawned once below, always-on and idle
     /// until `listening_to` names someone) plays it automatically via its
-    /// own `ensure_output_started`. `pub(crate)` (not private) solely so the
+    /// own `ensure_output_started`. `pub` (not private) solely so the
     /// real E2E test can read its length as proof real audio arrived — same
     /// reasoning as `student_session.rs`'s `mix` field.
     #[allow(dead_code)]
-    pub(crate) listen_queue: listen::ListenQueue,
+    pub listen_queue: listen::ListenQueue,
 }
 
 impl Drop for TeacherSession {

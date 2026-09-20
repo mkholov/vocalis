@@ -51,8 +51,11 @@ jobs:
       # Step 2 of the Tauri migration (vocalis_roadmap.md, section 8): Tauri
       # commands bridging to the existing Rust core (vocalis/lingua-common —
       # DB, network, audio, screen capture). These run the real command
-      # dispatch through Tauri's MockRuntime (see src-tauri/src/lib.rs's
-      # `tests` module) — no window/display needed, so this is safe to run
+      # dispatch through Tauri's MockRuntime (see src-tauri/tests/command_bridge.rs
+      # — an integration test on purpose: only test executables of that kind can
+      # get the Common Controls v6 manifest build.rs embeds, without which the
+      # exe dies at startup with 0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND on
+      # Windows) — no window/display needed, so this is safe to run
       # on a headless CI runner exactly like a real webview `invoke()` call.
       #
       # --test-threads=1: step 7 added a test that mutates the process-global
