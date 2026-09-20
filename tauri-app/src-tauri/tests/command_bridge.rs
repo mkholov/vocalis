@@ -52,10 +52,17 @@ fn invoke(cmd: &str, args: serde_json::Value) -> Result<serde_json::Value, serde
 
 #[test]
 fn list_classes_returns_real_db_rows() {
+    // Its own throwaway database, seeded here: that keeps this test off the developer's real one *and*
+    // means it compares the command against rows that certainly exist (against a real database that
+    // happened to be empty it would have passed without checking anything).
+    let _db = ScratchDb::new("list_classes");
     let expected = {
-        let conn = vocalis::teacher::db::open().expect("open real vocalis db");
-        vocalis::teacher::db::list_classes(&conn).expect("query real classes table")
+        let conn = vocalis::teacher::db::open().expect("open the scratch db");
+        vocalis::teacher::db::insert_class(&conn, "E2E класс (список A)").expect("insert a class");
+        vocalis::teacher::db::insert_class(&conn, "E2E класс (список Б)").expect("insert another class");
+        vocalis::teacher::db::list_classes(&conn).expect("query the classes table")
     };
+    assert!(expected.len() >= 2, "the seeded classes should be there");
     let response = invoke("list_classes", serde_json::Value::Null).expect("command should succeed");
     let got = response.as_array().expect("expected a JSON array");
     assert_eq!(got.len(), expected.len(), "row count should match a direct DB query");
@@ -93,22 +100,11 @@ fn discover_teachers_completes_a_real_udp_listen_within_its_timeout() {
     assert!(response.as_array().is_some(), "expected a JSON array (possibly empty)");
 }
 
-/// `start_teacher_session` inserts a real row into `db::open()`'s database,
-/// same as `list_classes_returns_real_db_rows` reads one — but that one is
-/// read-only, and this one writes, so it must not land in the developer's
-/// real `~/.local/share/Vocalis` the way the read-only tests deliberately
-/// do. `HOME` is process-global, so this test — and only this one — needs
-/// `--test-threads=1` (see `tauri-windows-build.yml`) to not race whichever
-/// other test happens to call `db::open()` at the same moment.
+/// `start_teacher_session` inserts a real row into `db::open()`'s database, so it runs against a
+/// throwaway one (`ScratchDb` — see there for how, and why it needs `--test-threads=1`).
 #[test]
 fn start_teacher_session_creates_a_real_class_and_pin() {
-    let scratch_home = std::env::temp_dir().join(format!("vocalis_tauri_session_test_{}", std::process::id()));
-    std::fs::create_dir_all(&scratch_home).unwrap();
-    std::env::set_var("HOME", &scratch_home);
-    // Windows reads `%APPDATA%`, not `HOME` — see `db::db_path`'s doc
-    // comment — so both need overriding for this test to actually land in
-    // the scratch dir on every platform this CI matrix runs.
-    std::env::set_var("APPDATA", &scratch_home);
+    let _db = ScratchDb::new("session");
 
     // Built once and reused for both calls below (unlike the plain
     // `invoke` helper, which builds a fresh app — and so a fresh,
@@ -159,8 +155,6 @@ fn start_teacher_session_creates_a_real_class_and_pin() {
             .any(|c| c.name == "Тестовый класс")
     };
     assert!(real_class_exists, "the command should have inserted a real row via db::insert_class, not a stub");
-
-    std::fs::remove_dir_all(&scratch_home).ok();
 }
 
 /// CI runners (especially Windows ones) may have no real input device at
@@ -242,6 +236,10 @@ fn teacher_own_screen_demo_reaches_a_real_connected_student_as_decoded_frames() 
     use std::time::{Duration, Instant};
     use tauri::{Listener, Manager};
     use tauri_app_lib::commands::{student_session, teacher_session};
+
+    // `start_teacher_session` writes a class and a lesson (and the student's connection a row): keep that
+    // out of the developer's real database.
+    let _db = ScratchDb::new("screen_demo");
 
     let teacher_app = build_app(tauri::test::mock_builder());
     let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
@@ -357,6 +355,10 @@ fn teacher_mic_broadcast_reaches_a_real_connected_student() {
     use tauri::Manager;
     use tauri_app_lib::commands::{student_session, teacher_session};
 
+    // `start_teacher_session` writes a class and a lesson (and the student's connection a row): keep that
+    // out of the developer's real database.
+    let _db = ScratchDb::new("mic_broadcast");
+
     let teacher_app = build_app(tauri::test::mock_builder());
     let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
     let session_info =
@@ -424,6 +426,10 @@ fn teacher_listens_in_on_a_real_connected_student() {
     use std::time::{Duration, Instant};
     use tauri::{Listener, Manager};
     use tauri_app_lib::commands::{student_session, teacher_session};
+
+    // `start_teacher_session` writes a class and a lesson (and the student's connection a row): keep that
+    // out of the developer's real database.
+    let _db = ScratchDb::new("listen_in");
 
     let teacher_app = build_app(tauri::test::mock_builder());
     let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
@@ -503,6 +509,10 @@ fn teacher_and_student_hear_each_other_over_a_real_intercom() {
     use std::time::{Duration, Instant};
     use tauri::{Listener, Manager};
     use tauri_app_lib::commands::{student_session, teacher_session};
+
+    // `start_teacher_session` writes a class and a lesson (and the student's connection a row): keep that
+    // out of the developer's real database.
+    let _db = ScratchDb::new("intercom");
 
     let teacher_app = build_app(tauri::test::mock_builder());
     let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
@@ -599,6 +609,10 @@ fn creating_a_group_relays_real_peer_info_to_both_real_students() {
     use tauri::{Listener, Manager};
     use tauri_app_lib::commands::{student_session, teacher_session};
 
+    // `start_teacher_session` writes a class and a lesson (and the student's connection a row): keep that
+    // out of the developer's real database.
+    let _db = ScratchDb::new("groups");
+
     let teacher_app = build_app(tauri::test::mock_builder());
     let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
     let session_info = teacher_session::start_teacher_session(
@@ -683,13 +697,16 @@ fn creating_a_group_relays_real_peer_info_to_both_real_students() {
     student_session::disconnect_student_session(student_b_state);
 }
 
-/// Points `vocalis::teacher::db::open()` at a throwaway directory for as long as the guard lives, then
-/// restores the environment and deletes it. `db::open()` resolves its path from `HOME` (unix) /
-/// `APPDATA` (Windows) on every call, so this is enough to keep a test that *writes* — `upload_material`
-/// inserts a library row, `start_teacher_session` a class and a lesson — out of the developer's real
-/// `~/.local/share/Vocalis`. Process-global env, so only sound because CI (and the README) run this file
-/// with `--test-threads=1`; the same constraint `start_teacher_session_creates_a_real_class_and_pin`
-/// already documents for its own, inline version of this.
+/// Points `vocalis::teacher::db::open()` (and `student::recording`'s Recordings folder) at a throwaway
+/// directory for as long as the guard lives, then restores the environment and deletes it.
+///
+/// **Every test in this file that could write — anything that calls `start_teacher_session`, saves a
+/// recording or uploads a material — must start with `let _db = ScratchDb::new("…");`**, otherwise it
+/// leaves rows in the developer's real `~/.local/share/Vocalis` on every run (that is how 40+ junk
+/// "E2E класс…" classes got there). Both paths resolve from `HOME` (unix) / `APPDATA` (Windows) on every
+/// call, so overriding those is enough. Process-global env, so only sound because this file is run
+/// with `--test-threads=1` (as `tauri-windows-build.yml` does) — the same constraint that already
+/// applies to the fixed ports these tests bind.
 struct ScratchDb {
     dir: std::path::PathBuf,
     prev_home: Option<std::ffi::OsString>,
