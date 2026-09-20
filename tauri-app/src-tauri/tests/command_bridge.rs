@@ -841,3 +841,173 @@ fn playing_a_material_reaches_a_real_connected_student() {
     assert!(queued_samples > 0, "expected real decoded material audio to reach the student's mix queue within 8s");
     println!("[e2e] real material playback: {queued_samples} samples queued for the student's playback");
 }
+
+/// Checks `bytes` really is a canonical mono 16-bit PCM WAV — the only shape `student::recording`
+/// ever writes — and returns `(sample_rate, sample_count)`.
+fn parse_wav_mono16(bytes: &[u8]) -> (u32, usize) {
+    assert!(bytes.len() >= 44, "shorter than a WAV header: {} bytes", bytes.len());
+    assert_eq!(&bytes[0..4], b"RIFF");
+    assert_eq!(&bytes[8..12], b"WAVE");
+    assert_eq!(u16::from_le_bytes(bytes[22..24].try_into().unwrap()), 1, "mono");
+    assert_eq!(u16::from_le_bytes(bytes[34..36].try_into().unwrap()), 16, "16-bit");
+    let sample_rate = u32::from_le_bytes(bytes[24..28].try_into().unwrap());
+    let data_len = u32::from_le_bytes(bytes[40..44].try_into().unwrap()) as usize;
+    assert_eq!(bytes.len(), 44 + data_len, "the data chunk must account for every remaining byte");
+    (sample_rate, data_len / 2)
+}
+
+/// Step 7.5 item 6 — everything about student recordings that does NOT need a microphone, on any
+/// machine including a CI runner. The capture itself is real code we don't touch: the tap in
+/// `student::audio::run_outbound_and_group_audio` appends the mic's PCM to `SharedState.recording`. Here
+/// that PCM is a synthetic sine written straight into the same field, so the real save / list /
+/// read-back / delete / disconnect-saves code runs against real files (in a throwaway HOME).
+#[test]
+fn student_recordings_save_list_play_back_and_delete() {
+    use std::time::Duration;
+    use tauri::Manager;
+    use tauri_app_lib::commands::{student_recording, student_session, teacher_session};
+    use vocalis::student::state::ActiveRecording;
+
+    let _home = ScratchDb::new("recordings");
+
+    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
+    let session_info = teacher_session::start_teacher_session(
+        teacher_app.handle().clone(),
+        teacher_state.clone(),
+        "E2E класс (записи)".to_string(),
+    )
+    .expect("start_teacher_session should succeed");
+
+    let student_app = build_app(tauri::test::mock_builder());
+    let student_state = student_app.state::<student_session::StudentSessionState>();
+    student_session::connect_student_session(
+        student_app.handle().clone(),
+        student_state.clone(),
+        "127.0.0.1".to_string(),
+        lingua_common::CONTROL_PORT,
+        "E2E ученик (записи)".to_string(),
+        session_info.pin.clone(),
+    )
+    .expect("connect_student_session should succeed against a real running control server");
+
+    let inject = |samples: Vec<i16>, sample_rate: u32| {
+        let guard = student_state.0.lock().unwrap();
+        guard.as_ref().unwrap().app_state.lock().unwrap().recording = Some(ActiveRecording { samples, sample_rate });
+    };
+    let sine = |secs: f32, rate: u32| -> Vec<i16> {
+        (0..(rate as f32 * secs) as u32).map(|i| (0.3 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / rate as f32).sin() * i16::MAX as f32) as i16).collect()
+    };
+
+    assert!(student_recording::list_recordings().is_empty(), "a throwaway HOME starts with no recordings");
+
+    // save: 1.5s at 16 kHz.
+    inject(sine(1.5, 16_000), 16_000);
+    let saved = student_recording::stop_recording(student_state.clone())
+        .expect("stop_recording should succeed")
+        .expect("something was captured, so a recording should come back");
+    assert!((saved.duration_secs - 1.5).abs() < 0.01, "duration should be samples/rate, got {}", saved.duration_secs);
+    assert!(saved.name.starts_with("recording_") && saved.name.ends_with(".wav"), "unexpected name {}", saved.name);
+    assert!(saved.recorded_at_epoch.is_some(), "the epoch in the file name should parse back out");
+
+    // list: it's there.
+    let listed = student_recording::list_recordings();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, saved.name);
+
+    // play back: the exact WAV that was saved, as a data URL the webview's <audio> can play.
+    let url = student_recording::read_recording(saved.name.clone()).expect("read_recording should succeed");
+    let b64 = url.strip_prefix("data:audio/wav;base64,").expect("should be a WAV data URL");
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).expect("valid base64");
+    let (rate, samples) = parse_wav_mono16(&bytes);
+    assert_eq!((rate, samples), (16_000, 24_000), "the WAV should carry exactly what was captured");
+
+    // The webview must not be able to reach outside the recordings directory by name.
+    for evil in ["../../../etc/passwd", "..\\..\\Windows\\win.ini", "/etc/passwd", "recording_1.wav", ""] {
+        assert!(student_recording::read_recording(evil.to_string()).is_err(), "read_recording({evil:?}) must be refused");
+        assert!(student_recording::delete_recording(evil.to_string()).is_err(), "delete_recording({evil:?}) must be refused");
+    }
+    assert_eq!(student_recording::list_recordings().len(), 1, "refused deletes must not have removed anything");
+
+    // stopping an empty recording leaves nothing behind (and stopping with none is a no-op).
+    inject(Vec::new(), 16_000);
+    assert!(student_recording::stop_recording(student_state.clone()).unwrap().is_none());
+    assert!(student_recording::stop_recording(student_state.clone()).unwrap().is_none());
+    assert_eq!(student_recording::list_recordings().len(), 1);
+
+    // delete.
+    student_recording::delete_recording(saved.name.clone()).expect("delete_recording should succeed");
+    assert!(student_recording::list_recordings().is_empty());
+    assert!(student_recording::read_recording(saved.name).is_err(), "a deleted recording is gone");
+
+    // leaving mid-recording must not lose it: disconnect saves what's been captured so far.
+    // (Sleep past the second boundary — `recording::save` names files by epoch seconds.)
+    std::thread::sleep(Duration::from_millis(1100));
+    inject(sine(0.5, 16_000), 16_000);
+    student_session::disconnect_student_session(student_state);
+    let after = student_recording::list_recordings();
+    assert_eq!(after.len(), 1, "the in-progress recording should have been saved on disconnect");
+    assert!((after[0].duration_secs - 0.5).abs() < 0.01);
+
+    teacher_session::stop_teacher_session(teacher_state);
+}
+
+/// Step 7.5 item 6 with the real thing: the recording tap fed by this machine's actual microphone. Like
+/// the other mic tests it can't assert success where there's no input device — `start_recording` says so
+/// ("микрофон недоступен") and the test reports and returns — but wherever there is one, it records for
+/// real and checks the WAV against wall-clock time.
+#[test]
+fn student_recording_captures_the_real_microphone() {
+    use std::time::{Duration, Instant};
+    use tauri::Manager;
+    use tauri_app_lib::commands::{student_recording, student_session, teacher_session};
+
+    let _home = ScratchDb::new("recordings_mic");
+
+    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
+    let session_info = teacher_session::start_teacher_session(
+        teacher_app.handle().clone(),
+        teacher_state.clone(),
+        "E2E класс (запись микрофона)".to_string(),
+    )
+    .expect("start_teacher_session should succeed");
+
+    let student_app = build_app(tauri::test::mock_builder());
+    let student_state = student_app.state::<student_session::StudentSessionState>();
+    student_session::connect_student_session(
+        student_app.handle().clone(),
+        student_state.clone(),
+        "127.0.0.1".to_string(),
+        lingua_common::CONTROL_PORT,
+        "E2E ученик (запись микрофона)".to_string(),
+        session_info.pin.clone(),
+    )
+    .expect("connect_student_session should succeed");
+
+    if let Err(e) = student_recording::start_recording(student_state.clone()) {
+        println!("[e2e] skipping real-microphone recording: {e}");
+        student_session::disconnect_student_session(student_state);
+        teacher_session::stop_teacher_session(teacher_state);
+        return;
+    }
+    let started = Instant::now();
+    std::thread::sleep(Duration::from_millis(1500));
+    let saved = student_recording::stop_recording(student_state.clone())
+        .expect("stop_recording should succeed")
+        .expect("a real microphone should have produced samples in 1.5s");
+    let wall = started.elapsed().as_secs_f32();
+
+    let url = student_recording::read_recording(saved.name.clone()).expect("read_recording");
+    let b64 = url.strip_prefix("data:audio/wav;base64,").unwrap();
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).unwrap();
+    let (rate, samples) = parse_wav_mono16(&bytes);
+    let recorded = samples as f32 / rate as f32;
+    println!("[e2e] real microphone recording: {recorded:.2}s of audio at {rate} Hz for {wall:.2}s of wall time");
+
+    student_session::disconnect_student_session(student_state);
+    teacher_session::stop_teacher_session(teacher_state);
+
+    assert!((recorded - saved.duration_secs).abs() < 0.01, "DTO and file disagree: {} vs {recorded}", saved.duration_secs);
+    assert!(recorded > 1.0 && recorded < wall + 0.2, "recorded {recorded:.2}s over {wall:.2}s of wall time");
+}

@@ -48,6 +48,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct OutboundMic {
     stop: Arc<AtomicBool>,
     _thread: std::thread::JoinHandle<()>,
+    /// The capture's native sample rate — what `student_recording.rs` needs to
+    /// label a recording with, since the recording tap in
+    /// `audio::run_outbound_and_group_audio` stores raw native-rate PCM.
+    pub native_rate: u32,
 }
 
 impl Drop for OutboundMic {
@@ -119,7 +123,7 @@ fn run_outbound_mic_thread(
     mix: audio::SharedMix,
     output_rate: u32,
     stop: Arc<AtomicBool>,
-    ready_tx: std::sync::mpsc::Sender<Result<(), String>>,
+    ready_tx: std::sync::mpsc::Sender<Result<u32, String>>,
 ) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let (capture, native_rate) = match mic::start_mic_capture(tx, None) {
@@ -129,7 +133,7 @@ fn run_outbound_mic_thread(
             return;
         }
     };
-    let _ = ready_tx.send(Ok(()));
+    let _ = ready_tx.send(Ok(native_rate));
 
     let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(rt) => rt,
@@ -252,10 +256,10 @@ pub fn connect_student_session<R: tauri::Runtime>(
         let mic_mix = mix.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
-        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<u32, String>>();
         let thread = std::thread::spawn(move || run_outbound_mic_thread(mic_state, mic_mix, output_rate, thread_stop, ready_tx));
         match ready_rx.recv() {
-            Ok(Ok(())) => Some(OutboundMic { stop, _thread: thread }),
+            Ok(Ok(native_rate)) => Some(OutboundMic { stop, _thread: thread, native_rate }),
             Ok(Err(e)) => {
                 eprintln!("[student_session] no microphone available for listen-in/groups: {e}");
                 None
@@ -311,5 +315,16 @@ pub fn connect_student_session<R: tauri::Runtime>(
 
 #[tauri::command]
 pub fn disconnect_student_session(session: State<StudentSessionState>) {
-    *session.0.lock().unwrap() = None;
+    let mut guard = session.0.lock().unwrap();
+    // A recording in progress lives in this session's state — save it rather than
+    // letting it vanish with it (leaving the console mid-recording, say).
+    if let Some(student) = guard.as_ref() {
+        let active = student.app_state.lock().unwrap().recording.take();
+        if let Some(active) = active {
+            if let Err(e) = super::student_recording::save_active(active) {
+                eprintln!("[student_session] couldn't save the in-progress recording on disconnect: {e}");
+            }
+        }
+    }
+    *guard = None;
 }

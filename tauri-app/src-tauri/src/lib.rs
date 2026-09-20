@@ -48,6 +48,11 @@ pub fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::App<R>
             commands::student_mic::stop_student_mic_meter,
             commands::screen_demo::start_screen_demo,
             commands::screen_demo::stop_screen_demo,
+            commands::student_recording::start_recording,
+            commands::student_recording::stop_recording,
+            commands::student_recording::list_recordings,
+            commands::student_recording::read_recording,
+            commands::student_recording::delete_recording,
             commands::student_session::connect_student_session,
             commands::student_session::disconnect_student_session,
         ])

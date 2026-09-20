@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-read-recording"
+description = "Enables the read_recording command without any pre-configured scope."
+commands.allow = ["read_recording"]
+
+[[permission]]
+identifier = "deny-read-recording"
+description = "Denies the read_recording command without any pre-configured scope."
+commands.deny = ["read_recording"]

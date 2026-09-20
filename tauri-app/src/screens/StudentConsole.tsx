@@ -7,6 +7,7 @@ import { FlyingReactions, type FlyingReaction } from "../components/FlyingReacti
 import { ROSTER } from "../lib/mockClassroom";
 import { useMicMeter } from "../lib/useMicMeter";
 import { useStudentSession } from "../lib/useStudentSession";
+import { useRecordings } from "../lib/useRecordings";
 
 interface Props {
   studentName: string;
@@ -43,10 +44,14 @@ const partnerOptions = ROSTER.filter((_, i) => i % 2 === 1);
  * a local capture, unlike the self-preview `useScreenDemo` hook this used
  * before that path existed. The mic meter next to this student's own name is
  * likewise a real `cpal` capture (`useMicMeter`), not a mock, exactly like
- * the egui app's own top-bar VU meter. */
+ * the egui app's own top-bar VU meter. "Запись голоса" (`useRecordings`,
+ * step 7.5 item 6) is real too: it records the same mic PCM the session
+ * already streams, saves it as a WAV, and plays it back in-app — comparing a
+ * recording to the teacher's reference is a separate, later step. */
 export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDisconnect }: Props) {
   const mic = useMicMeter();
   const session = useStudentSession({ studentName, teacherIp, controlPort, pin });
+  const voice = useRecordings();
   const teacherLabel = session.teacherName ?? "подключение…";
   const [listening, setListening] = useState(false);
   const [partner, setPartner] = useState<string | null>(null);
@@ -177,6 +182,67 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
               </Panel>
             )}
 
+            <Panel>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="font-medium">🎙 Запись голоса</div>
+                  <div className="text-xs text-[var(--color-text-muted)]">
+                    {voice.recording ? (
+                      <span className="text-rose-300">● идёт запись — {formatDuration(voice.elapsedSecs)}</span>
+                    ) : (
+                      "Запишите себя и прослушайте — запись остаётся на этом компьютере"
+                    )}
+                  </div>
+                </div>
+                <Button variant="secondary" className="px-3 py-1.5 text-sm" onClick={voice.toggleRecording}>
+                  {voice.recording ? "⏹ Остановить" : "🔴 Записать"}
+                </Button>
+              </div>
+              {voice.error && <p className="mt-3 rounded-lg bg-rose-400/10 px-3 py-2 text-sm text-rose-300">{voice.error}</p>}
+              <AnimatePresence initial={false}>
+                {voice.recordings.map((r) => (
+                  <motion.div
+                    key={r.name}
+                    layout
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="mt-2 flex items-center gap-3 rounded-xl bg-white/5 px-3 py-2">
+                      <motion.button
+                        type="button"
+                        whileTap={{ scale: 0.9 }}
+                        onClick={() => voice.togglePlay(r.name)}
+                        className={
+                          "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm transition-colors " +
+                          (voice.playing === r.name ? "bg-violet-400/30 text-violet-200" : "bg-white/10 text-[var(--color-text-muted)] hover:bg-white/20")
+                        }
+                        title={voice.playing === r.name ? "Остановить" : "Прослушать"}
+                      >
+                        {voice.playing === r.name ? "⏹" : "▶"}
+                      </motion.button>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm">{recordingLabel(r.recordedAtEpoch, r.name)}</div>
+                        <div className="text-xs text-[var(--color-text-muted)]">{formatDuration(Math.round(r.durationSecs))}</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => voice.remove(r.name)}
+                        className="shrink-0 rounded-md px-2 py-1 text-sm text-[var(--color-text-muted)] hover:bg-white/10 hover:text-rose-300"
+                        title="Удалить запись"
+                      >
+                        🗑
+                      </button>
+                    </div>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+              {voice.recordings.length === 0 && !voice.recording && (
+                <p className="mt-3 text-sm text-[var(--color-text-muted)]">Пока нет записей.</p>
+              )}
+            </Panel>
+
             <div className="mt-auto flex items-center justify-center gap-3 pt-4">
               <motion.div whileTap={{ scale: 0.95 }}>
                 <button
@@ -254,6 +320,19 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
       />
     </div>
   );
+}
+
+function formatDuration(totalSecs: number): string {
+  const m = Math.floor(totalSecs / 60);
+  const sec = totalSecs % 60;
+  return `${m}:${sec.toString().padStart(2, "0")}`;
+}
+
+/** "Запись 02:22" from the epoch in the file name, or the file name itself if it has none. */
+function recordingLabel(epoch: number | null, fallback: string): string {
+  if (epoch === null) return fallback;
+  const d = new Date(epoch * 1000);
+  return `Запись ${d.toLocaleDateString("ru-RU")} ${d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`;
 }
 
 function StatusBanner({ color, text }: { color: string; text: string }) {

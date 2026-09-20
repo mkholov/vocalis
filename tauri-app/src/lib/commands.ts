@@ -237,3 +237,41 @@ export function playMaterial(materialId: number, studentIds: string[]): Promise<
 export function stopPlayback(): Promise<void> {
   return invoke("stop_playback");
 }
+
+// --- Step 7.5 (vocalis_roadmap.md, section 8): the student's own voice recordings ---
+// commands/student_recording.rs. Reuses `student::recording` (save/list/delete) and
+// the recording tap in `student::audio::run_outbound_and_group_audio` unchanged.
+// Recordings are addressed by file `name` only, never by path — the backend refuses
+// anything that isn't an entry of its own recordings directory. Comparing a
+// recording to the teacher's reference and sending one to the teacher are not here.
+
+export interface RecordingDto {
+  /** File name (`recording_<epoch>.wav`) — the recording's id. */
+  name: string;
+  durationSecs: number;
+  /** Unix seconds, parsed from the file name when it has the usual shape. */
+  recordedAtEpoch: number | null;
+}
+
+/** Rejects with "микрофон недоступен" when this machine has no usable input device. */
+export function startRecording(): Promise<void> {
+  return invoke("start_recording");
+}
+
+/** Resolves to `null` if nothing was being recorded or nothing was captured. */
+export function stopRecording(): Promise<RecordingDto | null> {
+  return invoke<RecordingDto | null>("stop_recording");
+}
+
+export function listRecordings(): Promise<RecordingDto[]> {
+  return invoke<RecordingDto[]>("list_recordings");
+}
+
+/** The recording's audio as a `data:audio/wav;base64,…` URL, for `new Audio(url)`. */
+export function readRecording(name: string): Promise<string> {
+  return invoke<string>("read_recording", { name });
+}
+
+export function deleteRecording(name: string): Promise<void> {
+  return invoke("delete_recording", { name });
+}

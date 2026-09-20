@@ -31,6 +31,11 @@
     "allow-upload-material",
     "allow-play-material",
     "allow-stop-playback",
+    "allow-start-recording",
+    "allow-stop-recording",
+    "allow-list-recordings",
+    "allow-read-recording",
+    "allow-delete-recording",
     "allow-connect-student-session",
     "allow-disconnect-student-session"
   ]

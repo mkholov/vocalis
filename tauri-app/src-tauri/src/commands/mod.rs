@@ -10,6 +10,7 @@ pub mod network;
 pub mod screen_demo;
 pub mod screen_frame;
 pub mod student_mic;
+pub mod student_recording;
 pub mod student_session;
 pub mod teacher_session;
 pub mod video;
