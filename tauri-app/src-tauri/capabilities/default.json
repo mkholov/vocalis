@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "opener:default",
+    "dialog:default",
     "allow-list-classes",
     "allow-list-audio-devices",
     "allow-discover-teachers",
@@ -26,6 +27,10 @@
     "allow-stop-intercom",
     "allow-create-group",
     "allow-leave-group",
+    "allow-list-materials",
+    "allow-upload-material",
+    "allow-play-material",
+    "allow-stop-playback",
     "allow-connect-student-session",
     "allow-disconnect-student-session"
   ]

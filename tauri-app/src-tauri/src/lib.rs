@@ -18,6 +18,7 @@ pub mod commands;
 pub fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::App<R> {
     builder
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(commands::teacher_session::TeacherSessionState::default())
         .manage(commands::student_mic::MicMeterState::default())
         .manage(commands::screen_demo::ScreenDemoState::default())
@@ -39,6 +40,10 @@ pub fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::App<R>
             commands::teacher_session::stop_intercom,
             commands::teacher_session::create_group,
             commands::teacher_session::leave_group,
+            commands::teacher_session::list_materials,
+            commands::teacher_session::upload_material,
+            commands::teacher_session::play_material,
+            commands::teacher_session::stop_playback,
             commands::student_mic::start_student_mic_meter,
             commands::student_mic::stop_student_mic_meter,
             commands::screen_demo::start_screen_demo,

@@ -197,3 +197,43 @@ export function createGroup(studentIds: string[]): Promise<CreateGroupInfo> {
 export function leaveGroup(studentId: string): Promise<void> {
   return invoke("leave_group", { studentId });
 }
+
+// --- Step 7.5 (vocalis_roadmap.md, section 8): audio materials library ---
+// commands/teacher_session.rs. Reuses `db::{insert_material, list_materials}`
+// and `teacher::materials::{decode_to_mono_pcm, run_playback}` unchanged —
+// the same decode/resample/Opus-encode/UDP pipeline the live mic broadcast
+// uses, over the same MIC_PORT, so a receiving student needs no separate
+// wiring: `connect_student_session`'s already-running mic-broadcast receiver
+// picks it up on its own. `filePath` must be a real absolute path — get one
+// via `@tauri-apps/plugin-dialog`'s `open()`, Tauri's native file picker.
+
+export interface MaterialDto {
+  id: number;
+  title: string;
+}
+
+export function listMaterials(): Promise<MaterialDto[]> {
+  return invoke<MaterialDto[]>("list_materials");
+}
+
+export function uploadMaterial(filePath: string, title: string): Promise<MaterialDto> {
+  return invoke<MaterialDto>("upload_material", { filePath, title });
+}
+
+export interface PlaybackInfo {
+  title: string;
+  targetCount: number;
+}
+
+/** `studentIds` empty means "everyone currently connected" ("проиграть
+ * всем"); non-empty plays only to those real students ("проиграть
+ * выбранным"). Stops whatever was playing before, and stops a live mic
+ * broadcast if one is running (same one-stream-per-MIC_PORT constraint
+ * `startMicBroadcast` enforces the other way). */
+export function playMaterial(materialId: number, studentIds: string[]): Promise<PlaybackInfo> {
+  return invoke<PlaybackInfo>("play_material", { materialId, studentIds });
+}
+
+export function stopPlayback(): Promise<void> {
+  return invoke("stop_playback");
+}

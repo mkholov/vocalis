@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { open } from "@tauri-apps/plugin-dialog";
 import { StudentCard } from "../components/StudentCard";
 import { LessonTimer } from "../components/LessonTimer";
 import { Button } from "../components/ui/Button";
@@ -17,6 +18,11 @@ import {
   stopIntercom,
   createGroup,
   leaveGroup,
+  listMaterials,
+  uploadMaterial,
+  playMaterial,
+  stopPlayback,
+  type MaterialDto,
 } from "../lib/commands";
 
 interface Props {
@@ -25,8 +31,9 @@ interface Props {
 }
 
 /** Step 4 (grid/timer/lock UI) + step 7/7.5 (live levels, screen-demo
- * broadcast, mic broadcast, listen-in, private intercom, groups/pairs) of
- * the Tauri migration (vocalis_roadmap.md, section 8). A real teacher
+ * broadcast, mic broadcast, listen-in, private intercom, groups/pairs, audio
+ * materials library) of the Tauri migration (vocalis_roadmap.md, section 8).
+ * A real teacher
  * session (`useLiveClassroom`) starts on mount — its per-student mic levels
  * are genuine, reported over the network exactly the way the egui console's
  * own grid gets them
@@ -115,6 +122,10 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
       await startMicBroadcast();
       setMicBroadcasting(true);
       setMicBroadcastError(undefined);
+      // Materials playback and the live mic broadcast share MIC_PORT — the
+      // backend already stopped any playback to start this, so keep the
+      // materials panel's "⏹ Остановить" state honest about it.
+      setPlayingTitle(null);
     } catch (err) {
       setMicBroadcastError(String(err));
     }
@@ -222,6 +233,69 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
     await leaveGroup(realId).catch((err) => setGroupError(String(err)));
   }
 
+  // Step 7.5: audio materials library — reuses `groupSelection` above as
+  // "выбранные" for "проиграть выбранным" (both are "pick some real
+  // students" operations, so one shared checkbox list avoids duplicating
+  // the same UI for two features). Loads the real library lazily, once,
+  // the first time this panel is opened against a real session.
+  const [materialsPanelOpen, setMaterialsPanelOpen] = useState(false);
+  const [materialsLoaded, setMaterialsLoaded] = useState(false);
+  const [materialsList, setMaterialsList] = useState<MaterialDto[]>([]);
+  const [materialsError, setMaterialsError] = useState<string | undefined>();
+  const [playingTitle, setPlayingTitle] = useState<string | null>(null);
+  const playingRef = useRef(false);
+  useEffect(() => {
+    playingRef.current = playingTitle !== null;
+  }, [playingTitle]);
+  useEffect(() => {
+    return () => {
+      if (playingRef.current) stopPlayback().catch(() => {});
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!materialsPanelOpen || materialsLoaded || !usingLiveData) return;
+    listMaterials()
+      .then((list) => {
+        setMaterialsList(list);
+        setMaterialsLoaded(true);
+      })
+      .catch((err) => setMaterialsError(String(err)));
+  }, [materialsPanelOpen, materialsLoaded, usingLiveData]);
+
+  async function handleUploadMaterial() {
+    const path = await open({ multiple: false, filters: [{ name: "Аудио", extensions: ["mp3", "wav"] }] });
+    if (!path) return;
+    const fileName = path.split(/[\\/]/).pop() ?? "Материал";
+    const title = fileName.replace(/\.[^./]+$/, "");
+    try {
+      const material = await uploadMaterial(path, title);
+      setMaterialsList((prev) => [material, ...prev]);
+      setMaterialsError(undefined);
+    } catch (err) {
+      setMaterialsError(String(err));
+    }
+  }
+
+  async function handlePlayMaterial(materialId: number, targetIds: string[]) {
+    try {
+      const info = await playMaterial(materialId, targetIds);
+      setPlayingTitle(info.title);
+      // Materials playback and the live mic broadcast share MIC_PORT — the
+      // backend already stops one when the other starts, this just keeps
+      // the "🎙 Говорить с классом" button's label honest about it.
+      setMicBroadcasting(false);
+      setMaterialsError(undefined);
+    } catch (err) {
+      setMaterialsError(String(err));
+    }
+  }
+
+  async function handleStopPlayback() {
+    await stopPlayback().catch(() => {});
+    setPlayingTitle(null);
+  }
+
   const [selectedId, setSelectedId] = useState<number | null>(null);
   // Lock buttons are local-only UI state regardless of data source — nothing
   // sends `LockScreen`/`SetMicLocked` over the network yet, so overlaying
@@ -280,6 +354,7 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
           {listenError && <p className="text-xs text-rose-400">Не удалось начать прослушку: {listenError}</p>}
           {intercomError && <p className="text-xs text-rose-400">Не удалось начать интерком: {intercomError}</p>}
           {groupError && <p className="text-xs text-rose-400">Ошибка группировки: {groupError}</p>}
+          {materialsError && <p className="text-xs text-rose-400">Ошибка материалов: {materialsError}</p>}
         </div>
 
         <LessonTimer />
@@ -295,6 +370,9 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
         </Button>
         <Button variant="secondary" onClick={() => setGroupPanelOpen((v) => !v)}>
           {groupPanelOpen ? "Скрыть группы" : "👥 Группы"}
+        </Button>
+        <Button variant="secondary" onClick={() => setMaterialsPanelOpen((v) => !v)}>
+          {materialsPanelOpen ? "Скрыть материалы" : "🎵 Материалы"}
         </Button>
         <Button variant="secondary" onClick={onEnd}>
           Завершить урок
@@ -363,6 +441,69 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
             <Button variant="secondary" className="mt-3 w-full" disabled={groupSelection.size < 2} onClick={handleCreateGroup}>
               Создать пару/группу
             </Button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {materialsPanelOpen && (
+          <motion.div
+            initial={{ opacity: 0, y: -12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -12 }}
+            className="absolute right-4 top-24 z-30 w-80 rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-card-solid)] p-4 shadow-2xl"
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <span className="text-xs font-medium text-[var(--color-text-muted)]">Библиотека аудио</span>
+              <button
+                type="button"
+                onClick={handleUploadMaterial}
+                className="rounded-md bg-white/5 px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-white/10"
+              >
+                + Добавить файл
+              </button>
+            </div>
+
+            {playingTitle && (
+              <div className="mb-3 flex items-center justify-between gap-2 rounded-lg bg-violet-400/10 px-3 py-2 text-sm text-violet-300">
+                <span className="truncate">▶ {playingTitle}</span>
+                <button type="button" onClick={handleStopPlayback} className="shrink-0 hover:text-violet-100">
+                  ⏹ Стоп
+                </button>
+              </div>
+            )}
+
+            {materialsList.length === 0 ? (
+              <p className="text-sm text-[var(--color-text-muted)]">Библиотека пуста — добавьте mp3/wav файл.</p>
+            ) : (
+              <div className="flex max-h-64 flex-col gap-2 overflow-y-auto">
+                {materialsList.map((m) => (
+                  <div key={m.id} className="flex items-center justify-between gap-2 text-sm">
+                    <span className="min-w-0 flex-1 truncate">{m.title}</span>
+                    <button
+                      type="button"
+                      onClick={() => handlePlayMaterial(m.id, [])}
+                      className="shrink-0 rounded-md bg-white/5 px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-white/10"
+                      title="Проиграть всем подключённым"
+                    >
+                      ▶ Всем
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handlePlayMaterial(m.id, Array.from(groupSelection))}
+                      disabled={groupSelection.size === 0}
+                      className="shrink-0 rounded-md bg-white/5 px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                      title="Проиграть выбранным в панели «Группы»"
+                    >
+                      ▶ Выбранным
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="mt-3 text-[11px] text-[var(--color-text-muted)]">
+              «Выбранным» использует отметки из панели «Группы» ({groupSelection.size} выбрано).
+            </p>
           </motion.div>
         )}
       </AnimatePresence>

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-play-material"
+description = "Enables the play_material command without any pre-configured scope."
+commands.allow = ["play_material"]
+
+[[permission]]
+identifier = "deny-play-material"
+description = "Denies the play_material command without any pre-configured scope."
+commands.deny = ["play_material"]

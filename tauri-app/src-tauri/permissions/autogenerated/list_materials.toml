@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-materials"
+description = "Enables the list_materials command without any pre-configured scope."
+commands.allow = ["list_materials"]
+
+[[permission]]
+identifier = "deny-list-materials"
+description = "Denies the list_materials command without any pre-configured scope."
+commands.deny = ["list_materials"]

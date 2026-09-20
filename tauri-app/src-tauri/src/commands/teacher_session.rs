@@ -28,7 +28,7 @@ use std::time::Duration;
 use lingua_common::{ServerToClient, StudentId, TEACHER_INTERCOM_PORT};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
-use vocalis::teacher::{db, listen, mic, net, screen, state};
+use vocalis::teacher::{db, listen, materials, mic, net, screen, state};
 
 const LEVEL_EMIT_INTERVAL_MS: u64 = 150;
 // A fresh `SharedState`'s `class_size` doesn't matter for this step — nothing
@@ -94,6 +94,11 @@ pub struct TeacherSession {
     /// The teacher's private intercom, if any (step 7.5) — independent of
     /// `mic_broadcast` (separate `cpal` capture, separate atomic level).
     intercom: Option<Intercom>,
+    /// The current material-playback task, if any (step 7.5) — reuses
+    /// `teacher::materials::run_playback` unchanged. Pure async (no `cpal`
+    /// capture involved, unlike `mic_broadcast`/`intercom`), so this is a
+    /// plain `tauri::async_runtime` task, abortable directly.
+    playback_task: Option<tauri::async_runtime::JoinHandle<()>>,
     /// Decoded listen-in audio, ready for real local speaker playback —
     /// `listen::run_listen_receiver` (spawned once below, always-on and idle
     /// until `listening_to` names someone) plays it automatically via its
@@ -110,6 +115,9 @@ impl Drop for TeacherSession {
             task.abort();
         }
         if let Some(task) = &self.screen_demo_task {
+            task.abort();
+        }
+        if let Some(task) = &self.playback_task {
             task.abort();
         }
     }
@@ -181,6 +189,10 @@ pub fn start_teacher_session<R: tauri::Runtime>(
     let class_id = db::insert_class(&conn, &class_name).map_err(|e| e.to_string())?;
     let lesson_row_id = db::insert_lesson(&conn, class_id, &class_name).map_err(|e| e.to_string())?;
     let history = db::load_history_summary(&conn, class_id).unwrap_or_default();
+    // Real, persisted library (step 7.5) — loaded the same way `history`
+    // above is, not left empty like the still-unbuilt assignments/roster
+    // tabs below.
+    let materials = db::list_materials(&conn).unwrap_or_default();
     let pin = state::generate_pin();
 
     let app_state: state::AppState = Arc::new(Mutex::new(state::SharedState::new(
@@ -191,7 +203,7 @@ pub fn start_teacher_session<R: tauri::Runtime>(
         conn,
         lesson_row_id,
         history,
-        Vec::new(),
+        materials,
         Vec::new(),
         Vec::new(),
     )));
@@ -251,6 +263,7 @@ pub fn start_teacher_session<R: tauri::Runtime>(
         screen_demo_task: None,
         mic_broadcast: None,
         intercom: None,
+        playback_task: None,
         listen_queue,
     });
     Ok(info)
@@ -397,6 +410,11 @@ pub fn start_mic_broadcast(session: State<TeacherSessionState>) -> Result<(), St
     if teacher_session.mic_broadcast.is_some() {
         return Ok(());
     }
+    // Live mic broadcast and materials playback both go out over MIC_PORT as
+    // a single Opus stream — can't have two independent streams on one port
+    // (see `teacher::materials::run_playback`'s doc comment), so starting
+    // one stops the other — mirrors `TeacherApp::toggle_mic`'s own comment.
+    stop_playback_locked(teacher_session);
 
     let app_state = teacher_session.app_state.clone();
     let stop = Arc::new(AtomicBool::new(false));
@@ -619,4 +637,133 @@ pub fn leave_group(session: State<TeacherSessionState>, student_id: String) -> R
     let teacher_session = guard.as_ref().ok_or("нет активной сессии преподавателя")?;
     teacher_session.app_state.lock().unwrap().leave_group(id);
     Ok(())
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MaterialDto {
+    pub id: i64,
+    pub title: String,
+}
+
+/// Lists the real, persisted audio materials library (step 7.5 —
+/// `vocalis_roadmap.md`, section 8) — reads `SharedState.materials`
+/// directly, the same in-memory list `start_teacher_session` loads once via
+/// `db::list_materials` and `upload_material` below keeps in sync, exactly
+/// like the egui teacher console's own Materials tab does.
+#[tauri::command]
+pub fn list_materials(session: State<TeacherSessionState>) -> Result<Vec<MaterialDto>, String> {
+    let guard = session.0.lock().unwrap();
+    let teacher_session = guard.as_ref().ok_or("нет активной сессии преподавателя")?;
+    let state_guard = teacher_session.app_state.lock().unwrap();
+    Ok(state_guard.materials.iter().map(|m| MaterialDto { id: m.id, title: m.title.clone() }).collect())
+}
+
+/// Adds a real file to the library (step 7.5): reuses `db::insert_material`
+/// unchanged — persists immediately, same as `TeacherApp::upload_material`.
+/// `file_path` must be a real, already-decodable (mp3/wav) path on this
+/// machine — the frontend gets one via Tauri's native file-picker plugin,
+/// same idea as the egui app's `rfd::FileDialog`, just a different picker
+/// API for a webview. The file itself is never copied, only its path is
+/// stored — same as the existing "send file" flow this mirrors.
+#[tauri::command]
+pub fn upload_material(session: State<TeacherSessionState>, file_path: String, title: String) -> Result<MaterialDto, String> {
+    let guard = session.0.lock().unwrap();
+    let teacher_session = guard.as_ref().ok_or("нет активной сессии преподавателя")?;
+    let mut state_guard = teacher_session.app_state.lock().unwrap();
+    let id = db::insert_material(&state_guard.db, &title, &file_path).map_err(|e| e.to_string())?;
+    state_guard.materials.insert(0, db::MaterialRow { id, title: title.clone(), file_path });
+    Ok(MaterialDto { id, title })
+}
+
+/// Stops whatever material is currently playing, if any, telling every
+/// target it ended — shared by the standalone `stop_playback` command below
+/// and `start_mic_broadcast` (materials playback and the live mic broadcast
+/// share `MIC_PORT`, so starting one must stop the other — see
+/// `TeacherApp::toggle_mic`'s matching comment). Mirrors
+/// `TeacherApp::stop_playback` exactly; safe to call when nothing's playing.
+fn stop_playback_locked(teacher_session: &mut TeacherSession) {
+    if let Some(task) = teacher_session.playback_task.take() {
+        task.abort();
+    }
+    let mut state_guard = teacher_session.app_state.lock().unwrap();
+    if let Some(playing) = state_guard.playing.take() {
+        for id in &playing.targets {
+            if let Some(s) = state_guard.students.get(id) {
+                let _ = s.to_client.send(ServerToClient::MaterialStopped);
+            }
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackInfo {
+    pub title: String,
+    pub target_count: usize,
+}
+
+/// Decodes and streams one library material to `student_ids` (or every
+/// currently connected student, if empty — "проиграть всем/выбранным")
+/// over MIC_PORT, exactly like a live broadcast (step 7.5): reuses
+/// `teacher::materials::{decode_to_mono_pcm, run_playback}` unchanged.
+/// Stops whatever was playing before, and stops a live mic broadcast if one
+/// is running (same one-stream-per-`MIC_PORT` constraint as above).
+#[tauri::command]
+pub fn play_material(session: State<TeacherSessionState>, material_id: i64, student_ids: Vec<String>) -> Result<PlaybackInfo, String> {
+    let mut guard = session.0.lock().unwrap();
+    let teacher_session = guard.as_mut().ok_or("нет активной сессии преподавателя")?;
+    stop_playback_locked(teacher_session);
+    teacher_session.mic_broadcast = None; // stops it, via `MicBroadcast`'s own `Drop`
+
+    let (title, path) = {
+        let state_guard = teacher_session.app_state.lock().unwrap();
+        let m = state_guard.materials.iter().find(|m| m.id == material_id).ok_or("материал не найден")?;
+        (m.title.clone(), m.file_path.clone())
+    };
+    let (samples, native_rate) =
+        materials::decode_to_mono_pcm(std::path::Path::new(&path)).map_err(|e| format!("не удалось декодировать файл: {e:#}"))?;
+    let total_ms = (samples.len() as u64 * 1000) / native_rate.max(1) as u64;
+
+    let target_ids: Vec<StudentId> = if student_ids.is_empty() {
+        teacher_session.app_state.lock().unwrap().students.keys().copied().collect()
+    } else {
+        student_ids.iter().map(|s| s.parse().map_err(|_| format!("invalid student id: {s}"))).collect::<Result<_, String>>()?
+    };
+    if target_ids.is_empty() {
+        return Err("нет подключенных учеников".to_string());
+    }
+
+    {
+        let mut state_guard = teacher_session.app_state.lock().unwrap();
+        for id in &target_ids {
+            if let Some(s) = state_guard.students.get(id) {
+                let _ = s.to_client.send(ServerToClient::MaterialPlaying { title: title.clone() });
+            }
+        }
+        state_guard.playing = Some(state::PlayingMaterial {
+            material_id,
+            title: title.clone(),
+            total_ms,
+            elapsed_ms: 0,
+            targets: target_ids.clone(),
+        });
+    }
+
+    let target_count = target_ids.len();
+    let app_state = teacher_session.app_state.clone();
+    teacher_session.playback_task = Some(tauri::async_runtime::spawn(async move {
+        if let Err(e) = materials::run_playback(app_state, samples, native_rate, target_ids).await {
+            eprintln!("[teacher_session] material playback stopped: {e:#}");
+        }
+    }));
+
+    Ok(PlaybackInfo { title, target_count })
+}
+
+#[tauri::command]
+pub fn stop_playback(session: State<TeacherSessionState>) {
+    let mut guard = session.0.lock().unwrap();
+    let Some(teacher_session) = guard.as_mut() else { return };
+    stop_playback_locked(teacher_session);
 }

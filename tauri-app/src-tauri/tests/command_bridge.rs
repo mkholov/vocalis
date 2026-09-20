@@ -682,3 +682,162 @@ fn creating_a_group_relays_real_peer_info_to_both_real_students() {
     student_session::disconnect_student_session(student_a_state);
     student_session::disconnect_student_session(student_b_state);
 }
+
+/// Points `vocalis::teacher::db::open()` at a throwaway directory for as long as the guard lives, then
+/// restores the environment and deletes it. `db::open()` resolves its path from `HOME` (unix) /
+/// `APPDATA` (Windows) on every call, so this is enough to keep a test that *writes* — `upload_material`
+/// inserts a library row, `start_teacher_session` a class and a lesson — out of the developer's real
+/// `~/.local/share/Vocalis`. Process-global env, so only sound because CI (and the README) run this file
+/// with `--test-threads=1`; the same constraint `start_teacher_session_creates_a_real_class_and_pin`
+/// already documents for its own, inline version of this.
+struct ScratchDb {
+    dir: std::path::PathBuf,
+    prev_home: Option<std::ffi::OsString>,
+    prev_appdata: Option<std::ffi::OsString>,
+}
+
+impl ScratchDb {
+    fn new(tag: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("vocalis_tauri_scratch_db_{tag}_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create scratch db dir");
+        let guard = ScratchDb { dir: dir.clone(), prev_home: std::env::var_os("HOME"), prev_appdata: std::env::var_os("APPDATA") };
+        std::env::set_var("HOME", &dir);
+        std::env::set_var("APPDATA", &dir);
+        guard
+    }
+}
+
+impl Drop for ScratchDb {
+    fn drop(&mut self) {
+        match &self.prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match &self.prev_appdata {
+            Some(v) => std::env::set_var("APPDATA", v),
+            None => std::env::remove_var("APPDATA"),
+        }
+        // A background task (e.g. the control server recording a student's disconnect) can still be
+        // writing to the SQLite file — creating a `-journal` next to it — when this runs, which makes a
+        // single `remove_dir_all` fail with "directory not empty" and leaves the tree behind. Retry
+        // briefly; the connection is already bound to this directory, so none of that can reach the
+        // real database, this is only about not leaving temp litter.
+        for _ in 0..20 {
+            if std::fs::remove_dir_all(&self.dir).is_ok() || !self.dir.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+}
+
+/// A minimal, valid mono 16-bit PCM WAV file — just enough for
+/// `symphonia`'s probe (which `teacher::materials::decode_to_mono_pcm`
+/// uses unchanged) to recognize and decode it. Unlike the mic/listen-in/
+/// intercom E2E tests, this one needs no real microphone or speaker — playing
+/// a library file is pure file-decode + network, so it's the one test
+/// in this group that never has an environment-dependent skip path.
+fn write_test_wav(path: &std::path::Path) {
+    let sample_rate = 8_000u32;
+    let samples: Vec<i16> = (0..sample_rate) // 1 second
+        .map(|i| {
+            let t = i as f32 / sample_rate as f32;
+            (0.2 * (2.0 * std::f32::consts::PI * 440.0 * t).sin() * i16::MAX as f32) as i16
+        })
+        .collect();
+    let data_bytes = samples.len() * 2;
+
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"RIFF");
+    buf.extend_from_slice(&(36 + data_bytes as u32).to_le_bytes());
+    buf.extend_from_slice(b"WAVE");
+    buf.extend_from_slice(b"fmt ");
+    buf.extend_from_slice(&16u32.to_le_bytes());
+    buf.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    buf.extend_from_slice(&1u16.to_le_bytes()); // mono
+    buf.extend_from_slice(&sample_rate.to_le_bytes());
+    buf.extend_from_slice(&(sample_rate * 2).to_le_bytes()); // byte rate
+    buf.extend_from_slice(&2u16.to_le_bytes()); // block align
+    buf.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    buf.extend_from_slice(b"data");
+    buf.extend_from_slice(&(data_bytes as u32).to_le_bytes());
+    for s in samples {
+        buf.extend_from_slice(&s.to_le_bytes());
+    }
+    std::fs::write(path, buf).expect("write test WAV file");
+}
+
+/// Real end-to-end scenario for step 7.5's audio materials library: a
+/// real WAV file, really decoded by `teacher::materials::
+/// decode_to_mono_pcm`, really streamed over `MIC_PORT` by
+/// `teacher::materials::run_playback` to a real connected student — who
+/// receives it through the *same* always-on `run_mic_broadcast_receiver`
+/// task already wired for the live mic broadcast (step 7.5's other
+/// feature), needing no separate receive-side plumbing at all.
+#[test]
+fn playing_a_material_reaches_a_real_connected_student() {
+    use std::time::{Duration, Instant};
+    use tauri::Manager;
+    use tauri_app_lib::commands::{student_session, teacher_session};
+
+    // `upload_material` inserts a real library row (and `start_teacher_session` a class): keep both out of
+    // the developer's real database.
+    let _db = ScratchDb::new("materials");
+
+    let wav_path = std::env::temp_dir().join(format!("vocalis_e2e_material_{}.wav", std::process::id()));
+    write_test_wav(&wav_path);
+
+    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
+    let session_info = teacher_session::start_teacher_session(
+        teacher_app.handle().clone(),
+        teacher_state.clone(),
+        "E2E класс (материалы)".to_string(),
+    )
+    .expect("start_teacher_session should succeed");
+
+    let student_app = build_app(tauri::test::mock_builder());
+    let student_state = student_app.state::<student_session::StudentSessionState>();
+    student_session::connect_student_session(
+        student_app.handle().clone(),
+        student_state.clone(),
+        "127.0.0.1".to_string(),
+        lingua_common::CONTROL_PORT,
+        "E2E ученик (материалы)".to_string(),
+        session_info.pin.clone(),
+    )
+    .expect("connect_student_session should succeed against a real running control server");
+
+    let material = teacher_session::upload_material(teacher_state.clone(), wav_path.to_string_lossy().to_string(), "E2E материал".to_string())
+        .expect("upload_material should succeed with a real decodable WAV file");
+
+    let listed = teacher_session::list_materials(teacher_state.clone()).expect("list_materials should succeed");
+    assert!(listed.iter().any(|m| m.id == material.id && m.title == "E2E материал"));
+
+    // Empty student_ids -> "everyone currently connected".
+    let playback =
+        teacher_session::play_material(teacher_state.clone(), material.id, Vec::new()).expect("play_material should succeed");
+    assert_eq!(playback.target_count, 1, "the one real connected student");
+
+    // Give the real decode -> resample -> Opus encode -> UDP -> decrypt
+    // -> decode -> resample chain time to deliver real samples into the
+    // student's mix (the same `mix.broadcast` queue the mic-broadcast
+    // test reads, since materials playback reuses MIC_PORT).
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut queued_samples = 0usize;
+    while Instant::now() < deadline {
+        queued_samples = student_state.0.lock().unwrap().as_ref().map(|s| s.mix.lock().unwrap().broadcast.len()).unwrap_or(0);
+        if queued_samples > 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    teacher_session::stop_playback(teacher_state.clone());
+    teacher_session::stop_teacher_session(teacher_state);
+    student_session::disconnect_student_session(student_state);
+    std::fs::remove_file(&wav_path).ok();
+
+    assert!(queued_samples > 0, "expected real decoded material audio to reach the student's mix queue within 8s");
+    println!("[e2e] real material playback: {queued_samples} samples queued for the student's playback");
+}

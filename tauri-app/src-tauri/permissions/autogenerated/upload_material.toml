@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-upload-material"
+description = "Enables the upload_material command without any pre-configured scope."
+commands.allow = ["upload_material"]
+
+[[permission]]
+identifier = "deny-upload-material"
+description = "Denies the upload_material command without any pre-configured scope."
+commands.deny = ["upload_material"]
