@@ -24,12 +24,15 @@ export interface LiveStudent extends MockStudent {
 }
 
 /** Starts a real teacher session (step 2/7's `start_teacher_session`) on
- * mount and turns its `student-levels` events into the same shape
- * `useMockClassroom` produces, so `TeacherClassGrid` can render whichever is
- * actually available — real students when any are connected, the local mock
- * simulation otherwise. Real student IDs are UUIDs; `MockStudent.id` is a
- * number, so this assigns each newly-seen UUID a stable sequential number
- * (kept in a ref) rather than changing `StudentCard`'s prop type.
+ * mount and turns its `student-levels` events into `StudentCard`-shaped
+ * students — only ever real, connected ones (empty until someone connects).
+ * Real student IDs are UUIDs; `MockStudent.id` is a number, so this assigns
+ * each newly-seen UUID a stable sequential number (kept in a ref) rather than
+ * changing `StudentCard`'s prop type.
+ *
+ * Called once, by `TeacherConsole`, so the session lives as long as the
+ * console does — not per tab (the class grid used to own it, which stopped
+ * the session whenever the teacher switched to another tab).
  */
 export function useLiveClassroom(className: string) {
   const [pin, setPin] = useState<string | null>(null);
@@ -85,3 +88,6 @@ export function useLiveClassroom(className: string) {
 
   return { pin, error, realStudents };
 }
+
+/** What `useLiveClassroom` returns — the console hands this to the class grid. */
+export type LiveClassroom = ReturnType<typeof useLiveClassroom>;

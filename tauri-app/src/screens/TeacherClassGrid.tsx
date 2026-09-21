@@ -4,8 +4,10 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { StudentCard } from "../components/StudentCard";
 import { LessonTimer } from "../components/LessonTimer";
 import { Button } from "../components/ui/Button";
-import { useMockClassroom } from "../lib/mockClassroom";
-import { useLiveClassroom, type LiveStudent } from "../lib/useLiveClassroom";
+import { WaitingForStudents } from "../components/WaitingForStudents";
+import { PinChip } from "../components/PinDisplay";
+import type { MockStudent } from "../lib/mockClassroom";
+import type { LiveClassroom, LiveStudent } from "../lib/useLiveClassroom";
 import { useScreenDemo } from "../lib/useScreenDemo";
 import {
   startOwnScreenDemo,
@@ -27,31 +29,40 @@ import {
 
 interface Props {
   className: string;
+  /** The real teacher session, owned by `TeacherConsole` (so it survives tab switches). */
+  live: LiveClassroom;
   onEnd: () => void;
+}
+
+/** Seats always shown, taken or not. More than this many connected students just extend the grid. */
+const SEAT_COUNT = 12;
+
+function emptySeat(seat: number): MockStudent {
+  // Negative ids can't collide with the live students' sequential positive ones.
+  return { id: -seat, seat, name: "", presence: "empty", level: 0, screenLocked: false, micLocked: false };
 }
 
 /** Step 4 (grid/timer/lock UI) + step 7/7.5 (live levels, screen-demo
  * broadcast, mic broadcast, listen-in, private intercom, groups/pairs, audio
  * materials library) of the Tauri migration (vocalis_roadmap.md, section 8).
- * A real teacher
- * session (`useLiveClassroom`) starts on mount — its per-student mic levels
- * are genuine, reported over the network exactly the way the egui console's
- * own grid gets them
- * (`student::audio::run_level_telemetry` → `ClientToServer::AudioLevel` →
- * `Student::last_level`), not simulated. As long as the step-3 login screens
- * stay mocked, nothing ever *dials into* this real session on its own,
- * though — so `useMockClassroom`'s simulation is still what's shown until at
- * least one real student actually connects (see the step-7 report for how
- * that was tested: a second local process really connecting and reporting
- * real mic levels). "Показать классу" and "Говорить с классом" broadcast
- * for real to whoever's really connected at the time — same caveat. Lock
+ * Shows only what is real: the students actually connected to the teacher
+ * session (`live`, from `useLiveClassroom` — per-student mic levels are
+ * genuine, reported over the network the way the egui console's own grid gets
+ * them), padded with "Свободно" seats up to `SEAT_COUNT`. With nobody
+ * connected it shows the lesson PIN and a "waiting for students" banner
+ * instead of any simulated class. "Показать классу" and "Говорить с
+ * классом" broadcast for real to whoever's connected at the time. Lock
  * buttons are the one remaining local-only UI state — nothing sends
  * `LockScreen`/`SetMicLocked` over the network yet. */
-export function TeacherClassGrid({ className, onEnd }: Props) {
-  const mock = useMockClassroom(12);
-  const live = useLiveClassroom(className);
+export function TeacherClassGrid({ className, live, onEnd }: Props) {
   const usingLiveData = live.realStudents.length > 0;
-  const baseStudents = usingLiveData ? live.realStudents : mock.students;
+  // Real students first, renumbered 1..n so seat labels stay contiguous; then empty seats up to SEAT_COUNT.
+  const baseStudents: (LiveStudent | MockStudent)[] = [
+    ...live.realStudents.map((s, i) => ({ ...s, seat: i + 1 })),
+    ...Array.from({ length: Math.max(0, SEAT_COUNT - live.realStudents.length) }, (_, i) =>
+      emptySeat(live.realStudents.length + i + 1),
+    ),
+  ];
 
   // Step 7 part B: own-screen self-preview, same real capture/codec/JPEG
   // loop as the student console's demo view (`useScreenDemo`'s doc comment
@@ -297,10 +308,9 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
   }
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  // Lock buttons are local-only UI state regardless of data source — nothing
+  // Lock buttons are local-only UI state — nothing
   // sends `LockScreen`/`SetMicLocked` over the network yet, so overlaying
-  // them here (rather than threading through `useMockClassroom`, which real
-  // students don't come from) works for both at once.
+  // them here works for real students and empty seats alike.
   const [locks, setLocks] = useState<Map<number, { screenLocked: boolean; micLocked: boolean }>>(new Map());
   const students = baseStudents.map((s) => ({ ...s, ...locks.get(s.id) }));
 
@@ -338,15 +348,14 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
       >
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">{className}</h1>
-          <p className="text-sm text-[var(--color-text-muted)]">
+          <p className="mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-[var(--color-text-muted)]">
             {usingLiveData ? (
-              <span className="text-emerald-400">● живая сессия — {students.length} подключено</span>
+              <span className="text-emerald-400">● {live.realStudents.length} подключено</span>
             ) : (
-              <>
-                {students.filter((s) => s.presence !== "empty").length} / {students.length} мест занято (демо-режим)
-              </>
+              <span>○ Никто не подключён</span>
             )}
-            {live.pin && <span className="ml-3 font-mono tracking-wider text-[var(--color-text-muted)]">PIN: {live.pin}</span>}
+            {/* While nobody's connected the waiting banner below already shows the PIN, large. */}
+            {live.pin && usingLiveData && <PinChip pin={live.pin} />}
           </p>
           {live.error && <p className="text-xs text-rose-400">Реальная сессия недоступна: {live.error}</p>}
           {broadcastError && <p className="text-xs text-rose-400">Не удалось начать показ: {broadcastError}</p>}
@@ -359,24 +368,26 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
 
         <LessonTimer />
 
-        <Button variant="secondary" onClick={() => setPreviewOpen((v) => !v)}>
-          {previewOpen ? "Скрыть превью экрана" : "🖥 Превью своего экрана"}
-        </Button>
-        <Button variant="secondary" onClick={toggleBroadcast}>
-          {broadcasting ? "⏹ Остановить показ" : "📡 Показать классу"}
-        </Button>
-        <Button variant="secondary" onClick={toggleMicBroadcast}>
-          {micBroadcasting ? "🔇 Выключить микрофон" : "🎙 Говорить с классом"}
-        </Button>
-        <Button variant="secondary" onClick={() => setGroupPanelOpen((v) => !v)}>
-          {groupPanelOpen ? "Скрыть группы" : "👥 Группы"}
-        </Button>
-        <Button variant="secondary" onClick={() => setMaterialsPanelOpen((v) => !v)}>
-          {materialsPanelOpen ? "Скрыть материалы" : "🎵 Материалы"}
-        </Button>
-        <Button variant="secondary" onClick={onEnd}>
-          Завершить урок
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="secondary" onClick={() => setPreviewOpen((v) => !v)}>
+            {previewOpen ? "Скрыть превью экрана" : "🖥 Превью своего экрана"}
+          </Button>
+          <Button variant="secondary" onClick={toggleBroadcast}>
+            {broadcasting ? "⏹ Остановить показ" : "📡 Показать классу"}
+          </Button>
+          <Button variant="secondary" onClick={toggleMicBroadcast}>
+            {micBroadcasting ? "🔇 Выключить микрофон" : "🎙 Говорить с классом"}
+          </Button>
+          <Button variant="secondary" onClick={() => setGroupPanelOpen((v) => !v)}>
+            {groupPanelOpen ? "Скрыть группы" : "👥 Группы"}
+          </Button>
+          <Button variant="secondary" onClick={() => setMaterialsPanelOpen((v) => !v)}>
+            {materialsPanelOpen ? "Скрыть материалы" : "🎵 Материалы"}
+          </Button>
+          <Button variant="secondary" onClick={onEnd}>
+            Завершить урок
+          </Button>
+        </div>
       </motion.header>
 
       <AnimatePresence>
@@ -508,6 +519,10 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
         )}
       </AnimatePresence>
 
+      <AnimatePresence initial={false}>
+        {!usingLiveData && <WaitingForStudents key="waiting" pin={live.pin} error={live.error} />}
+      </AnimatePresence>
+
       <motion.div
         className="relative z-10 grid flex-1 auto-rows-min grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4 overflow-y-auto pb-4"
         initial="hidden"
@@ -515,10 +530,10 @@ export function TeacherClassGrid({ className, onEnd }: Props) {
         variants={{ visible: { transition: { staggerChildren: 0.04 } } }}
       >
         {students.map((s) => {
-          // Only real students carry a `realId` (see `LiveStudent`) — mock
-          // ones don't, so `listening`/`onToggleListen` stay `undefined` and
+          // Only real students carry a `realId` (see `LiveStudent`) — empty
+          // seats don't, so `listening`/`onToggleListen` stay `undefined` and
           // `StudentCard` simply doesn't render the button for them.
-          const realId = usingLiveData ? (s as LiveStudent).realId : undefined;
+          const realId = "realId" in s ? s.realId : undefined;
           return (
             <StudentCard
               key={s.id}

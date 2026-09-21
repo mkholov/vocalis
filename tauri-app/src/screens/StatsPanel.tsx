@@ -40,10 +40,10 @@ export function StatsPanel() {
           <motion.div
             key={tile.label}
             variants={{ hidden: { opacity: 0, y: 10 }, visible: { opacity: 1, y: 0 } }}
-            className="min-w-[150px] flex-1 rounded-xl border border-[var(--color-border-subtle)] bg-black/10 px-4 py-3"
+            className="flex min-w-[150px] flex-1 flex-col rounded-xl border border-[var(--color-border-subtle)] bg-black/10 px-4 py-3"
           >
             <div className="text-xs text-[var(--color-text-muted)]">{tile.label}</div>
-            <div className="mt-1 text-2xl font-semibold">{tile.value}</div>
+            <div className="mt-auto pt-1 text-2xl font-semibold">{tile.value}</div>
           </motion.div>
         ))}
       </motion.div>
@@ -60,13 +60,13 @@ export function StatsPanel() {
             <motion.li
               key={s.name}
               variants={{ hidden: { opacity: 0, x: -8 }, visible: { opacity: 1, x: 0 } }}
-              className="flex items-center justify-between py-3"
+              className="grid grid-cols-[1fr_8rem_3.5rem] items-center gap-4 py-3"
             >
-              <span>{s.name}</span>
-              <span className="text-sm text-[var(--color-text-muted)]">
+              <span className="truncate">{s.name}</span>
+              <span className="text-right text-sm tabular-nums text-[var(--color-text-muted)]">
                 {s.done}/{s.total} заданий
               </span>
-              <span className="w-12 text-right font-mono font-medium tabular-nums">{s.score}%</span>
+              <span className="text-right font-mono font-medium tabular-nums">{s.score}%</span>
             </motion.li>
           ))}
         </motion.ul>

@@ -35,7 +35,7 @@ export function SettingsPanel() {
   }, []);
 
   return (
-    <div className="mx-auto flex h-full max-w-2xl flex-col gap-6 overflow-y-auto p-8">
+    <div className="mx-auto flex h-full max-w-3xl flex-col gap-6 overflow-y-auto p-8">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Настройки</h1>
         <p className="text-sm text-[var(--color-text-muted)]">

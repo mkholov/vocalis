@@ -5,6 +5,9 @@ import { AssignmentsPanel } from "./AssignmentsPanel";
 import { StatsPanel } from "./StatsPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { ChatDrawer } from "../components/ChatDrawer";
+import { ToastStack, useToasts } from "../components/Toast";
+import { useLiveClassroom } from "../lib/useLiveClassroom";
+import { useClassroomToasts } from "../lib/useClassroomToasts";
 
 interface Props {
   className: string;
@@ -30,6 +33,13 @@ export function TeacherConsole({ className, onEnd }: Props) {
   const [tab, setTab] = useState<Tab>("class");
   const [chatOpen, setChatOpen] = useState(false);
 
+  // The real teacher session lives here, not in the class grid: the grid only mounts on the "Класс" tab,
+  // so a session owned by it would be stopped (PIN lost, students dropped) on every switch to another
+  // tab — and a raised hand couldn't toast on those tabs.
+  const live = useLiveClassroom(className);
+  const toasts = useToasts();
+  useClassroomToasts(live.realStudents, toasts.push);
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[var(--color-app)]">
       <nav className="flex w-20 shrink-0 flex-col items-center gap-1 border-r border-[var(--color-border-subtle)] bg-black/20 py-6">
@@ -40,7 +50,7 @@ export function TeacherConsole({ className, onEnd }: Props) {
             key={t.id}
             type="button"
             onClick={() => setTab(t.id)}
-            className="relative flex w-16 flex-col items-center gap-1 rounded-xl py-2.5 text-xs transition-colors"
+            className="relative flex w-[4.5rem] flex-col items-center gap-1 rounded-xl py-2.5 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-violet-400"
           >
             {tab === t.id && (
               <motion.div
@@ -60,7 +70,7 @@ export function TeacherConsole({ className, onEnd }: Props) {
           <button
             type="button"
             onClick={() => setChatOpen(true)}
-            className="flex w-16 flex-col items-center gap-1 rounded-xl py-2.5 text-xs text-[var(--color-text-muted)] transition-colors hover:bg-white/5 hover:text-[var(--color-text-primary)]"
+            className="flex w-[4.5rem] flex-col items-center gap-1 rounded-xl py-2.5 text-xs text-[var(--color-text-muted)] outline-none transition-colors hover:bg-white/5 hover:text-[var(--color-text-primary)] focus-visible:ring-2 focus-visible:ring-violet-400"
           >
             <span className="text-lg leading-none">💬</span>
             <span>Чат</span>
@@ -78,7 +88,7 @@ export function TeacherConsole({ className, onEnd }: Props) {
             transition={{ duration: 0.15 }}
             className="h-full w-full"
           >
-            {tab === "class" && <TeacherClassGrid className={className} onEnd={onEnd} />}
+            {tab === "class" && <TeacherClassGrid className={className} live={live} onEnd={onEnd} />}
             {tab === "assignments" && <AssignmentsPanel />}
             {tab === "stats" && <StatsPanel />}
             {tab === "settings" && <SettingsPanel />}
@@ -87,6 +97,7 @@ export function TeacherConsole({ className, onEnd }: Props) {
       </div>
 
       <ChatDrawer open={chatOpen} onClose={() => setChatOpen(false)} />
+      <ToastStack items={toasts.items} onDismiss={toasts.dismiss} />
     </div>
   );
 }
