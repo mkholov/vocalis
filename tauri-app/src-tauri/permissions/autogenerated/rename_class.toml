@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-rename-class"
+description = "Enables the rename_class command without any pre-configured scope."
+commands.allow = ["rename_class"]
+
+[[permission]]
+identifier = "deny-rename-class"
+description = "Denies the rename_class command without any pre-configured scope."
+commands.deny = ["rename_class"]

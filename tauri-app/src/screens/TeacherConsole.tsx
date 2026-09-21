@@ -7,6 +7,8 @@ import { AssignmentsPanel } from "./AssignmentsPanel";
 import { StatsPanel } from "./StatsPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { emptyDraft, type AssignmentDraft, type AssignmentTemplate } from "../lib/assignments";
+import { Onboarding } from "../components/Onboarding";
+import { hasSeenOnboarding, markOnboardingSeen } from "../lib/onboarding";
 import { ChatDrawer } from "../components/ChatDrawer";
 import { ToastStack, useToasts } from "../components/Toast";
 import { useLiveClassroom } from "../lib/useLiveClassroom";
@@ -35,6 +37,12 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
 export function TeacherConsole({ className, onEnd }: Props) {
   const [tab, setTab] = useState<Tab>("class");
   const [chatOpen, setChatOpen] = useState(false);
+  // First-run walkthrough: opens by itself the first time the console is entered, and from Settings on demand.
+  const [onboardingOpen, setOnboardingOpen] = useState(() => !hasSeenOnboarding());
+  const closeOnboarding = () => {
+    markOnboardingSeen();
+    setOnboardingOpen(false);
+  };
 
   // The real teacher session lives here, not in the class grid: the grid only mounts on the "Класс" tab,
   // so a session owned by it would be stopped (PIN lost, students dropped) on every switch to another
@@ -106,12 +114,13 @@ export function TeacherConsole({ className, onEnd }: Props) {
               />
             )}
             {tab === "stats" && <StatsPanel />}
-            {tab === "settings" && <SettingsPanel />}
+            {tab === "settings" && <SettingsPanel onShowOnboarding={() => setOnboardingOpen(true)} />}
           </motion.div>
         </AnimatePresence>
       </div>
 
       <ChatDrawer open={chatOpen} onClose={() => setChatOpen(false)} />
+      <Onboarding open={onboardingOpen} onClose={closeOnboarding} />
       <ToastStack items={toasts.items} onDismiss={toasts.dismiss} />
     </div>
   );

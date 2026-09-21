@@ -138,6 +138,98 @@ fn creating_a_class_puts_a_real_row_in_the_list_and_a_lesson_reuses_it() {
     assert_eq!(after[0].id, id);
 }
 
+/// Class management on the picker: rename and delete against real rows. The point of the delete half is
+/// the cascade — a class owns lessons, whose students own assignments and test results, plus a connection
+/// log and a roster — and everything of class A must go while everything of class B stays. Seeds every one
+/// of those tables through `vocalis::teacher::db`'s own insert functions.
+#[test]
+fn renaming_and_deleting_a_class_follows_the_real_rows_and_cascades() {
+    use vocalis::teacher::db;
+    let _db = ScratchDb::new("class_manage");
+    let count = |sql: &str| -> i64 {
+        db::open().expect("open the scratch db").query_row(sql, [], |r| r.get::<_, i64>(0)).expect("count query")
+    };
+
+    let a = invoke("create_class", serde_json::json!({"name": "E2E 9А"})).expect("create A");
+    let b = invoke("create_class", serde_json::json!({"name": "E2E 10Б"})).expect("create B");
+    let (a_id, b_id) = (a["id"].as_i64().unwrap(), b["id"].as_i64().unwrap());
+    assert_eq!((a["lessons"].as_i64(), a["roster"].as_i64()), (Some(0), Some(0)), "a new class has no history");
+
+    // Full history for both classes: lesson → student → assignment → test result, connection log, roster.
+    {
+        let conn = db::open().unwrap();
+        for (class_id, name, students) in [(a_id, "E2E 9А", 2usize), (b_id, "E2E 10Б", 1usize)] {
+            let lesson = db::insert_lesson(&conn, class_id, name).unwrap();
+            db::insert_connection_log(&conn, lesson, "Иванов", "127.0.0.1", "connected").unwrap();
+            for i in 0..students {
+                let student = db::insert_student(&conn, lesson, &format!("Ученик {i}"), i + 1).unwrap();
+                let assignment =
+                    db::insert_assignment(&conn, student, "Тест", lingua_common::protocol::AssignmentKind::Test).unwrap();
+                db::insert_test_result(&conn, assignment, 3, 4).unwrap();
+                db::insert_roster_student(&conn, class_id, name, &format!("Ученик {i}")).unwrap();
+            }
+        }
+    }
+    let listed = invoke("list_classes", serde_json::Value::Null).unwrap();
+    let by_id = |id: i64| listed.as_array().unwrap().iter().find(|c| c["id"] == id).cloned().expect("class listed");
+    assert_eq!((by_id(a_id)["lessons"].as_i64(), by_id(a_id)["roster"].as_i64()), (Some(1), Some(2)));
+    assert_eq!((by_id(b_id)["lessons"].as_i64(), by_id(b_id)["roster"].as_i64()), (Some(1), Some(1)));
+
+    // A running lesson pins its class: neither rename nor delete may pull it out from under the session.
+    let app = build_app(mock_builder());
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
+    invoke_in(&webview, "start_teacher_session", serde_json::json!({"className": "E2E 9А"})).expect("start a lesson");
+    let err = invoke_in(&webview, "rename_class", serde_json::json!({"id": a_id, "name": "Другое"})).expect_err("rename during a lesson");
+    assert!(err.as_str().unwrap().contains("идёт"), "got: {err}");
+    let err = invoke_in(&webview, "delete_class", serde_json::json!({"id": a_id})).expect_err("delete during a lesson");
+    assert!(err.as_str().unwrap().contains("идёт"), "got: {err}");
+    assert_eq!(count("SELECT COUNT(*) FROM classes"), 2, "the refused delete must not have touched anything");
+    invoke_in(&webview, "stop_teacher_session", serde_json::Value::Null).expect("stop the lesson");
+    // (Starting the lesson added its own lesson row for A.)
+    assert_eq!(count(&format!("SELECT COUNT(*) FROM lessons WHERE class_id = {a_id}")), 2);
+
+    // Rename: trimmed, follows into the denormalised name copies, refuses bad names.
+    let renamed = invoke("rename_class", serde_json::json!({"id": a_id, "name": "  E2E 9А (новый)  "})).expect("rename");
+    assert_eq!(renamed["name"], "E2E 9А (новый)");
+    assert_eq!(renamed["id"], a_id);
+    let name_of = |sql: String| -> String { db::open().unwrap().query_row(&sql, [], |r| r.get::<_, String>(0)).unwrap() };
+    assert_eq!(name_of(format!("SELECT name FROM classes WHERE id = {a_id}")), "E2E 9А (новый)");
+    assert_eq!(name_of(format!("SELECT DISTINCT class_name FROM lessons WHERE class_id = {a_id}")), "E2E 9А (новый)");
+    assert_eq!(name_of(format!("SELECT DISTINCT class_name FROM roster WHERE class_id = {a_id}")), "E2E 9А (новый)");
+    assert_eq!(name_of(format!("SELECT name FROM classes WHERE id = {b_id}")), "E2E 10Б", "B is untouched");
+    assert_eq!(
+        invoke("rename_class", serde_json::json!({"id": a_id, "name": "E2E 9А (новый)"})).expect("same name is a no-op")["name"],
+        "E2E 9А (новый)"
+    );
+    assert_eq!(invoke("rename_class", serde_json::json!({"id": a_id, "name": "  "})).unwrap_err(), "Введите название класса");
+    let err = invoke("rename_class", serde_json::json!({"id": a_id, "name": "E2E 10Б"})).expect_err("name taken by B");
+    assert!(err.as_str().unwrap().contains("уже есть"), "got: {err}");
+    let err = invoke("rename_class", serde_json::json!({"id": 999_999, "name": "Никто"})).expect_err("no such class");
+    assert!(err.as_str().unwrap().contains("не найден"), "got: {err}");
+
+    // Delete A: every row that belonged to it is gone, every row of B is still there.
+    // Before: A has 2 lessons (one seeded, one from the lesson started above), 2 students; B has 1 and 1.
+    for (table, rows) in [("students", 3), ("assignments", 3), ("test_results", 3), ("connection_log", 2), ("roster", 3), ("lessons", 3)] {
+        assert_eq!(count(&format!("SELECT COUNT(*) FROM {table}")), rows, "seeded rows in {table}");
+    }
+    invoke("delete_class", serde_json::json!({"id": a_id})).expect("delete A");
+    assert_eq!(count("SELECT COUNT(*) FROM classes"), 1);
+    assert_eq!(count(&format!("SELECT COUNT(*) FROM classes WHERE id = {a_id}")), 0);
+    // After: only B's single chain is left, in every table.
+    for table in ["students", "assignments", "test_results", "connection_log", "roster", "lessons"] {
+        assert_eq!(count(&format!("SELECT COUNT(*) FROM {table}")), 1, "only B's row should remain in {table}");
+    }
+    assert_eq!(count(&format!("SELECT COUNT(*) FROM lessons WHERE class_id = {b_id}")), 1);
+    assert_eq!(count(&format!("SELECT COUNT(*) FROM roster WHERE class_id = {b_id}")), 1);
+    let left = invoke("list_classes", serde_json::Value::Null).unwrap();
+    assert_eq!(left.as_array().unwrap().len(), 1);
+    assert_eq!(left[0]["name"], "E2E 10Б");
+    assert_eq!((left[0]["lessons"].as_i64(), left[0]["roster"].as_i64()), (Some(1), Some(1)));
+
+    let err = invoke("delete_class", serde_json::json!({"id": a_id})).expect_err("already deleted");
+    assert!(err.as_str().unwrap().contains("не найден"), "got: {err}");
+}
+
 #[test]
 fn list_audio_devices_matches_real_cpal_enumeration() {
     let expected_inputs = vocalis::audio_devices::list_input_device_names();
@@ -233,6 +325,43 @@ fn student_mic_meter_start_stop_does_not_panic() {
     let _ = invoke("start_student_mic_meter", serde_json::Value::Null);
     invoke("stop_student_mic_meter", serde_json::Value::Null).expect("stop should always succeed");
     invoke("stop_student_mic_meter", serde_json::Value::Null).expect("stop should be idempotent");
+}
+
+/// The Settings screen's "Проверить микрофон" passes the selected input's name to the meter. With a real
+/// device from the real enumeration this must open *that* capture and emit real `mic-level` events; a name
+/// that doesn't exist falls back to the default input rather than failing. A machine with no input device
+/// (a CI runner) can't do either, so — like the test above — success isn't asserted there, only "no panic".
+#[test]
+fn mic_meter_opens_a_named_input_and_reports_real_levels() {
+    use std::sync::mpsc;
+    use tauri::Listener;
+
+    let app = build_app(mock_builder());
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
+    let (tx, rx) = mpsc::channel::<serde_json::Value>();
+    app.listen("mic-level", move |event| {
+        if let Ok(payload) = serde_json::from_str(event.payload()) {
+            let _ = tx.send(payload);
+        }
+    });
+
+    let inputs = vocalis::audio_devices::list_input_device_names();
+    if let Some(name) = inputs.first() {
+        match invoke_in(&webview, "start_student_mic_meter", serde_json::json!({"deviceName": name})) {
+            Ok(_) => {
+                let level = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("a real mic-level event within 5s");
+                assert!(level["level"].as_i64().is_some(), "payload should carry an integer level, got {level}");
+            }
+            Err(e) => eprintln!("could not open input {name:?} here ({e}) — environment, not asserted"),
+        }
+        invoke_in(&webview, "stop_student_mic_meter", serde_json::Value::Null).expect("stop");
+    } else {
+        eprintln!("no input devices on this machine — the named-input part is skipped");
+    }
+
+    // A name that isn't an input at all: falls back to the default (or fails cleanly with no device).
+    let _ = invoke_in(&webview, "start_student_mic_meter", serde_json::json!({"deviceName": "нет такого микрофона"}));
+    invoke_in(&webview, "stop_student_mic_meter", serde_json::Value::Null).expect("stop is always safe");
 }
 
 /// Uses `app.listen` (via `tauri::Listener`) to capture a real emitted

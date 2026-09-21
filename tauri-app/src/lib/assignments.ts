@@ -1,3 +1,5 @@
+import { plural } from "./plural";
+
 // Assignment shapes and the pure logic around them — no React, no IPC.
 //
 // Two layers on purpose:
@@ -171,12 +173,6 @@ export function draftToContent(d: AssignmentDraft): AssignmentContent {
   }
   return { kind: "reading", text: d.readingText.trim() };
 }
-
-const plural = (n: number, one: string, few: string, many: string) => {
-  const m10 = n % 10;
-  const m100 = n % 100;
-  return `${n} ${m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many}`;
-};
 
 /** One-line description for the library list. */
 export function summarize(c: AssignmentContent): string {

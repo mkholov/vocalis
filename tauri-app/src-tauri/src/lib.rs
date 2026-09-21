@@ -26,6 +26,8 @@ pub fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::App<R>
         .invoke_handler(tauri::generate_handler![
             commands::db::list_classes,
             commands::db::create_class,
+            commands::db::rename_class,
+            commands::db::delete_class,
             commands::audio::list_audio_devices,
             commands::network::discover_teachers,
             commands::video::capture_screen_preview,

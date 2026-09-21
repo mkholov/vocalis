@@ -50,8 +50,15 @@ pub struct MicLevelDto {
     pub level: i32,
 }
 
+/// `device_name`: which input to open (the Settings screen's "Проверить микрофон" passes the selected
+/// one); `None`, or a name that no longer exists, means the system default — that fallback is
+/// `audio_devices::resolve_input_device`'s, not this command's.
 #[tauri::command]
-pub fn start_student_mic_meter<R: tauri::Runtime>(app: AppHandle<R>, meter: State<MicMeterState>) -> Result<(), String> {
+pub fn start_student_mic_meter<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    meter: State<MicMeterState>,
+    device_name: Option<String>,
+) -> Result<(), String> {
     let mut guard = meter.0.lock().unwrap();
     if guard.is_some() {
         return Ok(());
@@ -66,7 +73,7 @@ pub fn start_student_mic_meter<R: tauri::Runtime>(app: AppHandle<R>, meter: Stat
 
     let thread = std::thread::spawn(move || {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let capture = match start_mic_capture(tx, &STUDENT_MIC_LEVEL_MILLIS, None) {
+        let capture = match start_mic_capture(tx, &STUDENT_MIC_LEVEL_MILLIS, device_name.as_deref()) {
             Ok((capture, _sample_rate)) => capture,
             Err(e) => {
                 let _ = ready_tx.send(Err(e.to_string()));

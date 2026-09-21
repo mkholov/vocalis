@@ -126,6 +126,12 @@ impl Drop for TeacherSession {
 #[derive(Default)]
 pub struct TeacherSessionState(pub Mutex<Option<TeacherSession>>);
 
+/// Name of the class whose lesson is running right now, if any. Class management (`commands/db.rs`)
+/// uses it to refuse renaming or deleting a class out from under a live session.
+pub fn active_class_name(session: &TeacherSessionState) -> Option<String> {
+    session.0.lock().unwrap().as_ref().map(|s| s.class_name.clone())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeacherSessionInfo {

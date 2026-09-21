@@ -8,6 +8,10 @@ import { invoke } from "@tauri-apps/api/core";
 export interface ClassDto {
   id: number;
   name: string;
+  /** Lessons held for this class so far — what deleting it would erase with it. */
+  lessons: number;
+  /** Names on the class's roster. */
+  roster: number;
 }
 
 export function listClasses(): Promise<ClassDto[]> {
@@ -17,6 +21,18 @@ export function listClasses(): Promise<ClassDto[]> {
 /** Real `db::insert_class`. Rejects with a ready-to-show Russian message (empty or already-taken name). */
 export function createClass(name: string): Promise<ClassDto> {
   return invoke<ClassDto>("create_class", { name });
+}
+
+/** Renames a class (`commands/db.rs`). Rejects with a ready-to-show message: empty or taken name, a lesson
+ * of that class running, or the class already gone. */
+export function renameClass(id: number, name: string): Promise<ClassDto> {
+  return invoke<ClassDto>("rename_class", { id, name });
+}
+
+/** Deletes a class *and its history* (lessons, students, results, roster) in one transaction. The UI asks
+ * for confirmation first. Rejects with a ready-to-show message, like `renameClass`. */
+export function deleteClass(id: number): Promise<void> {
+  return invoke<void>("delete_class", { id });
 }
 
 export interface DiscoveredTeacherDto {
@@ -67,8 +83,9 @@ export interface StudentLevelDto {
   group: number | null;
 }
 
-export function startStudentMicMeter(): Promise<void> {
-  return invoke("start_student_mic_meter");
+/** `deviceName`: which input to open; omitted (or a name that no longer exists) means the system default. */
+export function startStudentMicMeter(deviceName?: string): Promise<void> {
+  return invoke("start_student_mic_meter", { deviceName });
 }
 
 export function stopStudentMicMeter(): Promise<void> {

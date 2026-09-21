@@ -7,6 +7,8 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "list_classes",
             "create_class",
+            "rename_class",
+            "delete_class",
             "list_audio_devices",
             "discover_teachers",
             "capture_screen_preview",

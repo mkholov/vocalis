@@ -56,6 +56,9 @@ base64 = "0.22"
 # — acceptable for this bridge step, worth revisiting if it noticeably slows
 # down CI or bundle size later.
 vocalis = { path = "../../app" }
+# Same crate/version `vocalis` already links (feature `bundled` comes from there) — named here only so
+# `commands/db.rs` can take a `&rusqlite::Connection` for the class rename/delete statements.
+rusqlite = "0.40"
 lingua-common = { path = "../../common" }
 
 [dev-dependencies]

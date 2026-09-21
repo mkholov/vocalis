@@ -4,7 +4,8 @@ import { ArrowLeft, Plus } from "lucide-react";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { TextField } from "../components/ui/TextField";
-import { createClass, listClasses, type ClassDto } from "../lib/commands";
+import { createClass, deleteClass, listClasses, renameClass, type ClassDto } from "../lib/commands";
+import { ClassRow } from "../components/ClassRow";
 
 interface Props {
   onBack: () => void;
@@ -74,6 +75,28 @@ export function TeacherFlow({ onBack, onStart }: Props) {
       })
       .catch((err) => setNewClassError(String(err)))
       .finally(() => setCreatingClass(false));
+  }
+
+  /** Rejections carry a ready-to-show message; the row shows it, so it is passed on as a plain string. */
+  async function handleRename(id: number, name: string) {
+    try {
+      const updated = await renameClass(id, name);
+      setClasses((prev) => prev?.map((c) => (c.id === id ? updated : c)) ?? prev);
+    } catch (err) {
+      throw String(err);
+    }
+  }
+
+  async function handleDelete(id: number) {
+    try {
+      await deleteClass(id);
+    } catch (err) {
+      throw String(err);
+    }
+    const remaining = (classes ?? []).filter((c) => c.id !== id);
+    setClasses(remaining);
+    // Deleting the chosen class must not leave "Начать урок" pointing at nothing.
+    if (selectedClassId === id) setSelectedClassId(remaining[0]?.id ?? null);
   }
 
   function startLesson() {
@@ -165,18 +188,13 @@ export function TeacherFlow({ onBack, onStart }: Props) {
               >
                 {classes.map((c) => (
                   <motion.li key={c.id} variants={{ hidden: { opacity: 0, y: 8 }, visible: { opacity: 1, y: 0 } }}>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedClassId(c.id)}
-                      className={
-                        "w-full rounded-xl border px-4 py-3 text-left transition-colors " +
-                        (selectedClassId === c.id
-                          ? "border-violet-400 bg-violet-400/10 text-[var(--color-text-primary)]"
-                          : "border-[var(--color-border-subtle)] text-[var(--color-text-muted)] hover:bg-overlay")
-                      }
-                    >
-                      {c.name}
-                    </button>
+                    <ClassRow
+                      cls={c}
+                      selected={selectedClassId === c.id}
+                      onSelect={() => setSelectedClassId(c.id)}
+                      onRename={(name) => handleRename(c.id, name)}
+                      onDelete={() => handleDelete(c.id)}
+                    />
                   </motion.li>
                 ))}
               </motion.ul>

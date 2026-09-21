@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-delete-class"
+description = "Enables the delete_class command without any pre-configured scope."
+commands.allow = ["delete_class"]
+
+[[permission]]
+identifier = "deny-delete-class"
+description = "Denies the delete_class command without any pre-configured scope."
+commands.deny = ["delete_class"]

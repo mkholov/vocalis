@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { Moon, Sun } from "lucide-react";
+import { Moon, Presentation, Sun } from "lucide-react";
+import { Button } from "../components/ui/Button";
+import { MicTest } from "../components/MicTest";
 import { Panel } from "../components/ui/Panel";
 import { listAudioDevices, type AudioDevicesDto } from "../lib/commands";
 import { setTheme, useTheme, type Theme } from "../lib/theme";
@@ -27,7 +29,7 @@ const selectClasses =
  * Theme/video-quality/language are working local UI state with no
  * persistence yet, per the roadmap ("остальное можно как рабочий UI без
  * сохранения") — no `settings.json`-equivalent exists for this stack. */
-export function SettingsPanel() {
+export function SettingsPanel({ onShowOnboarding }: { onShowOnboarding: () => void }) {
   const [devices, setDevices] = useState<AudioDevicesDto | null>(null);
   const [devicesError, setDevicesError] = useState<string | undefined>();
   const [micDevice, setMicDevice] = useState("system");
@@ -80,6 +82,15 @@ export function SettingsPanel() {
       </Panel>
 
       <Panel>
+        <h2 className="mb-1 text-sm font-medium text-[var(--color-text-muted)]">Знакомство с Vocalis</h2>
+        <p className="mb-4 text-sm text-[var(--color-text-muted)]">Короткий обзор из 5 шагов — тот же, что показывается при первом запуске.</p>
+        <Button type="button" variant="secondary" className="px-3.5 py-2 text-sm" onClick={onShowOnboarding}>
+          <Presentation size={16} />
+          Показать введение ещё раз
+        </Button>
+      </Panel>
+
+      <Panel>
         <h2 className="mb-4 text-sm font-medium text-[var(--color-text-muted)]">Аудиоустройства</h2>
 
         {devicesError && (
@@ -104,6 +115,10 @@ export function SettingsPanel() {
                   </option>
                 ))}
               </select>
+              <MicTest deviceName={micDevice === "system" ? undefined : micDevice} />
+              <p className="mt-2 text-xs text-[var(--color-text-muted)]">
+                Проверка идёт на выбранном микрофоне. В самом уроке пока всегда работает микрофон по умолчанию — выбор здесь ещё не подключён к трансляции.
+              </p>
             </div>
             <div>
               <label className="mb-1.5 block text-sm font-medium text-[var(--color-text-muted)]">Устройство вывода</label>
