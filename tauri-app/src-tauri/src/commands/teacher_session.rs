@@ -186,7 +186,19 @@ pub fn start_teacher_session<R: tauri::Runtime>(
     }
 
     let conn = db::open().map_err(|e| e.to_string())?;
-    let class_id = db::insert_class(&conn, &class_name).map_err(|e| e.to_string())?;
+    // The class picker (or the "Создать класс" form on it) has already put the class in the DB, so
+    // starting a lesson for it must reuse that row — inserting again would leave a duplicate in the
+    // list on every session start. Only a name that isn't there yet (e.g. this command called
+    // directly) gets a new row.
+    let existing_class_id = db::list_classes(&conn)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|c| c.name == class_name)
+        .map(|c| c.id);
+    let class_id = match existing_class_id {
+        Some(id) => id,
+        None => db::insert_class(&conn, &class_name).map_err(|e| e.to_string())?,
+    };
     let lesson_row_id = db::insert_lesson(&conn, class_id, &class_name).map_err(|e| e.to_string())?;
     let history = db::load_history_summary(&conn, class_id).unwrap_or_default();
     // Real, persisted library (step 7.5) — loaded the same way `history`

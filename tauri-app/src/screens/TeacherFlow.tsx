@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { TextField } from "../components/ui/TextField";
-import { listClasses, type ClassDto } from "../lib/commands";
+import { createClass, listClasses, type ClassDto } from "../lib/commands";
 
 interface Props {
   onBack: () => void;
@@ -30,6 +30,10 @@ export function TeacherFlow({ onBack, onStart }: Props) {
   const [classesError, setClassesError] = useState<string | undefined>();
   const [selectedClassId, setSelectedClassId] = useState<number | null>(null);
 
+  const [newClassName, setNewClassName] = useState("");
+  const [newClassError, setNewClassError] = useState<string | undefined>();
+  const [creatingClass, setCreatingClass] = useState(false);
+
   useEffect(() => {
     if (step !== "classes" || classes !== null) return;
     listClasses()
@@ -48,6 +52,27 @@ export function TeacherFlow({ onBack, onStart }: Props) {
     }
     setPasswordError(undefined);
     setStep("classes");
+  }
+
+  /** Real `create_class` (the same `db::insert_class` the egui class picker uses); the new class is
+   * appended to the list and selected right away, no reload of the list needed. */
+  function submitNewClass(e: React.FormEvent) {
+    e.preventDefault();
+    if (creatingClass) return;
+    if (newClassName.trim().length === 0) {
+      setNewClassError("Введите название класса");
+      return;
+    }
+    setCreatingClass(true);
+    createClass(newClassName)
+      .then((created) => {
+        setClasses((prev) => [...(prev ?? []), created]);
+        setSelectedClassId(created.id);
+        setNewClassName("");
+        setNewClassError(undefined);
+      })
+      .catch((err) => setNewClassError(String(err)))
+      .finally(() => setCreatingClass(false));
   }
 
   function startLesson() {
@@ -125,7 +150,7 @@ export function TeacherFlow({ onBack, onStart }: Props) {
 
             {classes?.length === 0 && (
               <p className="py-4 text-sm text-[var(--color-text-muted)]">
-                Классов пока нет — этот список приходит из настоящей БД (`list_classes`), просто она ещё пуста.
+                Классов пока нет — создайте первый ниже.
               </p>
             )}
 
@@ -153,6 +178,26 @@ export function TeacherFlow({ onBack, onStart }: Props) {
                   </motion.li>
                 ))}
               </motion.ul>
+            )}
+
+            {classes && (
+              <form className="mt-4 flex items-start gap-2" onSubmit={submitNewClass}>
+                <div className="flex-1">
+                  <TextField
+                    label="Новый класс"
+                    value={newClassName}
+                    onChange={(e) => {
+                      setNewClassName(e.target.value);
+                      if (newClassError) setNewClassError(undefined);
+                    }}
+                    error={newClassError}
+                    placeholder="например, 9А английский"
+                  />
+                </div>
+                <Button type="submit" variant="secondary" className="mt-[1.625rem]" disabled={creatingClass}>
+                  ➕ Создать
+                </Button>
+              </form>
             )}
 
             <div className="mt-6 flex gap-3">

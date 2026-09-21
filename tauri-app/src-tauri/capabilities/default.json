@@ -8,6 +8,7 @@
     "opener:default",
     "dialog:default",
     "allow-list-classes",
+    "allow-create-class",
     "allow-list-audio-devices",
     "allow-discover-teachers",
     "allow-capture-screen-preview",

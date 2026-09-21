@@ -25,6 +25,16 @@ use tauri::ipc::{CallbackFn, InvokeBody};
 fn invoke(cmd: &str, args: serde_json::Value) -> Result<serde_json::Value, serde_json::Value> {
     let app = build_app(mock_builder());
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
+    invoke_in(&webview, cmd, args)
+}
+
+/// Like `invoke`, but on an app the caller keeps: needed when several calls must share one app's managed
+/// state (a session started by one call has to be stopped by another call on the *same* app).
+fn invoke_in(
+    webview: &tauri::WebviewWindow<tauri::test::MockRuntime>,
+    cmd: &str,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, serde_json::Value> {
     let body = match args {
         serde_json::Value::Null => InvokeBody::default(),
         other => InvokeBody::Json(other),
@@ -47,7 +57,7 @@ fn invoke(cmd: &str, args: serde_json::Value) -> Result<serde_json::Value, serde
         headers: Default::default(),
         invoke_key: tauri::test::INVOKE_KEY.to_string(),
     };
-    tauri::test::get_ipc_response(&webview, request).map(|b| b.deserialize::<serde_json::Value>().unwrap())
+    tauri::test::get_ipc_response(webview, request).map(|b| b.deserialize::<serde_json::Value>().unwrap())
 }
 
 #[test]
@@ -70,6 +80,62 @@ fn list_classes_returns_real_db_rows() {
         assert_eq!(row["id"], class.id);
         assert_eq!(row["name"], class.name);
     }
+}
+
+/// The "Создать класс" form on the class picker: `create_class` writes a real row (through the same
+/// `db::insert_class` egui uses), `list_classes` sees it immediately, bad names are refused with the
+/// egui texts, and starting a lesson for the created class reuses it instead of inserting a second row.
+#[test]
+fn creating_a_class_puts_a_real_row_in_the_list_and_a_lesson_reuses_it() {
+    let _db = ScratchDb::new("create_class");
+
+    // A fresh install: no classes at all — exactly the state the picker was unusable in.
+    let before = invoke("list_classes", serde_json::Value::Null).expect("list_classes");
+    assert_eq!(before.as_array().unwrap().len(), 0, "the scratch DB starts with no classes");
+
+    let created = invoke("create_class", serde_json::json!({"name": "  E2E 9А английский  "}))
+        .expect("create_class should succeed");
+    assert_eq!(created["name"], "E2E 9А английский", "the name is trimmed, like egui's try_create_class");
+    let id = created["id"].as_i64().expect("an integer id");
+
+    // Straight away in the list (what the picker refreshes with), and in the DB itself.
+    let listed = invoke("list_classes", serde_json::Value::Null).expect("list_classes");
+    let listed = listed.as_array().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["id"], id);
+    assert_eq!(listed[0]["name"], "E2E 9А английский");
+    let in_db = {
+        let conn = vocalis::teacher::db::open().expect("open the scratch db");
+        vocalis::teacher::db::list_classes(&conn).unwrap()
+    };
+    assert_eq!(in_db.len(), 1);
+    assert_eq!((in_db[0].id, in_db[0].name.as_str()), (id, "E2E 9А английский"));
+
+    // Refusals leave the table alone.
+    for bad in ["", "   "] {
+        let err = invoke("create_class", serde_json::json!({"name": bad})).expect_err("an empty name is refused");
+        assert_eq!(err, "Введите название класса");
+    }
+    let err = invoke("create_class", serde_json::json!({"name": "E2E 9А английский"}))
+        .expect_err("a name that is already taken is refused");
+    assert!(err.as_str().unwrap().contains("уже есть"), "got: {err}");
+    let still = invoke("list_classes", serde_json::Value::Null).unwrap();
+    assert_eq!(still.as_array().unwrap().len(), 1);
+
+    // Starting a lesson for the created class must reuse its row, not add a duplicate.
+    // (One app for start and stop — the session lives in that app's managed state.)
+    let app = build_app(mock_builder());
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
+    let session = invoke_in(&webview, "start_teacher_session", serde_json::json!({"className": "E2E 9А английский"}))
+        .expect("start_teacher_session should succeed");
+    assert_eq!(session["className"], "E2E 9А английский");
+    invoke_in(&webview, "stop_teacher_session", serde_json::Value::Null).expect("stop_teacher_session should succeed");
+    let after = {
+        let conn = vocalis::teacher::db::open().expect("open the scratch db");
+        vocalis::teacher::db::list_classes(&conn).unwrap()
+    };
+    assert_eq!(after.len(), 1, "a lesson for an existing class must not insert a second class row");
+    assert_eq!(after[0].id, id);
 }
 
 #[test]

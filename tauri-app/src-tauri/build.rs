@@ -6,6 +6,7 @@ fn main() {
     let attributes = tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "list_classes",
+            "create_class",
             "list_audio_devices",
             "discover_teachers",
             "capture_screen_preview",

@@ -14,6 +14,11 @@ export function listClasses(): Promise<ClassDto[]> {
   return invoke<ClassDto[]>("list_classes");
 }
 
+/** Real `db::insert_class`. Rejects with a ready-to-show Russian message (empty or already-taken name). */
+export function createClass(name: string): Promise<ClassDto> {
+  return invoke<ClassDto>("create_class", { name });
+}
+
 export interface DiscoveredTeacherDto {
   ip: string;
   teacherName: string;
