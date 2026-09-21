@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { TeacherClassGrid } from "./TeacherClassGrid";
 import { AssignmentsPanel } from "./AssignmentsPanel";
 import { StatsPanel } from "./StatsPanel";
 import { SettingsPanel } from "./SettingsPanel";
+import { emptyDraft, type AssignmentDraft, type AssignmentTemplate } from "../lib/assignments";
 import { ChatDrawer } from "../components/ChatDrawer";
 import { ToastStack, useToasts } from "../components/Toast";
 import { useLiveClassroom } from "../lib/useLiveClassroom";
@@ -37,6 +38,11 @@ export function TeacherConsole({ className, onEnd }: Props) {
   // so a session owned by it would be stopped (PIN lost, students dropped) on every switch to another
   // tab — and a raised hand couldn't toast on those tabs.
   const live = useLiveClassroom(className);
+  // Assignments live here for the same reason (the tab unmounts on every switch): in memory only, until
+  // there's a real save command.
+  const [templates, setTemplates] = useState<AssignmentTemplate[]>([]);
+  const [assignmentDraft, setAssignmentDraft] = useState<AssignmentDraft>(() => emptyDraft());
+  const nextTemplateId = useRef(1);
   const toasts = useToasts();
   useClassroomToasts(live.realStudents, toasts.push);
 
@@ -89,7 +95,14 @@ export function TeacherConsole({ className, onEnd }: Props) {
             className="h-full w-full"
           >
             {tab === "class" && <TeacherClassGrid className={className} live={live} onEnd={onEnd} />}
-            {tab === "assignments" && <AssignmentsPanel />}
+            {tab === "assignments" && (
+              <AssignmentsPanel
+                templates={templates}
+                onAdd={(title, content) => setTemplates((prev) => [{ id: nextTemplateId.current++, title, content }, ...prev])}
+                draft={assignmentDraft}
+                setDraft={setAssignmentDraft}
+              />
+            )}
             {tab === "stats" && <StatsPanel />}
             {tab === "settings" && <SettingsPanel />}
           </motion.div>

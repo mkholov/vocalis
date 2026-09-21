@@ -39,8 +39,10 @@ function App() {
     );
   }
 
+  // The card hangs from a fixed height (`pt-[14vh]`) instead of being centred, so the heading stays put as a
+  // flow moves between steps of different height; `overflow-y-auto` covers windows too short for a card.
   return (
-    <main className="relative flex h-screen w-screen items-center justify-center overflow-hidden bg-[var(--color-app)] p-6">
+        <main className="relative flex h-screen w-screen items-start justify-center overflow-y-auto bg-[var(--color-app)] px-6 pb-6 pt-[14vh]">
       {/* Ambient accent glow behind the card — purely decorative. */}
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_35%,rgba(167,139,250,0.12),transparent_60%)]" />
 

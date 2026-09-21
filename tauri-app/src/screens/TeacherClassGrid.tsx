@@ -4,6 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { StudentCard } from "../components/StudentCard";
 import { LessonTimer } from "../components/LessonTimer";
 import { Button } from "../components/ui/Button";
+import { EmptyState } from "../components/ui/EmptyState";
 import { WaitingForStudents } from "../components/WaitingForStudents";
 import { PinChip } from "../components/PinDisplay";
 import type { MockStudent } from "../lib/mockClassroom";
@@ -264,15 +265,18 @@ export function TeacherClassGrid({ className, live, onEnd }: Props) {
     };
   }, []);
 
+  // Gated on the session existing (`live.pin`), not on students being connected: the library is the
+  // teacher's own, and is there — and uploadable — before anyone joins.
+  const sessionReady = live.pin !== null;
   useEffect(() => {
-    if (!materialsPanelOpen || materialsLoaded || !usingLiveData) return;
+    if (!materialsPanelOpen || materialsLoaded || !sessionReady) return;
     listMaterials()
       .then((list) => {
         setMaterialsList(list);
         setMaterialsLoaded(true);
       })
       .catch((err) => setMaterialsError(String(err)));
-  }, [materialsPanelOpen, materialsLoaded, usingLiveData]);
+  }, [materialsPanelOpen, materialsLoaded, sessionReady]);
 
   async function handleUploadMaterial() {
     const path = await open({ multiple: false, filters: [{ name: "Аудио", extensions: ["mp3", "wav"] }] });
@@ -369,187 +373,207 @@ export function TeacherClassGrid({ className, live, onEnd }: Props) {
         <LessonTimer />
 
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="secondary" onClick={() => setPreviewOpen((v) => !v)}>
+          <Button variant="secondary" className="px-4 py-2.5 text-sm" onClick={() => setPreviewOpen((v) => !v)}>
             {previewOpen ? "Скрыть превью экрана" : "🖥 Превью своего экрана"}
           </Button>
-          <Button variant="secondary" onClick={toggleBroadcast}>
+          <Button variant="secondary" className="px-4 py-2.5 text-sm" onClick={toggleBroadcast}>
             {broadcasting ? "⏹ Остановить показ" : "📡 Показать классу"}
           </Button>
-          <Button variant="secondary" onClick={toggleMicBroadcast}>
+          <Button variant="secondary" className="px-4 py-2.5 text-sm" onClick={toggleMicBroadcast}>
             {micBroadcasting ? "🔇 Выключить микрофон" : "🎙 Говорить с классом"}
           </Button>
-          <Button variant="secondary" onClick={() => setGroupPanelOpen((v) => !v)}>
+          <Button variant="secondary" className="px-4 py-2.5 text-sm" onClick={() => setGroupPanelOpen((v) => !v)}>
             {groupPanelOpen ? "Скрыть группы" : "👥 Группы"}
           </Button>
-          <Button variant="secondary" onClick={() => setMaterialsPanelOpen((v) => !v)}>
+          <Button variant="secondary" className="px-4 py-2.5 text-sm" onClick={() => setMaterialsPanelOpen((v) => !v)}>
             {materialsPanelOpen ? "Скрыть материалы" : "🎵 Материалы"}
           </Button>
-          <Button variant="secondary" onClick={onEnd}>
+          <Button variant="secondary" className="px-4 py-2.5 text-sm" onClick={onEnd}>
             Завершить урок
           </Button>
         </div>
       </motion.header>
 
-      <AnimatePresence>
-        {previewOpen && (
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 12 }}
-            className="absolute bottom-4 left-4 z-30 w-64 overflow-hidden rounded-xl border border-[var(--color-border-subtle)] bg-black shadow-2xl"
-          >
-            <div className="relative flex aspect-video items-center justify-center">
-              {preview.frame ? (
-                <img src={preview.frame.dataUrl} alt="Ваш экран" className="h-full w-full object-contain" />
-              ) : (
-                <span className="text-xs text-white/50">{preview.error ? `Ошибка: ${preview.error}` : "Подключение…"}</span>
-              )}
-              <span className="absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-violet-300">
-                Ваш экран (превью)
-              </span>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Everything under the header lives in its own positioned box, so the floating panels below anchor to
+          the grid area — not to the whole screen, where they used to cover the header's own buttons. */}
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <AnimatePresence>
+          {previewOpen && (
+            <motion.div
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 12 }}
+              className="absolute bottom-2 left-2 z-30 w-64 overflow-hidden rounded-xl border border-[var(--color-border-subtle)] bg-black shadow-2xl"
+            >
+              <div className="relative flex aspect-video items-center justify-center">
+                {preview.frame ? (
+                  <img src={preview.frame.dataUrl} alt="Ваш экран" className="h-full w-full object-contain" />
+                ) : (
+                  <span className="text-xs text-white/50">{preview.error ? `Ошибка: ${preview.error}` : "Подключение…"}</span>
+                )}
+                <span className="absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-violet-300">
+                  Ваш экран (превью)
+                </span>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-      <AnimatePresence>
-        {groupPanelOpen && (
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 12 }}
-            className="absolute bottom-4 right-4 z-30 w-72 rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-card-solid)] p-4 shadow-2xl"
-          >
-            <div className="mb-3 text-xs font-medium text-[var(--color-text-muted)]">Пары и группы</div>
-            {live.realStudents.length === 0 ? (
-              <p className="text-sm text-[var(--color-text-muted)]">Нет подключённых учеников.</p>
-            ) : (
-              <div className="flex flex-col gap-2">
-                {live.realStudents.map((s) => (
-                  <div key={s.realId} className="flex items-center justify-between gap-2 text-sm">
-                    <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={groupSelection.has(s.realId)}
-                        onChange={() => toggleGroupSelection(s.realId)}
-                        className="accent-violet-400"
-                      />
-                      <span className="truncate">{s.name}</span>
-                    </label>
-                    {s.group !== null && (
+        <AnimatePresence>
+          {groupPanelOpen && (
+            <motion.div
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 12 }}
+              className="absolute bottom-2 right-2 z-30 w-72 rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-card-solid)] p-4 shadow-2xl"
+            >
+              <div className="mb-3 text-xs font-medium text-[var(--color-text-muted)]">Пары и группы</div>
+              {live.realStudents.length === 0 ? (
+                <EmptyState compact icon="👥" title="Нет подключённых учеников" hint="Группы можно собрать, когда в классе будет хотя бы двое." />
+              ) : (
+                <div className="flex max-h-64 flex-col gap-2 overflow-y-auto">
+                  {live.realStudents.map((s) => (
+                    <div key={s.realId} className="flex items-center justify-between gap-2 text-sm">
+                      <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={groupSelection.has(s.realId)}
+                          onChange={() => toggleGroupSelection(s.realId)}
+                          className="accent-violet-400"
+                        />
+                        <span className="truncate">{s.name}</span>
+                      </label>
+                      {s.group !== null && (
+                        <button
+                          type="button"
+                          onClick={() => handleLeaveGroup(s.realId)}
+                          className="shrink-0 rounded-md bg-white/5 px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-white/10"
+                        >
+                          Группа {s.group} · выйти
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <Button variant="secondary" className="mt-3 w-full" disabled={groupSelection.size < 2} onClick={handleCreateGroup}>
+                Создать пару/группу
+              </Button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {materialsPanelOpen && (
+            <motion.div
+              initial={{ opacity: 0, y: -12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -12 }}
+              className="absolute right-2 top-2 z-30 w-80 rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-card-solid)] p-4 shadow-2xl"
+            >
+              <div className="mb-3 flex items-center justify-between">
+                <span className="text-xs font-medium text-[var(--color-text-muted)]">Библиотека аудио</span>
+                {materialsLoaded && materialsList.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleUploadMaterial}
+                    className="rounded-md bg-white/5 px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-white/10"
+                  >
+                    + Добавить файл
+                  </button>
+                )}
+              </div>
+
+              {playingTitle && (
+                <div className="mb-3 flex items-center justify-between gap-2 rounded-lg bg-violet-400/10 px-3 py-2 text-sm text-violet-300">
+                  <span className="truncate">▶ {playingTitle}</span>
+                  <button type="button" onClick={handleStopPlayback} className="shrink-0 hover:text-violet-100">
+                    ⏹ Стоп
+                  </button>
+                </div>
+              )}
+
+              {!materialsLoaded ? (
+                <p className="py-4 text-center text-sm text-[var(--color-text-muted)]">
+                  {materialsError ? "Не удалось загрузить библиотеку." : live.error ? "Сессия недоступна." : sessionReady ? "Загрузка…" : "Запускаю сессию…"}
+                </p>
+              ) : materialsList.length === 0 ? (
+                <EmptyState
+                  compact
+                  icon="🎵"
+                  title="Библиотека пуста"
+                  hint="Добавьте mp3 или wav — потом его можно проиграть всему классу или выбранным ученикам."
+                  action={
+                    <Button variant="secondary" className="px-3 py-1.5 text-sm" onClick={handleUploadMaterial}>
+                      + Добавить файл
+                    </Button>
+                  }
+                />
+              ) : (
+                <div className="flex max-h-64 flex-col gap-2 overflow-y-auto">
+                  {materialsList.map((m) => (
+                    <div key={m.id} className="flex items-center justify-between gap-2 text-sm">
+                      <span className="min-w-0 flex-1 truncate">{m.title}</span>
                       <button
                         type="button"
-                        onClick={() => handleLeaveGroup(s.realId)}
+                        onClick={() => handlePlayMaterial(m.id, [])}
                         className="shrink-0 rounded-md bg-white/5 px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-white/10"
+                        title="Проиграть всем подключённым"
                       >
-                        Группа {s.group} · выйти
+                        ▶ Всем
                       </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-            <Button variant="secondary" className="mt-3 w-full" disabled={groupSelection.size < 2} onClick={handleCreateGroup}>
-              Создать пару/группу
-            </Button>
-          </motion.div>
-        )}
-      </AnimatePresence>
+                      <button
+                        type="button"
+                        onClick={() => handlePlayMaterial(m.id, Array.from(groupSelection))}
+                        disabled={groupSelection.size === 0}
+                        className="shrink-0 rounded-md bg-white/5 px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                        title="Проиграть выбранным в панели «Группы»"
+                      >
+                        ▶ Выбранным
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p className="mt-3 text-[11px] text-[var(--color-text-muted)]">
+                «Выбранным» использует отметки из панели «Группы» ({groupSelection.size} выбрано).
+              </p>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-      <AnimatePresence>
-        {materialsPanelOpen && (
-          <motion.div
-            initial={{ opacity: 0, y: -12 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -12 }}
-            className="absolute right-4 top-24 z-30 w-80 rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-card-solid)] p-4 shadow-2xl"
-          >
-            <div className="mb-3 flex items-center justify-between">
-              <span className="text-xs font-medium text-[var(--color-text-muted)]">Библиотека аудио</span>
-              <button
-                type="button"
-                onClick={handleUploadMaterial}
-                className="rounded-md bg-white/5 px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-white/10"
-              >
-                + Добавить файл
-              </button>
-            </div>
+        <AnimatePresence initial={false}>
+          {!usingLiveData && <WaitingForStudents key="waiting" pin={live.pin} error={live.error} />}
+        </AnimatePresence>
 
-            {playingTitle && (
-              <div className="mb-3 flex items-center justify-between gap-2 rounded-lg bg-violet-400/10 px-3 py-2 text-sm text-violet-300">
-                <span className="truncate">▶ {playingTitle}</span>
-                <button type="button" onClick={handleStopPlayback} className="shrink-0 hover:text-violet-100">
-                  ⏹ Стоп
-                </button>
-              </div>
-            )}
-
-            {materialsList.length === 0 ? (
-              <p className="text-sm text-[var(--color-text-muted)]">Библиотека пуста — добавьте mp3/wav файл.</p>
-            ) : (
-              <div className="flex max-h-64 flex-col gap-2 overflow-y-auto">
-                {materialsList.map((m) => (
-                  <div key={m.id} className="flex items-center justify-between gap-2 text-sm">
-                    <span className="min-w-0 flex-1 truncate">{m.title}</span>
-                    <button
-                      type="button"
-                      onClick={() => handlePlayMaterial(m.id, [])}
-                      className="shrink-0 rounded-md bg-white/5 px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-white/10"
-                      title="Проиграть всем подключённым"
-                    >
-                      ▶ Всем
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handlePlayMaterial(m.id, Array.from(groupSelection))}
-                      disabled={groupSelection.size === 0}
-                      className="shrink-0 rounded-md bg-white/5 px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
-                      title="Проиграть выбранным в панели «Группы»"
-                    >
-                      ▶ Выбранным
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <p className="mt-3 text-[11px] text-[var(--color-text-muted)]">
-              «Выбранным» использует отметки из панели «Группы» ({groupSelection.size} выбрано).
-            </p>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence initial={false}>
-        {!usingLiveData && <WaitingForStudents key="waiting" pin={live.pin} error={live.error} />}
-      </AnimatePresence>
-
-      <motion.div
-        className="relative z-10 grid flex-1 auto-rows-min grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4 overflow-y-auto pb-4"
-        initial="hidden"
-        animate="visible"
-        variants={{ visible: { transition: { staggerChildren: 0.04 } } }}
-      >
-        {students.map((s) => {
-          // Only real students carry a `realId` (see `LiveStudent`) — empty
-          // seats don't, so `listening`/`onToggleListen` stay `undefined` and
-          // `StudentCard` simply doesn't render the button for them.
-          const realId = "realId" in s ? s.realId : undefined;
-          return (
-            <StudentCard
-              key={s.id}
-              student={s}
-              selected={selectedId === s.id}
-              onSelect={() => setSelectedId((cur) => (cur === s.id ? null : s.id))}
-              onToggleScreenLock={() => toggleScreenLock(s.id)}
-              onToggleMicLock={() => toggleMicLock(s.id)}
-              listening={realId ? listeningId === realId : undefined}
-              onToggleListen={realId ? () => toggleListen(realId) : undefined}
-              intercomActive={realId ? intercomId === realId : undefined}
-              onToggleIntercom={realId ? () => toggleIntercom(realId) : undefined}
-            />
-          );
-        })}
-      </motion.div>
+        <motion.div
+          className="relative z-10 grid flex-1 auto-rows-min grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4 overflow-y-auto pb-4"
+          initial="hidden"
+          animate="visible"
+          variants={{ visible: { transition: { staggerChildren: 0.04 } } }}
+        >
+          {students.map((s) => {
+            // Only real students carry a `realId` (see `LiveStudent`) — empty
+            // seats don't, so `listening`/`onToggleListen` stay `undefined` and
+            // `StudentCard` simply doesn't render the button for them.
+            const realId = "realId" in s ? s.realId : undefined;
+            return (
+              <StudentCard
+                key={s.id}
+                student={s}
+                selected={selectedId === s.id}
+                onSelect={() => setSelectedId((cur) => (cur === s.id ? null : s.id))}
+                onToggleScreenLock={() => toggleScreenLock(s.id)}
+                onToggleMicLock={() => toggleMicLock(s.id)}
+                listening={realId ? listeningId === realId : undefined}
+                onToggleListen={realId ? () => toggleListen(realId) : undefined}
+                intercomActive={realId ? intercomId === realId : undefined}
+                onToggleIntercom={realId ? () => toggleIntercom(realId) : undefined}
+              />
+            );
+          })}
+        </motion.div>
+      </div>
     </div>
   );
 }

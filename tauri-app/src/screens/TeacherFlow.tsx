@@ -156,7 +156,7 @@ export function TeacherFlow({ onBack, onStart }: Props) {
 
             {classes && classes.length > 0 && (
               <motion.ul
-                className="mb-2 flex flex-col gap-2"
+                className="mb-2 flex max-h-[38vh] flex-col gap-2 overflow-y-auto"
                 initial="hidden"
                 animate="visible"
                 variants={{ visible: { transition: { staggerChildren: 0.05 } } }}
@@ -194,8 +194,8 @@ export function TeacherFlow({ onBack, onStart }: Props) {
                     placeholder="например, 9А английский"
                   />
                 </div>
-                <Button type="submit" variant="secondary" className="mt-[1.625rem]" disabled={creatingClass}>
-                  ➕ Создать
+                <Button type="submit" variant="secondary" className="mt-[1.625rem] py-2.5" disabled={creatingClass}>
+                  + Создать
                 </Button>
               </form>
             )}

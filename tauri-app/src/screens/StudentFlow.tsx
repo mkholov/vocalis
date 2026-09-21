@@ -80,7 +80,7 @@ export function StudentFlow({ onBack, onConnect }: Props) {
     <Card>
       <motion.div initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} transition={{ type: "spring", stiffness: 300, damping: 30 }}>
         <h2 className="mb-1 text-xl font-semibold">Подключение к уроку</h2>
-        <p className="mb-6 text-sm text-[var(--color-text-muted)]">Введите имя и PIN-код, который сообщил преподаватель.</p>
+        <p className="mb-6 text-sm text-[var(--color-text-muted)]">Введите имя и PIN-код от преподавателя.</p>
 
         <div className="flex flex-col gap-4">
           <TextField
@@ -124,7 +124,7 @@ export function StudentFlow({ onBack, onConnect }: Props) {
                 Пока никого не найдено. Убедитесь, что находитесь в одной сети с преподавателем.
               </motion.p>
             ) : (
-              <motion.ul layout className="flex flex-col gap-2">
+              <motion.ul layout className="flex max-h-[30vh] flex-col gap-2 overflow-y-auto">
                 {teachers.map((t) => (
                   <motion.li
                     key={`${t.ip}:${t.controlPort}`}
