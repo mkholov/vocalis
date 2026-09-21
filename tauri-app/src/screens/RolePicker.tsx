@@ -1,4 +1,5 @@
 import { motion } from "framer-motion";
+import { GraduationCap, Presentation } from "lucide-react";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 
@@ -15,7 +16,7 @@ export function RolePicker({ onPick }: Props) {
         initial={{ opacity: 0, y: -8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.05 }}
-        className="mb-1 text-3xl font-semibold tracking-tight text-violet-400"
+        className="mb-1 text-3xl font-semibold tracking-tight text-accent"
       >
         Vocalis
       </motion.h1>
@@ -36,12 +37,14 @@ export function RolePicker({ onPick }: Props) {
       >
         <motion.div variants={{ hidden: { opacity: 0, y: 10 }, visible: { opacity: 1, y: 0 } }}>
           <Button variant="primary" className="w-full py-3.5 text-base" onClick={() => onPick("teacher")}>
-            🧑‍🏫 Я преподаватель
+            <Presentation size={20} />
+            Я преподаватель
           </Button>
         </motion.div>
         <motion.div variants={{ hidden: { opacity: 0, y: 10 }, visible: { opacity: 1, y: 0 } }}>
           <Button variant="secondary" className="w-full py-3.5 text-base" onClick={() => onPick("student")}>
-            🎓 Я ученик
+            <GraduationCap size={20} />
+            Я ученик
           </Button>
         </motion.div>
       </motion.div>

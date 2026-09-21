@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { Hand, UserPlus, X, type LucideIcon } from "lucide-react";
 
 export type ToastKind = "help" | "info";
 
@@ -43,9 +44,9 @@ export function useToasts() {
   return { items, push, dismiss };
 }
 
-const STYLE: Record<ToastKind, { icon: string; ring: string; iconBg: string }> = {
-  help: { icon: "✋", ring: "border-amber-400/40", iconBg: "bg-amber-400/20 text-amber-300" },
-  info: { icon: "👋", ring: "border-violet-400/30", iconBg: "bg-violet-400/20 text-violet-300" },
+const STYLE: Record<ToastKind, { icon: LucideIcon; ring: string; iconBg: string }> = {
+  help: { icon: Hand, ring: "border-amber-400/40", iconBg: "bg-amber-400/20 text-warn-text" },
+  info: { icon: UserPlus, ring: "border-violet-400/30", iconBg: "bg-violet-400/20 text-accent-text" },
 };
 
 /** Top-right toast stack — above the chat drawer (`z-50`) so a raised hand is never hidden behind it. */
@@ -53,7 +54,9 @@ export function ToastStack({ items, onDismiss }: { items: ToastItem[]; onDismiss
   return (
     <div className="pointer-events-none fixed right-4 top-4 z-[60] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">
       <AnimatePresence initial={false}>
-        {items.map((t) => (
+        {items.map((t) => {
+          const Icon = STYLE[t.kind].icon;
+          return (
           <motion.div
             key={t.id}
             layout
@@ -68,19 +71,20 @@ export function ToastStack({ items, onDismiss }: { items: ToastItem[]; onDismiss
             }
           >
             <span className={"flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-base " + STYLE[t.kind].iconBg}>
-              {STYLE[t.kind].icon}
+              <Icon size={16} />
             </span>
             <span className="min-w-0 flex-1 text-sm leading-snug">{t.text}</span>
             <button
               type="button"
               onClick={() => onDismiss(t.id)}
               aria-label="Закрыть уведомление"
-              className="shrink-0 rounded-md px-1.5 py-0.5 text-[var(--color-text-muted)] outline-none transition-colors hover:bg-white/10 hover:text-[var(--color-text-primary)] focus-visible:ring-2 focus-visible:ring-violet-400"
+              className="shrink-0 rounded-md px-1.5 py-0.5 text-[var(--color-text-muted)] outline-none transition-colors hover:bg-overlay-hover hover:text-[var(--color-text-primary)] focus-visible:ring-2 focus-visible:ring-violet-400"
             >
-              ✕
+              <X size={14} />
             </button>
           </motion.div>
-        ))}
+          );
+        })}
       </AnimatePresence>
     </div>
   );

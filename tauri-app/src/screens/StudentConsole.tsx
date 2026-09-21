@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { CircleHelp, FlaskConical, Hand, Link2, Lock, Mic, MicOff, Monitor, Play, Radio, Square, ThumbsUp, Trash2, X, type LucideIcon } from "lucide-react";
 import { Button } from "../components/ui/Button";
 import { Panel } from "../components/ui/Panel";
 import { VuMeter } from "../components/VuMeter";
 import { FlyingReactions, type FlyingReaction } from "../components/FlyingReactions";
 import { ROSTER } from "../lib/mockClassroom";
+import { KIND_META, tint, type AssignmentKind } from "../lib/assignments";
 import { useMicMeter } from "../lib/useMicMeter";
 import { useStudentSession } from "../lib/useStudentSession";
 import { useRecordings } from "../lib/useRecordings";
@@ -16,14 +18,6 @@ interface Props {
   pin: string;
   onDisconnect: () => void;
 }
-
-type AssignmentKind = "test" | "listening" | "reading";
-
-const KIND_META: Record<AssignmentKind, { label: string; color: string }> = {
-  test: { label: "Тест", color: "#e6a84a" },
-  listening: { label: "Аудирование", color: "#a78bfa" },
-  reading: { label: "Чтение", color: "#5ec980" },
-};
 
 const partnerOptions = ROSTER.filter((_, i) => i % 2 === 1);
 
@@ -66,9 +60,9 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
   const [handRaised, setHandRaised] = useState(false);
   const [reactions, setReactions] = useState<FlyingReaction[]>([]);
 
-  function fireReaction(emoji: string) {
+  function fireReaction(icon: LucideIcon, tone: string) {
     const id = Date.now() + Math.random();
-    setReactions((prev) => [...prev, { id, emoji, offsetX: (Math.random() - 0.5) * 90 }]);
+    setReactions((prev) => [...prev, { id, icon, tone, offsetX: (Math.random() - 0.5) * 90 }]);
     setTimeout(() => setReactions((prev) => prev.filter((r) => r.id !== id)), 1300);
   }
 
@@ -84,16 +78,16 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
             className="mb-5 flex flex-wrap items-center justify-between gap-3"
           >
             <div>
-              <h1 className="text-xl font-semibold tracking-tight text-violet-400">Vocalis — ученик</h1>
+              <h1 className="text-xl font-semibold tracking-tight text-accent">Vocalis — ученик</h1>
               <p className="text-sm text-[var(--color-text-muted)]">
                 {studentName} · подключено к {teacherLabel}
               </p>
-              {mic.error && <p className="text-xs text-rose-400">Микрофон недоступен: {mic.error}</p>}
-              {session.error && <p className="text-xs text-rose-400">Не удалось подключиться: {session.error}</p>}
+              {mic.error && <p className="text-xs text-danger-text">Микрофон недоступен: {mic.error}</p>}
+              {session.error && <p className="text-xs text-danger-text">Не удалось подключиться: {session.error}</p>}
             </div>
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2" title="Ваш микрофон (реальный уровень)">
-                <span>🎙</span>
+                <Mic size={18} className="text-[var(--color-text-muted)]" />
                 {/* `active` always true here (unlike the teacher grid's per-student
                     meters, which gate on crossing SPEAKING_THRESHOLD) — this is
                     personal input monitoring, so it should move continuously with
@@ -108,9 +102,9 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
 
           <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-4">
             <AnimatePresence>
-              {micLocked && <StatusBanner key="mic" color="#e05252" text="🔇 Микрофон заблокирован преподавателем" />}
-              {listening && <StatusBanner key="listen" color="#e6a84a" text="🔴 Учитель слушает ваш микрофон в реальном времени" />}
-              {partner && <StatusBanner key="partner" color="#a78bfa" text={`🔗 В группе с: ${partner}`} />}
+              {micLocked && <StatusBanner key="mic" color="var(--color-status-danger)" icon={<MicOff size={16} />} text="Микрофон заблокирован преподавателем" />}
+              {listening && <StatusBanner key="listen" color="var(--color-status-warn)" icon={<Radio size={16} />} text="Учитель слушает ваш микрофон в реальном времени" />}
+              {partner && <StatusBanner key="partner" color="var(--color-status-accent)" icon={<Link2 size={16} />} text={`В группе с: ${partner}`} />}
             </AnimatePresence>
 
             <Panel className="relative flex aspect-video items-center justify-center overflow-hidden p-0">
@@ -132,8 +126,9 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
                       transition={{ duration: 6, repeat: Infinity, ease: "linear" }}
                     />
                   )}
-                  <span className="absolute left-3 top-3 rounded-md bg-black/50 px-2 py-1 text-xs font-medium text-violet-300 backdrop-blur">
-                    🖥 Демонстрация экрана: {teacherLabel}
+                  <span className="absolute left-3 top-3 rounded-md bg-black/50 px-2 py-1 text-xs font-medium text-accent-text backdrop-blur">
+                    <Monitor size={14} className="mr-1.5 inline-block align-[-2px]" />
+                    Демонстрация экрана: {teacherLabel}
                   </span>
                   {!session.frame && <span className="relative text-sm text-white/60">Подключение…</span>}
                 </>
@@ -143,7 +138,7 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
                   animate={{ opacity: [0.4, 0.8, 0.4] }}
                   transition={{ duration: 2.2, repeat: Infinity, ease: "easeInOut" }}
                 >
-                  <span className="text-3xl">🖥</span>
+                  <Monitor size={34} strokeWidth={1.5} />
                   <span className="text-sm">Нет активной трансляции</span>
                 </motion.div>
               )}
@@ -155,7 +150,7 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
                   <div className="flex items-center gap-3">
                     <span
                       className="rounded-md px-2 py-0.5 text-xs font-medium"
-                      style={{ backgroundColor: `${KIND_META[assignment.kind].color}26`, color: KIND_META[assignment.kind].color }}
+                      style={{ backgroundColor: tint(KIND_META[assignment.kind].color), color: KIND_META[assignment.kind].color }}
                     >
                       {KIND_META[assignment.kind].label}
                     </span>
@@ -173,7 +168,7 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
                       exit={{ opacity: 0, height: 0 }}
                       className="overflow-hidden"
                     >
-                      <p className="mt-4 rounded-lg bg-white/5 px-3 py-2 text-sm text-[var(--color-text-muted)]">
+                      <p className="mt-4 rounded-lg bg-overlay px-3 py-2 text-sm text-[var(--color-text-muted)]">
                         Прохождение задания появится на следующем шаге — здесь будет сам вопрос и вариант ответа.
                       </p>
                     </motion.div>
@@ -185,20 +180,27 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
             <Panel>
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <div className="font-medium">🎙 Запись голоса</div>
+                  <div className="flex items-center gap-2 font-medium">
+                    <Mic size={16} />
+                    Запись голоса
+                  </div>
                   <div className="text-xs text-[var(--color-text-muted)]">
                     {voice.recording ? (
-                      <span className="text-rose-300">● идёт запись — {formatDuration(voice.elapsedSecs)}</span>
+                      <span className="inline-flex items-center gap-1.5 text-danger-text">
+                        <motion.span className="h-2 w-2 rounded-full bg-current" animate={{ opacity: [1, 0.3, 1] }} transition={{ repeat: Infinity, duration: 1.2 }} />
+                        идёт запись — {formatDuration(voice.elapsedSecs)}
+                      </span>
                     ) : (
                       "Запишите себя и прослушайте — запись остаётся на этом компьютере"
                     )}
                   </div>
                 </div>
                 <Button variant="secondary" className="px-3 py-1.5 text-sm" onClick={voice.toggleRecording}>
-                  {voice.recording ? "⏹ Остановить" : "🔴 Записать"}
+                  {voice.recording ? <Square size={15} /> : <span className="h-3 w-3 rounded-full bg-[var(--color-status-danger)]" />}
+                  {voice.recording ? "Остановить" : "Записать"}
                 </Button>
               </div>
-              {voice.error && <p className="mt-3 rounded-lg bg-rose-400/10 px-3 py-2 text-sm text-rose-300">{voice.error}</p>}
+              {voice.error && <p className="mt-3 rounded-lg bg-rose-400/10 px-3 py-2 text-sm text-danger-text">{voice.error}</p>}
               <AnimatePresence initial={false}>
                 {voice.recordings.map((r) => (
                   <motion.div
@@ -209,18 +211,18 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
                     exit={{ opacity: 0, height: 0 }}
                     className="overflow-hidden"
                   >
-                    <div className="mt-2 flex items-center gap-3 rounded-xl bg-white/5 px-3 py-2">
+                    <div className="mt-2 flex items-center gap-3 rounded-xl bg-overlay px-3 py-2">
                       <motion.button
                         type="button"
                         whileTap={{ scale: 0.9 }}
                         onClick={() => voice.togglePlay(r.name)}
                         className={
                           "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm transition-colors " +
-                          (voice.playing === r.name ? "bg-violet-400/30 text-violet-200" : "bg-white/10 text-[var(--color-text-muted)] hover:bg-white/20")
+                          (voice.playing === r.name ? "bg-violet-400/30 text-accent-text" : "bg-overlay-hover text-[var(--color-text-muted)] hover:bg-overlay-strong")
                         }
                         title={voice.playing === r.name ? "Остановить" : "Прослушать"}
                       >
-                        {voice.playing === r.name ? "⏹" : "▶"}
+                        {voice.playing === r.name ? <Square size={13} /> : <Play size={13} />}
                       </motion.button>
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-sm">{recordingLabel(r.recordedAtEpoch, r.name)}</div>
@@ -229,10 +231,10 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
                       <button
                         type="button"
                         onClick={() => voice.remove(r.name)}
-                        className="shrink-0 rounded-md px-2 py-1 text-sm text-[var(--color-text-muted)] hover:bg-white/10 hover:text-rose-300"
+                        className="shrink-0 rounded-md px-2 py-1 text-sm text-[var(--color-text-muted)] hover:bg-overlay-hover hover:text-danger-text"
                         title="Удалить запись"
                       >
-                        🗑
+                        <Trash2 size={16} />
                       </button>
                     </div>
                   </motion.div>
@@ -249,8 +251,8 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
                   type="button"
                   onClick={() => setHandRaised((v) => !v)}
                   className={
-                    "rounded-xl px-5 py-3 font-medium transition-colors " +
-                    (handRaised ? "bg-amber-400/20 text-amber-300" : "bg-white/5 text-[var(--color-text-muted)] hover:bg-white/10")
+                    "inline-flex items-center gap-2 rounded-xl px-5 py-3 font-medium transition-colors " +
+                    (handRaised ? "bg-amber-400/20 text-warn-text" : "bg-overlay text-[var(--color-text-muted)] hover:bg-overlay-hover")
                   }
                 >
                   <motion.span
@@ -258,8 +260,8 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
                     animate={handRaised ? { rotate: [0, -12, 12, -8, 0] } : { rotate: 0 }}
                     transition={{ duration: 0.5 }}
                   >
-                    ✋
-                  </motion.span>{" "}
+                    <Hand size={18} />
+                  </motion.span>
                   {handRaised ? "Рука поднята" : "Поднять руку"}
                 </button>
               </motion.div>
@@ -267,20 +269,22 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
               <motion.button
                 type="button"
                 whileTap={{ scale: 0.85 }}
-                onClick={() => fireReaction("👍")}
-                className="rounded-xl bg-white/5 px-4 py-3 text-xl hover:bg-white/10"
+                onClick={() => fireReaction(ThumbsUp, "text-ok-text")}
+                className="inline-flex items-center justify-center rounded-xl bg-overlay px-4 py-3 hover:bg-overlay-hover"
                 title="Понял"
+                aria-label="Понял"
               >
-                👍
+                <ThumbsUp size={20} />
               </motion.button>
               <motion.button
                 type="button"
                 whileTap={{ scale: 0.85 }}
-                onClick={() => fireReaction("❓")}
-                className="rounded-xl bg-white/5 px-4 py-3 text-xl hover:bg-white/10"
+                onClick={() => fireReaction(CircleHelp, "text-warn-text")}
+                className="inline-flex items-center justify-center rounded-xl bg-overlay px-4 py-3 hover:bg-overlay-hover"
                 title="Не понял"
+                aria-label="Не понял"
               >
-                ❓
+                <CircleHelp size={20} />
               </motion.button>
             </div>
           </div>
@@ -297,8 +301,9 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
             exit={{ opacity: 0 }}
             className="absolute inset-0 z-40 flex items-center justify-center bg-rose-600 p-10 text-center"
           >
-            <motion.p initial={{ scale: 0.9 }} animate={{ scale: 1 }} className="text-3xl font-semibold text-white">
-              🔒 Экран заблокирован преподавателем
+            <motion.p initial={{ scale: 0.9 }} animate={{ scale: 1 }} className="flex items-center justify-center gap-4 text-3xl font-semibold text-white">
+              <Lock size={34} />
+              Экран заблокирован преподавателем
             </motion.p>
           </motion.div>
         )}
@@ -335,7 +340,7 @@ function recordingLabel(epoch: number | null, fallback: string): string {
   return `Запись ${d.toLocaleDateString("ru-RU")} ${d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`;
 }
 
-function StatusBanner({ color, text }: { color: string; text: string }) {
+function StatusBanner({ color, icon, text }: { color: string; icon: React.ReactNode; text: string }) {
   return (
     <motion.div
       initial={{ opacity: 0, height: 0 }}
@@ -343,7 +348,8 @@ function StatusBanner({ color, text }: { color: string; text: string }) {
       exit={{ opacity: 0, height: 0 }}
       className="overflow-hidden"
     >
-      <div className="rounded-xl px-4 py-2.5 text-sm font-medium" style={{ backgroundColor: `${color}1f`, color }}>
+      <div className="flex items-center gap-2.5 rounded-xl px-4 py-2.5 text-sm font-medium" style={{ backgroundColor: tint(color, 12), color }}>
+        {icon}
         {text}
       </div>
     </motion.div>
@@ -379,7 +385,7 @@ function DemoControls(props: DemoControlsProps) {
           <div className="mb-3 flex items-center justify-between">
             <span className="text-xs font-medium text-[var(--color-text-muted)]">Демо-переключатели (без сети)</span>
             <button type="button" onClick={() => setOpen(false)} className="text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]">
-              ✕
+              <X size={16} />
             </button>
           </div>
           <div className="flex flex-col gap-2 text-sm">
@@ -393,7 +399,7 @@ function DemoControls(props: DemoControlsProps) {
               <select
                 value={props.partner ?? ""}
                 onChange={(e) => props.setPartner(e.target.value || null)}
-                className="w-full rounded-lg border border-[var(--color-border-subtle)] bg-black/20 px-2 py-1.5 text-sm outline-none focus:border-violet-400"
+                className="w-full rounded-lg border border-[var(--color-border-subtle)] bg-field px-2 py-1.5 text-sm outline-none focus:border-violet-400"
               >
                 <option value="">Никого</option>
                 {partnerOptions.map((name) => (
@@ -407,9 +413,10 @@ function DemoControls(props: DemoControlsProps) {
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="rounded-full border border-[var(--color-border-subtle)] bg-[var(--color-card-solid)] px-4 py-2 text-xs font-medium text-[var(--color-text-muted)] shadow-lg hover:text-[var(--color-text-primary)]"
+          className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-border-subtle)] bg-[var(--color-card-solid)] px-4 py-2 text-xs font-medium text-[var(--color-text-muted)] shadow-lg hover:text-[var(--color-text-primary)]"
         >
-          🧪 Демо-переключатели
+          <FlaskConical size={14} />
+          Демо-переключатели
         </button>
       )}
     </div>

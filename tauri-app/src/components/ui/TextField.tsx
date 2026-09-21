@@ -23,9 +23,9 @@ export function TextField({ label, error, id, className = "", ...props }: TextFi
       <input
         id={inputId}
         className={
-          "w-full rounded-xl border bg-black/20 px-4 py-2.5 text-[var(--color-text-primary)] " +
+          "w-full rounded-xl border bg-field px-4 py-2.5 text-[var(--color-text-primary)] " +
           "placeholder:text-[var(--color-text-muted)]/60 outline-none transition-all duration-150 " +
-          "focus:bg-black/30 focus:ring-4 " +
+          "focus:bg-field-focus focus:ring-4 " +
           (error
             ? "border-rose-400/60 focus:border-rose-400 focus:ring-rose-400/15"
             : "border-[var(--color-border-subtle)] focus:border-violet-400 focus:ring-violet-400/15") +
@@ -41,7 +41,7 @@ export function TextField({ label, error, id, className = "", ...props }: TextFi
             animate={{ opacity: 1, height: "auto", marginTop: 6 }}
             exit={{ opacity: 0, height: 0, marginTop: 0 }}
             transition={{ duration: 0.15 }}
-            className="overflow-hidden text-sm text-rose-400"
+            className="overflow-hidden text-sm text-danger-text"
           >
             {error}
           </motion.p>

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { ArrowLeft, Plus } from "lucide-react";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { TextField } from "../components/ui/TextField";
@@ -113,7 +114,8 @@ export function TeacherFlow({ onBack, onStart }: Props) {
 
             <div className="mt-6 flex gap-3">
               <Button type="button" variant="ghost" onClick={onBack}>
-                ← Назад
+                <ArrowLeft size={16} />
+                Назад
               </Button>
               <Button type="submit" className="flex-1">
                 Войти
@@ -132,7 +134,7 @@ export function TeacherFlow({ onBack, onStart }: Props) {
             <p className="mb-6 text-sm text-[var(--color-text-muted)]">Для какого класса этот урок?</p>
 
             {classesError && (
-              <p className="mb-4 rounded-lg bg-rose-400/10 px-3 py-2 text-sm text-rose-400">
+              <p className="mb-4 rounded-lg bg-rose-400/10 px-3 py-2 text-sm text-danger-text">
                 Не удалось загрузить классы: {classesError}
               </p>
             )}
@@ -170,7 +172,7 @@ export function TeacherFlow({ onBack, onStart }: Props) {
                         "w-full rounded-xl border px-4 py-3 text-left transition-colors " +
                         (selectedClassId === c.id
                           ? "border-violet-400 bg-violet-400/10 text-[var(--color-text-primary)]"
-                          : "border-[var(--color-border-subtle)] text-[var(--color-text-muted)] hover:bg-white/5")
+                          : "border-[var(--color-border-subtle)] text-[var(--color-text-muted)] hover:bg-overlay")
                       }
                     >
                       {c.name}
@@ -195,14 +197,16 @@ export function TeacherFlow({ onBack, onStart }: Props) {
                   />
                 </div>
                 <Button type="submit" variant="secondary" className="mt-[1.625rem] py-2.5" disabled={creatingClass}>
-                  + Создать
+                  <Plus size={16} />
+                  Создать
                 </Button>
               </form>
             )}
 
             <div className="mt-6 flex gap-3">
               <Button type="button" variant="ghost" onClick={() => setStep("password")}>
-                ← Назад
+                <ArrowLeft size={16} />
+                Назад
               </Button>
               <Button
                 type="button"

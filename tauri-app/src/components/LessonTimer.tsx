@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
+import { Pause, Play, RotateCcw } from "lucide-react";
 import { Button } from "./ui/Button";
 
 const RADIUS = 30;
@@ -40,7 +41,7 @@ export function LessonTimer() {
   const progress = totalSeconds > 0 ? remaining / totalSeconds : 0;
   const done = remaining === 0;
   const urgent = !done && remaining <= totalSeconds * 0.1;
-  const ringColor = done ? "#e05252" : urgent ? "#e6a84a" : "#a78bfa"; // theme::DANGER / WARN / ACCENT
+  const ringColor = done ? "var(--color-status-danger)" : urgent ? "var(--color-status-warn)" : "var(--color-accent)"; // theme::DANGER / WARN / ACCENT
 
   function setPreset(minutes: number) {
     setRunning(false);
@@ -57,7 +58,7 @@ export function LessonTimer() {
     <div className="flex items-center gap-5 rounded-2xl border border-[var(--color-border-subtle)] bg-[var(--color-card)] px-5 py-3 shadow-lg shadow-black/20 backdrop-blur-xl">
       <div className="relative h-16 w-16 shrink-0">
         <svg viewBox="0 0 70 70" className="h-16 w-16 -rotate-90">
-          <circle cx="35" cy="35" r={RADIUS} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="6" />
+          <circle cx="35" cy="35" r={RADIUS} fill="none" stroke="var(--color-overlay-hover)" strokeWidth="6" />
           <motion.circle
             cx="35"
             cy="35"
@@ -87,8 +88,8 @@ export function LessonTimer() {
               className={
                 "rounded-md px-2 py-0.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 " +
                 (totalSeconds === m * 60
-                  ? "bg-violet-400/20 text-violet-300"
-                  : "text-[var(--color-text-muted)] hover:bg-white/5")
+                  ? "bg-violet-400/20 text-accent-text"
+                  : "text-[var(--color-text-muted)] hover:bg-overlay")
               }
             >
               {m} мин
@@ -103,10 +104,12 @@ export function LessonTimer() {
             disabled={done}
             onClick={() => setRunning((r) => !r)}
           >
-            {running ? "⏸ Пауза" : "▶ Старт"}
+            {running ? <Pause size={15} /> : <Play size={15} />}
+            {running ? "Пауза" : "Старт"}
           </Button>
           <Button type="button" variant="ghost" className="px-3 py-1.5 text-sm" onClick={reset}>
-            ↺ Сброс
+            <RotateCcw size={14} />
+            Сброс
           </Button>
         </div>
       </div>

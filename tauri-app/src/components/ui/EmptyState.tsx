@@ -2,7 +2,8 @@ import type { ReactNode } from "react";
 import { motion } from "framer-motion";
 
 interface Props {
-  icon: string;
+  /** A lucide icon element, e.g. `<Music />` — sized here. */
+  icon: ReactNode;
   title: string;
   hint?: string;
   /** Optional call to action (a `<Button>`), shown under the text. */
@@ -24,7 +25,10 @@ export function EmptyState({ icon, title, hint, action, compact = false }: Props
         (compact ? "gap-1.5 px-4 py-5" : "gap-2 px-6 py-9")
       }
     >
-      <div className={compact ? "text-2xl" : "text-3xl"} aria-hidden>
+      <div
+        className={"flex items-center justify-center rounded-full bg-overlay text-[var(--color-text-muted)] " + (compact ? "h-10 w-10 [&>svg]:h-5 [&>svg]:w-5" : "h-14 w-14 [&>svg]:h-7 [&>svg]:w-7")}
+        aria-hidden
+      >
         {icon}
       </div>
       <div className={"font-medium " + (compact ? "text-sm" : "")}>{title}</div>

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { ArrowLeft } from "lucide-react";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { TextField } from "../components/ui/TextField";
@@ -115,7 +116,7 @@ export function StudentFlow({ onBack, onConnect }: Props) {
           )}
         </div>
 
-        {scanError && <p className="mt-2 rounded-lg bg-rose-400/10 px-3 py-2 text-sm text-rose-400">Ошибка поиска: {scanError}</p>}
+        {scanError && <p className="mt-2 rounded-lg bg-rose-400/10 px-3 py-2 text-sm text-danger-text">Ошибка поиска: {scanError}</p>}
 
         <div className="mt-3 min-h-[4rem]">
           <AnimatePresence mode="popLayout">
@@ -150,7 +151,8 @@ export function StudentFlow({ onBack, onConnect }: Props) {
 
         <div className="mt-6">
           <Button type="button" variant="ghost" onClick={onBack}>
-            ← Назад
+            <ArrowLeft size={16} />
+                Назад
           </Button>
         </div>
       </motion.div>

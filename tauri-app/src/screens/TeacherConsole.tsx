@@ -1,5 +1,7 @@
 import { useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { ChartColumn, ClipboardList, LayoutGrid, MessageSquare, Settings, type LucideIcon } from "lucide-react";
+import logo from "../assets/vocalis-logo.png";
 import { TeacherClassGrid } from "./TeacherClassGrid";
 import { AssignmentsPanel } from "./AssignmentsPanel";
 import { StatsPanel } from "./StatsPanel";
@@ -17,11 +19,11 @@ interface Props {
 
 type Tab = "class" | "assignments" | "stats" | "settings";
 
-const TABS: { id: Tab; label: string; icon: string }[] = [
-  { id: "class", label: "Класс", icon: "🏠" },
-  { id: "assignments", label: "Задания", icon: "📝" },
-  { id: "stats", label: "Статистика", icon: "📊" },
-  { id: "settings", label: "Настройки", icon: "⚙" },
+const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
+  { id: "class", label: "Класс", icon: LayoutGrid },
+  { id: "assignments", label: "Задания", icon: ClipboardList },
+  { id: "stats", label: "Статистика", icon: ChartColumn },
+  { id: "settings", label: "Настройки", icon: Settings },
 ];
 
 /** Step 5 of the Tauri migration (vocalis_roadmap.md, section 8): the shell
@@ -48,8 +50,8 @@ export function TeacherConsole({ className, onEnd }: Props) {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[var(--color-app)]">
-      <nav className="flex w-20 shrink-0 flex-col items-center gap-1 border-r border-[var(--color-border-subtle)] bg-black/20 py-6">
-        <div className="mb-4 text-xl font-bold text-violet-400">V</div>
+      <nav className="flex w-20 shrink-0 flex-col items-center gap-1 border-r border-[var(--color-border-subtle)] bg-field py-6">
+        <img src={logo} alt="Vocalis" width={44} height={44} className="mb-4 h-11 w-11 rounded-xl shadow-md shadow-black/30" draggable={false} />
 
         {TABS.map((t) => (
           <button
@@ -65,8 +67,8 @@ export function TeacherConsole({ className, onEnd }: Props) {
                 transition={{ type: "spring", stiffness: 400, damping: 32 }}
               />
             )}
-            <span className="relative z-10 text-lg leading-none">{t.icon}</span>
-            <span className={"relative z-10 " + (tab === t.id ? "font-medium text-violet-300" : "text-[var(--color-text-muted)]")}>
+            <t.icon className={"relative z-10 h-5 w-5 " + (tab === t.id ? "text-accent-text" : "text-[var(--color-text-muted)]")} strokeWidth={tab === t.id ? 2.25 : 1.75} />
+            <span className={"relative z-10 " + (tab === t.id ? "font-medium text-accent-text" : "text-[var(--color-text-muted)]")}>
               {t.label}
             </span>
           </button>
@@ -76,9 +78,9 @@ export function TeacherConsole({ className, onEnd }: Props) {
           <button
             type="button"
             onClick={() => setChatOpen(true)}
-            className="flex w-[4.5rem] flex-col items-center gap-1 rounded-xl py-2.5 text-xs text-[var(--color-text-muted)] outline-none transition-colors hover:bg-white/5 hover:text-[var(--color-text-primary)] focus-visible:ring-2 focus-visible:ring-violet-400"
+            className="flex w-[4.5rem] flex-col items-center gap-1 rounded-xl py-2.5 text-xs text-[var(--color-text-muted)] outline-none transition-colors hover:bg-overlay hover:text-[var(--color-text-primary)] focus-visible:ring-2 focus-visible:ring-violet-400"
           >
-            <span className="text-lg leading-none">💬</span>
+            <MessageSquare className="h-5 w-5" strokeWidth={1.75} />
             <span>Чат</span>
           </button>
         </div>

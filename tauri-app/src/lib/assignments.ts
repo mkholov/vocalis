@@ -11,6 +11,16 @@
 
 export type AssignmentKind = "test" | "listening" | "reading";
 
+/** Label + badge colour per kind (colours are theme tokens, so badges stay readable in both themes). */
+export const KIND_META: Record<AssignmentKind, { label: string; color: string }> = {
+  test: { label: "Тест", color: "var(--color-status-warn)" },
+  listening: { label: "Аудирование", color: "var(--color-status-accent)" },
+  reading: { label: "Чтение", color: "var(--color-status-ok)" },
+};
+
+/** Tinted badge background for a status colour — `color-mix` because the colour is a CSS variable. */
+export const tint = (color: string, percent = 15) => `color-mix(in srgb, ${color} ${percent}%, transparent)`;
+
 export interface TestQuestion {
   text: string;
   options: string[];

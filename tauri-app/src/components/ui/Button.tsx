@@ -13,10 +13,10 @@ const variantClasses: Record<Variant, string> = {
     "bg-violet-500 text-white shadow-lg shadow-violet-500/25 hover:bg-violet-400 " +
     "disabled:bg-violet-500/40 disabled:shadow-none disabled:cursor-not-allowed",
   secondary:
-    "border border-[var(--color-border-subtle)] bg-white/5 text-[var(--color-text-primary)] " +
-    "hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed",
+    "border border-[var(--color-border-subtle)] bg-overlay text-[var(--color-text-primary)] " +
+    "hover:bg-overlay-hover disabled:opacity-40 disabled:cursor-not-allowed",
   ghost:
-    "text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-white/5 " +
+    "text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-overlay " +
     "disabled:opacity-40 disabled:cursor-not-allowed",
 };
 
@@ -31,7 +31,7 @@ export function Button({ variant = "primary", className = "", disabled, ...props
       transition={{ type: "spring", stiffness: 500, damping: 30 }}
       disabled={disabled}
       className={
-        "rounded-xl px-5 py-3 font-medium outline-none transition-colors " +
+        "inline-flex items-center justify-center gap-2 rounded-xl px-5 py-3 font-medium outline-none transition-colors " +
         "focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2 " +
         "focus-visible:ring-offset-[var(--color-app)] " +
         variantClasses[variant] +

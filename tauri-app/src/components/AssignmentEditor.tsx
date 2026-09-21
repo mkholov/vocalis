@@ -1,9 +1,11 @@
 import { useState, type Dispatch, type FormEvent, type SetStateAction } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { Check, Plus, Save, Trash2, X } from "lucide-react";
 import { Button } from "./ui/Button";
 import { TextField } from "./ui/TextField";
 import { inputClasses, iconButtonClasses } from "./ui/fieldStyles";
 import {
+  KIND_META,
   MIN_OPTIONS,
   draftToContent,
   emptyDraft,
@@ -18,12 +20,6 @@ import {
   type AssignmentKind,
   type DraftTestQuestion,
 } from "../lib/assignments";
-
-export const KIND_META: Record<AssignmentKind, { label: string; color: string }> = {
-  test: { label: "Тест", color: "#e6a84a" },
-  listening: { label: "Аудирование", color: "#a78bfa" },
-  reading: { label: "Чтение", color: "#5ec980" },
-};
 
 const rowMotion = {
   layout: true,
@@ -76,7 +72,7 @@ export function AssignmentEditor({ draft, setDraft, onSave }: Props) {
             onClick={() => patch({ kind: k })}
             className={
               "rounded-lg px-3 py-1.5 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-violet-400 " +
-              (draft.kind === k ? "bg-violet-400/20 text-violet-300" : "text-[var(--color-text-muted)] hover:bg-white/5")
+              (draft.kind === k ? "bg-violet-400/20 text-accent-text" : "text-[var(--color-text-muted)] hover:bg-overlay")
             }
           >
             {KIND_META[k].label}
@@ -113,9 +109,10 @@ export function AssignmentEditor({ draft, setDraft, onSave }: Props) {
                 Вопросов пока нет.
               </p>
             )}
-            {errors?.content && <p className="text-sm text-rose-400">{errors.content}</p>}
+            {errors?.content && <p className="text-sm text-danger-text">{errors.content}</p>}
             <Button type="button" variant="secondary" className="self-start px-4 py-2 text-sm" onClick={() => patch({ testQuestions: [...draft.testQuestions, newQuestion()] })}>
-              + Добавить вопрос
+              <Plus size={15} />
+              Добавить вопрос
             </Button>
           </div>
         )}
@@ -153,7 +150,7 @@ export function AssignmentEditor({ draft, setDraft, onSave }: Props) {
                           aria-label={`Удалить вопрос ${pi + 1}`}
                           onClick={() => patch({ listeningPrompts: draft.listeningPrompts.filter((x) => x.id !== p.id) })}
                         >
-                          🗑
+                          <Trash2 size={16} />
                         </button>
                       </div>
                     </motion.div>
@@ -161,7 +158,8 @@ export function AssignmentEditor({ draft, setDraft, onSave }: Props) {
                 </AnimatePresence>
               </div>
               <Button type="button" variant="secondary" className="mt-3 px-4 py-2 text-sm" onClick={() => patch({ listeningPrompts: [...draft.listeningPrompts, newPrompt()] })}>
-                + Добавить вопрос
+                <Plus size={15} />
+                Добавить вопрос
               </Button>
             </div>
           </div>
@@ -179,16 +177,22 @@ export function AssignmentEditor({ draft, setDraft, onSave }: Props) {
               rows={6}
               className={inputClasses + (errors?.content ? " !border-rose-400/60" : "")}
             />
-            {errors?.content && <p className="mt-1.5 text-sm text-rose-400">{errors.content}</p>}
+            {errors?.content && <p className="mt-1.5 text-sm text-danger-text">{errors.content}</p>}
           </div>
         )}
 
         <div className="flex items-center gap-3">
-          <Button type="submit">💾 Сохранить задание</Button>
+          <Button type="submit">
+            <Save size={16} />
+            Сохранить задание
+          </Button>
           <AnimatePresence>
             {justSaved && (
-              <motion.span initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }} className="text-sm text-emerald-400" role="status">
-                ✓ Задание добавлено в библиотеку
+              <motion.span initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }} className="text-sm text-ok-text" role="status">
+                <span className="inline-flex items-center gap-1.5">
+                  <Check size={14} />
+                  Задание добавлено в библиотеку
+                </span>
               </motion.span>
             )}
           </AnimatePresence>
@@ -224,7 +228,7 @@ function QuestionCard({
           className={inputClasses}
         />
         <button type="button" className={iconButtonClasses} title="Удалить вопрос" aria-label={`Удалить вопрос ${index + 1}`} onClick={onDelete}>
-          🗑
+          <Trash2 size={16} />
         </button>
       </div>
 
@@ -257,7 +261,7 @@ function QuestionCard({
                   aria-label={`Удалить вариант ${oi + 1}`}
                   onClick={() => onChange((q) => removeOption(q, o.id))}
                 >
-                  ✕
+                  <X size={16} />
                 </button>
               </div>
             </motion.div>
@@ -269,13 +273,14 @@ function QuestionCard({
         <button
           type="button"
           onClick={() => onChange((q) => ({ ...q, options: [...q.options, newOption()] }))}
-          className="rounded-lg px-2.5 py-1 text-xs font-medium text-[var(--color-text-muted)] outline-none transition-colors hover:bg-white/5 hover:text-[var(--color-text-primary)] focus-visible:ring-2 focus-visible:ring-violet-400"
+          className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-[var(--color-text-muted)] outline-none transition-colors hover:bg-overlay hover:text-[var(--color-text-primary)] focus-visible:ring-2 focus-visible:ring-violet-400"
         >
-          + Вариант ответа
+          <Plus size={13} />
+          Вариант ответа
         </button>
         <span className="text-xs text-[var(--color-text-muted)]">Кружок слева — правильный ответ</span>
       </div>
-      {error && <p className="mt-2 text-sm text-rose-400">{error}</p>}
+      {error && <p className="mt-2 text-sm text-danger-text">{error}</p>}
     </div>
   );
 }

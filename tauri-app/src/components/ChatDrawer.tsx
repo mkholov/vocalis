@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { ArrowRight, Send, X } from "lucide-react";
 import { ROSTER } from "../lib/mockClassroom";
 
 const WHOLE_CLASS = "Весь класс";
@@ -56,16 +57,16 @@ export function ChatDrawer({ open, onClose }: { open: boolean; onClose: () => vo
               <button
                 type="button"
                 onClick={onClose}
-                className="rounded-lg px-2 py-1 text-[var(--color-text-muted)] hover:bg-white/5 hover:text-[var(--color-text-primary)]"
+                className="inline-flex items-center justify-center rounded-lg p-1.5 text-[var(--color-text-muted)] hover:bg-overlay hover:text-[var(--color-text-primary)]"
               >
-                ✕
+                <X size={18} />
               </button>
             </div>
 
             <select
               value={target}
               onChange={(e) => setTarget(e.target.value)}
-              className="mb-4 rounded-xl border border-[var(--color-border-subtle)] bg-black/20 px-3 py-2 text-sm outline-none focus:border-violet-400"
+              className="mb-4 rounded-xl border border-[var(--color-border-subtle)] bg-field px-3 py-2 text-sm outline-none focus:border-violet-400"
             >
               <option>{WHOLE_CLASS}</option>
               {ROSTER.map((name) => (
@@ -81,11 +82,14 @@ export function ChatDrawer({ open, onClose }: { open: boolean; onClose: () => vo
                     layout
                     initial={{ opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="mb-2 rounded-xl bg-white/5 px-3 py-2 text-sm"
+                    className="mb-2 rounded-xl bg-overlay px-3 py-2 text-sm"
                   >
                     <div className="mb-0.5 flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]">
-                      <span className="font-medium text-violet-300">{m.from}</span>
-                      <span>→ {m.to}</span>
+                      <span className="font-medium text-accent-text">{m.from}</span>
+                      <span className="inline-flex items-center gap-1">
+                        <ArrowRight size={12} />
+                        {m.to}
+                      </span>
                     </div>
                     {m.text}
                   </motion.div>
@@ -98,10 +102,10 @@ export function ChatDrawer({ open, onClose }: { open: boolean; onClose: () => vo
                 value={text}
                 onChange={(e) => setText(e.target.value)}
                 placeholder={`Сообщение (${target})`}
-                className="flex-1 rounded-xl border border-[var(--color-border-subtle)] bg-black/20 px-3 py-2 text-sm outline-none focus:border-violet-400"
+                className="flex-1 rounded-xl border border-[var(--color-border-subtle)] bg-field px-3 py-2 text-sm outline-none focus:border-violet-400"
               />
-              <button type="submit" className="rounded-xl bg-violet-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-violet-400">
-                ➤
+              <button type="submit" className="inline-flex items-center justify-center rounded-xl bg-violet-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-violet-400">
+                <Send size={16} />
               </button>
             </form>
           </motion.div>

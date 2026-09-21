@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { open } from "@tauri-apps/plugin-dialog";
+import { Cast, LogOut, Mic, MicOff, Monitor, MonitorOff, Music, Play, Square, Users } from "lucide-react";
 import { StudentCard } from "../components/StudentCard";
 import { LessonTimer } from "../components/LessonTimer";
 import { Button } from "../components/ui/Button";
@@ -34,6 +35,11 @@ interface Props {
   live: LiveClassroom;
   onEnd: () => void;
 }
+
+/** Header action buttons: compact so all six fit one row. The three that open a panel keep a constant
+ * label and show "pressed" instead, so the row never changes width as panels open and close. */
+const HEADER_BTN = "px-3.5 py-2.5 text-sm ";
+const PRESSED = "!border-violet-400/50 !bg-violet-400/15 !text-accent-text";
 
 /** Seats always shown, taken or not. More than this many connected students just extend the grid. */
 const SEAT_COUNT = 12;
@@ -354,41 +360,47 @@ export function TeacherClassGrid({ className, live, onEnd }: Props) {
           <h1 className="text-2xl font-semibold tracking-tight">{className}</h1>
           <p className="mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-[var(--color-text-muted)]">
             {usingLiveData ? (
-              <span className="text-emerald-400">● {live.realStudents.length} подключено</span>
+              <span className="flex items-center gap-2 text-ok-text"><span className="h-2 w-2 rounded-full bg-current" />{live.realStudents.length} подключено</span>
             ) : (
-              <span>○ Никто не подключён</span>
+              <span className="flex items-center gap-2"><span className="h-2 w-2 rounded-full border border-current" />Никто не подключён</span>
             )}
             {/* While nobody's connected the waiting banner below already shows the PIN, large. */}
             {live.pin && usingLiveData && <PinChip pin={live.pin} />}
           </p>
-          {live.error && <p className="text-xs text-rose-400">Реальная сессия недоступна: {live.error}</p>}
-          {broadcastError && <p className="text-xs text-rose-400">Не удалось начать показ: {broadcastError}</p>}
-          {micBroadcastError && <p className="text-xs text-rose-400">Не удалось включить микрофон: {micBroadcastError}</p>}
-          {listenError && <p className="text-xs text-rose-400">Не удалось начать прослушку: {listenError}</p>}
-          {intercomError && <p className="text-xs text-rose-400">Не удалось начать интерком: {intercomError}</p>}
-          {groupError && <p className="text-xs text-rose-400">Ошибка группировки: {groupError}</p>}
-          {materialsError && <p className="text-xs text-rose-400">Ошибка материалов: {materialsError}</p>}
+          {live.error && <p className="text-xs text-danger-text">Реальная сессия недоступна: {live.error}</p>}
+          {broadcastError && <p className="text-xs text-danger-text">Не удалось начать показ: {broadcastError}</p>}
+          {micBroadcastError && <p className="text-xs text-danger-text">Не удалось включить микрофон: {micBroadcastError}</p>}
+          {listenError && <p className="text-xs text-danger-text">Не удалось начать прослушку: {listenError}</p>}
+          {intercomError && <p className="text-xs text-danger-text">Не удалось начать интерком: {intercomError}</p>}
+          {groupError && <p className="text-xs text-danger-text">Ошибка группировки: {groupError}</p>}
+          {materialsError && <p className="text-xs text-danger-text">Ошибка материалов: {materialsError}</p>}
         </div>
 
         <LessonTimer />
 
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="secondary" className="px-4 py-2.5 text-sm" onClick={() => setPreviewOpen((v) => !v)}>
-            {previewOpen ? "Скрыть превью экрана" : "🖥 Превью своего экрана"}
+          <Button variant="secondary" aria-pressed={previewOpen} className={HEADER_BTN + (previewOpen ? PRESSED : "")} onClick={() => setPreviewOpen((v) => !v)}>
+            {previewOpen ? <MonitorOff size={16} /> : <Monitor size={16} />}
+            Превью экрана
           </Button>
-          <Button variant="secondary" className="px-4 py-2.5 text-sm" onClick={toggleBroadcast}>
-            {broadcasting ? "⏹ Остановить показ" : "📡 Показать классу"}
+          <Button variant="secondary" className={HEADER_BTN} onClick={toggleBroadcast}>
+            {broadcasting ? <Square size={16} /> : <Cast size={16} />}
+            {broadcasting ? "Остановить показ" : "Показать классу"}
           </Button>
-          <Button variant="secondary" className="px-4 py-2.5 text-sm" onClick={toggleMicBroadcast}>
-            {micBroadcasting ? "🔇 Выключить микрофон" : "🎙 Говорить с классом"}
+          <Button variant="secondary" className={HEADER_BTN} onClick={toggleMicBroadcast}>
+            {micBroadcasting ? <MicOff size={16} /> : <Mic size={16} />}
+            {micBroadcasting ? "Выключить микрофон" : "Говорить с классом"}
           </Button>
-          <Button variant="secondary" className="px-4 py-2.5 text-sm" onClick={() => setGroupPanelOpen((v) => !v)}>
-            {groupPanelOpen ? "Скрыть группы" : "👥 Группы"}
+          <Button variant="secondary" aria-pressed={groupPanelOpen} className={HEADER_BTN + (groupPanelOpen ? PRESSED : "")} onClick={() => setGroupPanelOpen((v) => !v)}>
+            <Users size={16} />
+            Группы
           </Button>
-          <Button variant="secondary" className="px-4 py-2.5 text-sm" onClick={() => setMaterialsPanelOpen((v) => !v)}>
-            {materialsPanelOpen ? "Скрыть материалы" : "🎵 Материалы"}
+          <Button variant="secondary" aria-pressed={materialsPanelOpen} className={HEADER_BTN + (materialsPanelOpen ? PRESSED : "")} onClick={() => setMaterialsPanelOpen((v) => !v)}>
+            <Music size={16} />
+            Материалы
           </Button>
-          <Button variant="secondary" className="px-4 py-2.5 text-sm" onClick={onEnd}>
+          <Button variant="secondary" className={HEADER_BTN} onClick={onEnd}>
+            <LogOut size={16} />
             Завершить урок
           </Button>
         </div>
@@ -411,7 +423,7 @@ export function TeacherClassGrid({ className, live, onEnd }: Props) {
                 ) : (
                   <span className="text-xs text-white/50">{preview.error ? `Ошибка: ${preview.error}` : "Подключение…"}</span>
                 )}
-                <span className="absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-violet-300">
+                <span className="absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-accent-text">
                   Ваш экран (превью)
                 </span>
               </div>
@@ -429,7 +441,7 @@ export function TeacherClassGrid({ className, live, onEnd }: Props) {
             >
               <div className="mb-3 text-xs font-medium text-[var(--color-text-muted)]">Пары и группы</div>
               {live.realStudents.length === 0 ? (
-                <EmptyState compact icon="👥" title="Нет подключённых учеников" hint="Группы можно собрать, когда в классе будет хотя бы двое." />
+                <EmptyState compact icon={<Users />} title="Нет подключённых учеников" hint="Группы можно собрать, когда в классе будет хотя бы двое." />
               ) : (
                 <div className="flex max-h-64 flex-col gap-2 overflow-y-auto">
                   {live.realStudents.map((s) => (
@@ -447,7 +459,7 @@ export function TeacherClassGrid({ className, live, onEnd }: Props) {
                         <button
                           type="button"
                           onClick={() => handleLeaveGroup(s.realId)}
-                          className="shrink-0 rounded-md bg-white/5 px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-white/10"
+                          className="shrink-0 rounded-md bg-overlay px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-overlay-hover"
                         >
                           Группа {s.group} · выйти
                         </button>
@@ -477,7 +489,7 @@ export function TeacherClassGrid({ className, live, onEnd }: Props) {
                   <button
                     type="button"
                     onClick={handleUploadMaterial}
-                    className="rounded-md bg-white/5 px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-white/10"
+                    className="rounded-md bg-overlay px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-overlay-hover"
                   >
                     + Добавить файл
                   </button>
@@ -485,10 +497,10 @@ export function TeacherClassGrid({ className, live, onEnd }: Props) {
               </div>
 
               {playingTitle && (
-                <div className="mb-3 flex items-center justify-between gap-2 rounded-lg bg-violet-400/10 px-3 py-2 text-sm text-violet-300">
-                  <span className="truncate">▶ {playingTitle}</span>
-                  <button type="button" onClick={handleStopPlayback} className="shrink-0 hover:text-violet-100">
-                    ⏹ Стоп
+                <div className="mb-3 flex items-center justify-between gap-2 rounded-lg bg-violet-400/10 px-3 py-2 text-sm text-accent-text">
+                  <span className="flex min-w-0 items-center gap-2"><Play size={14} className="shrink-0" /><span className="truncate">{playingTitle}</span></span>
+                  <button type="button" onClick={handleStopPlayback} className="shrink-0 hover:text-accent-text">
+                    <span className="flex items-center gap-1.5"><Square size={12} /> Стоп</span>
                   </button>
                 </div>
               )}
@@ -500,7 +512,7 @@ export function TeacherClassGrid({ className, live, onEnd }: Props) {
               ) : materialsList.length === 0 ? (
                 <EmptyState
                   compact
-                  icon="🎵"
+                  icon={<Music />}
                   title="Библиотека пуста"
                   hint="Добавьте mp3 или wav — потом его можно проиграть всему классу или выбранным ученикам."
                   action={
@@ -517,19 +529,19 @@ export function TeacherClassGrid({ className, live, onEnd }: Props) {
                       <button
                         type="button"
                         onClick={() => handlePlayMaterial(m.id, [])}
-                        className="shrink-0 rounded-md bg-white/5 px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-white/10"
+                        className="inline-flex shrink-0 items-center gap-1 rounded-md bg-overlay px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-overlay-hover"
                         title="Проиграть всем подключённым"
                       >
-                        ▶ Всем
+                        <Play size={12} /> Всем
                       </button>
                       <button
                         type="button"
                         onClick={() => handlePlayMaterial(m.id, Array.from(groupSelection))}
                         disabled={groupSelection.size === 0}
-                        className="shrink-0 rounded-md bg-white/5 px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                        className="inline-flex shrink-0 items-center gap-1 rounded-md bg-overlay px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-overlay-hover disabled:cursor-not-allowed disabled:opacity-40"
                         title="Проиграть выбранным в панели «Группы»"
                       >
-                        ▶ Выбранным
+                        <Play size={12} /> Выбранным
                       </button>
                     </div>
                   ))}

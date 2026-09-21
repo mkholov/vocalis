@@ -1,31 +1,77 @@
 @import "tailwindcss";
 
-/* Semantic color tokens (Tailwind v4 `@theme` — these become real CSS custom
-   properties, so overriding them under a data attribute further down still
-   works, and utilities like `bg-app` / `text-primary` stay in sync). Values
-   below are the dark palette, which is the only one actually wired up right
-   now — see the light override block for the seed the roadmap asked for
-   ("оставь задел, переключатель не обязателен на этом шаге"): flipping
-   `document.documentElement.dataset.theme = "light"` at runtime is all a
-   future step needs to add. Accent stays plain Tailwind `violet-*` in
-   components rather than a token — it's the same #a78bfa the egui app's
-   `theme::ACCENT` already uses, so no separate mapping needed yet. */
+/* Semantic color tokens (Tailwind v4 `@theme` — real CSS custom properties, so the
+   `[data-theme="light"]` block below can override them at runtime and every utility that
+   references them (`bg-overlay`, `text-accent-text`, `bg-[var(--color-card)]` …) follows).
+   Dark is the default; components must use these tokens rather than hard-coded
+   `white/…`/`black/…`/`violet-300` colours, or the light theme breaks. */
 @theme {
   --color-app: #0a0a0f;
   --color-card: rgb(24 24 32 / 0.7);
   --color-card-solid: #17171f;
   --color-border-subtle: rgb(255 255 255 / 0.08);
+  --color-border-strong: rgb(255 255 255 / 0.2);
   --color-text-primary: #f4f4f5;
   --color-text-muted: #a1a1aa;
+
+  /* Surface tints that sit *on top of* a card: quiet button fills, hover fills, input wells. Dark theme
+     lightens the surface (white overlay), light theme darkens it — so components say `bg-overlay`,
+     never `bg-white/5`, and both themes keep working. */
+  --color-overlay: rgb(255 255 255 / 0.05);
+  --color-overlay-hover: rgb(255 255 255 / 0.1);
+  --color-overlay-strong: rgb(255 255 255 / 0.2);
+  --color-field: rgb(0 0 0 / 0.2);
+  --color-field-focus: rgb(0 0 0 / 0.3);
+  --color-subtle: rgb(0 0 0 / 0.1);
+
+  /* Coloured *text* (accent / status): the light shades that read well on dark are too pale on white. */
+  --color-accent: #a78bfa;
+  --color-accent-text: #c4b5fd;
+  --color-danger-text: #fb7185;
+  --color-ok-text: #34d399;
+  --color-warn-text: #fcd34d;
+  /* Status colours for badges / presence labels (same hues as egui's theme.rs). */
+  --color-status-warn: #e6a84a;
+  --color-status-ok: #5ec980;
+  --color-status-accent: #a78bfa;
+  --color-status-danger: #e05252;
 }
 
+/* Light palette — switched at runtime by `lib/theme.ts` (`document.documentElement.dataset.theme`), from
+   the Settings screen. */
 [data-theme="light"] {
-  --color-app: #f7f7fb;
-  --color-card: rgb(255 255 255 / 0.75);
+  --color-app: #f4f4f9;
+  --color-card: rgb(255 255 255 / 0.85);
   --color-card-solid: #ffffff;
-  --color-border-subtle: rgb(0 0 0 / 0.08);
+  --color-border-subtle: rgb(0 0 0 / 0.1);
+  --color-border-strong: rgb(0 0 0 / 0.25);
   --color-text-primary: #18181b;
   --color-text-muted: #52525b;
+
+  --color-overlay: rgb(0 0 0 / 0.05);
+  --color-overlay-hover: rgb(0 0 0 / 0.09);
+  --color-overlay-strong: rgb(0 0 0 / 0.15);
+  --color-field: #ffffff;
+  --color-field-focus: #ffffff;
+  --color-subtle: rgb(0 0 0 / 0.035);
+
+  --color-accent: #7c3aed;
+  --color-accent-text: #6d28d9;
+  --color-danger-text: #be123c;
+  --color-ok-text: #047857;
+  --color-warn-text: #b45309;
+  --color-status-warn: #b45309;
+  --color-status-ok: #047857;
+  --color-status-accent: #6d28d9;
+  --color-status-danger: #dc2626;
+}
+
+/* Native controls (select dropdowns, scrollbars, checkboxes) follow the theme too. */
+:root {
+  color-scheme: dark;
+}
+[data-theme="light"] {
+  color-scheme: light;
 }
 
 body {

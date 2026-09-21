@@ -1,4 +1,5 @@
 import { motion } from "framer-motion";
+import { ChartColumn } from "lucide-react";
 import { Panel } from "../components/ui/Panel";
 import { EmptyState } from "../components/ui/EmptyState";
 import { ROSTER } from "../lib/mockClassroom";
@@ -43,7 +44,7 @@ export function StatsPanel({ stats = MOCK_STATS }: { stats?: StudentStat[] }) {
         </div>
         <Panel>
           <EmptyState
-            icon="📊"
+            icon={<ChartColumn />}
             title="Статистики пока нет"
             hint="Она появится после первого проведённого урока: посещаемость, выполненные задания и средний балл по каждому ученику."
           />
@@ -58,7 +59,7 @@ export function StatsPanel({ stats = MOCK_STATS }: { stats?: StudentStat[] }) {
       <div>
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-2xl font-semibold tracking-tight">Статистика</h1>
-          <span className="rounded-md bg-amber-400/15 px-2 py-0.5 text-xs font-medium text-amber-300">Пример данных</span>
+          <span className="rounded-md bg-amber-400/15 px-2 py-0.5 text-xs font-medium text-warn-text">Пример данных</span>
         </div>
         <p className="text-sm text-[var(--color-text-muted)]">
           Это образец оформления, не ваш класс: реальная сводка появится вместе с командой, которая её считает.
@@ -75,7 +76,7 @@ export function StatsPanel({ stats = MOCK_STATS }: { stats?: StudentStat[] }) {
           <motion.div
             key={tile.label}
             variants={{ hidden: { opacity: 0, y: 10 }, visible: { opacity: 1, y: 0 } }}
-            className="flex min-w-[150px] flex-1 flex-col rounded-xl border border-[var(--color-border-subtle)] bg-black/10 px-4 py-3"
+            className="flex min-w-[150px] flex-1 flex-col rounded-xl border border-[var(--color-border-subtle)] bg-subtle px-4 py-3"
           >
             <div className="text-xs text-[var(--color-text-muted)]">{tile.label}</div>
             <div className="mt-auto pt-1 text-2xl font-semibold">{tile.value}</div>

@@ -1,10 +1,11 @@
 import { useState, type Dispatch, type SetStateAction } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { Check, ClipboardList, Send } from "lucide-react";
 import { Panel } from "../components/ui/Panel";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
-import { AssignmentEditor, KIND_META } from "../components/AssignmentEditor";
-import { summarize, type AssignmentContent, type AssignmentDraft, type AssignmentTemplate } from "../lib/assignments";
+import { AssignmentEditor } from "../components/AssignmentEditor";
+import { KIND_META, summarize, tint, type AssignmentContent, type AssignmentDraft, type AssignmentTemplate } from "../lib/assignments";
 
 
 interface Props {
@@ -40,7 +41,7 @@ export function AssignmentsPanel({ templates, onAdd, draft, setDraft }: Props) {
         <h2 className="mb-4 text-sm font-medium text-[var(--color-text-muted)]">Библиотека заданий</h2>
         {templates.length === 0 ? (
           <EmptyState
-            icon="📝"
+            icon={<ClipboardList />}
             title="Пока нет ни одного задания"
             hint="Соберите первое в форме «Создать задание» ниже — оно появится здесь."
           />
@@ -61,7 +62,7 @@ export function AssignmentsPanel({ templates, onAdd, draft, setDraft }: Props) {
                     <div className="flex min-w-0 items-center gap-3">
                       <span
                         className="shrink-0 rounded-md px-2 py-0.5 text-xs font-medium"
-                        style={{ backgroundColor: `${meta.color}26`, color: meta.color }}
+                        style={{ backgroundColor: tint(meta.color), color: meta.color }}
                       >
                         {meta.label}
                       </span>
@@ -71,7 +72,8 @@ export function AssignmentsPanel({ templates, onAdd, draft, setDraft }: Props) {
                       </div>
                     </div>
                     <Button variant="secondary" className="shrink-0 px-3 py-1.5 text-sm" onClick={() => markSent(t.id)}>
-                      {justSentId === t.id ? "Отправлено ✓" : "📤 Отправить"}
+                      {justSentId === t.id ? <Check size={15} /> : <Send size={15} />}
+                      {justSentId === t.id ? "Отправлено" : "Отправить"}
                     </Button>
                   </motion.li>
                 );

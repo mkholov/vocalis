@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { Check, Copy, TriangleAlert } from "lucide-react";
 import { copyText } from "../lib/copyText";
 
 type CopyState = "idle" | "copied" | "failed";
@@ -18,13 +19,14 @@ function CopyPinButton({ pin, className = "" }: { pin: string; className?: strin
     timer.current = setTimeout(() => setState("idle"), 1800);
   }
 
-  const label = state === "copied" ? "✓ Скопировано" : state === "failed" ? "Не удалось скопировать" : "📋 Скопировать";
+  const label = state === "copied" ? "Скопировано" : state === "failed" ? "Не удалось скопировать" : "Скопировать";
+  const Icon = state === "copied" ? Check : state === "failed" ? TriangleAlert : Copy;
   const tone =
     state === "copied"
-      ? "bg-emerald-400/15 text-emerald-300"
+      ? "bg-emerald-400/15 text-ok-text"
       : state === "failed"
-        ? "bg-rose-400/15 text-rose-300"
-        : "bg-white/5 text-[var(--color-text-muted)] hover:bg-white/10 hover:text-[var(--color-text-primary)]";
+        ? "bg-rose-400/15 text-danger-text"
+        : "bg-overlay text-[var(--color-text-muted)] hover:bg-overlay-hover hover:text-[var(--color-text-primary)]";
 
   return (
     <button
@@ -47,7 +49,9 @@ function CopyPinButton({ pin, className = "" }: { pin: string; className?: strin
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -4 }}
           transition={{ duration: 0.12 }}
+          className="inline-flex items-center gap-1.5"
         >
+          <Icon size={13} />
           {label}
         </motion.span>
       </AnimatePresence>
@@ -72,7 +76,7 @@ export function PinHero({ pin }: { pin: string }) {
     <div className="flex flex-col items-center gap-3">
       <div className="text-xs font-medium uppercase tracking-widest text-[var(--color-text-muted)]">PIN урока</div>
       {/* `pl` balances the trailing letter-spacing so the digits look centred. */}
-      <div className="pl-[0.3em] font-mono text-6xl font-bold tracking-[0.3em] text-violet-300 select-all">{pin}</div>
+      <div className="pl-[0.3em] font-mono text-6xl font-bold tracking-[0.3em] text-accent-text select-all">{pin}</div>
       <CopyPinButton pin={pin} className="px-3.5 py-1.5 text-sm" />
     </div>
   );

@@ -20,7 +20,7 @@ export function WaitingForStudents({ pin, error }: Props) {
       className="relative z-10 mb-6 flex flex-col items-center gap-4 overflow-hidden rounded-2xl border border-violet-400/25 bg-violet-400/[0.06] px-6 py-8 text-center"
     >
       {error ? (
-        <p className="text-sm text-rose-400">Сессия не запущена — ученики не смогут подключиться.</p>
+        <p className="text-sm text-danger-text">Сессия не запущена — ученики не смогут подключиться.</p>
       ) : pin ? (
         <>
           <PinHero pin={pin} />

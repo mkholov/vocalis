@@ -1,8 +1,15 @@
 import { useEffect, useState } from "react";
+import { Moon, Sun } from "lucide-react";
 import { Panel } from "../components/ui/Panel";
 import { listAudioDevices, type AudioDevicesDto } from "../lib/commands";
+import { setTheme, useTheme, type Theme } from "../lib/theme";
 
 type Quality = "high" | "medium" | "low";
+
+const THEME_OPTIONS: { value: Theme; label: string; icon: typeof Sun }[] = [
+  { value: "dark", label: "Тёмная", icon: Moon },
+  { value: "light", label: "Светлая", icon: Sun },
+];
 
 const QUALITY_LABEL: Record<Quality, string> = {
   high: "Высокое (1280 px, 15 fps)",
@@ -11,8 +18,8 @@ const QUALITY_LABEL: Record<Quality, string> = {
 };
 
 const selectClasses =
-  "w-full rounded-xl border border-[var(--color-border-subtle)] bg-black/20 px-4 py-2.5 text-[var(--color-text-primary)] " +
-  "outline-none transition-all focus:border-violet-400 focus:bg-black/30 focus:ring-4 focus:ring-violet-400/15";
+  "w-full rounded-xl border border-[var(--color-border-subtle)] bg-field px-4 py-2.5 text-[var(--color-text-primary)] " +
+  "outline-none transition-all focus:border-violet-400 focus:bg-field-focus focus:ring-4 focus:ring-violet-400/15";
 
 /** Step 5 of the Tauri migration (vocalis_roadmap.md, section 8): settings
  * screen. The device lists are real — `list_audio_devices` (step 2) hitting
@@ -27,6 +34,7 @@ export function SettingsPanel() {
   const [outputDevice, setOutputDevice] = useState("system");
   const [quality, setQuality] = useState<Quality>("high");
   const [language, setLanguage] = useState("ru");
+  const theme = useTheme();
 
   useEffect(() => {
     listAudioDevices()
@@ -39,15 +47,43 @@ export function SettingsPanel() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Настройки</h1>
         <p className="text-sm text-[var(--color-text-muted)]">
-          Список устройств — настоящий, с этого компьютера. Остальное здесь пока не сохраняется между запусками.
+          Список устройств — настоящий, с этого компьютера. Тема запоминается между запусками; остальные настройки пока нет.
         </p>
       </div>
+
+      <Panel>
+        <h2 className="mb-4 text-sm font-medium text-[var(--color-text-muted)]">Тема оформления</h2>
+        <div role="radiogroup" aria-label="Тема оформления" className="inline-flex gap-1 rounded-xl bg-overlay p-1">
+          {THEME_OPTIONS.map(({ value, label, icon: Icon }) => {
+            const active = theme === value;
+            return (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                onClick={() => setTheme(value)}
+                className={
+                  "inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium outline-none transition-colors " +
+                  "focus-visible:ring-2 focus-visible:ring-violet-400 " +
+                  (active
+                    ? "bg-[var(--color-card-solid)] text-[var(--color-text-primary)] shadow-sm"
+                    : "text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]")
+                }
+              >
+                <Icon size={16} />
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      </Panel>
 
       <Panel>
         <h2 className="mb-4 text-sm font-medium text-[var(--color-text-muted)]">Аудиоустройства</h2>
 
         {devicesError && (
-          <p className="rounded-lg bg-rose-400/10 px-3 py-2 text-sm text-rose-400">Не удалось получить список устройств: {devicesError}</p>
+          <p className="rounded-lg bg-rose-400/10 px-3 py-2 text-sm text-danger-text">Не удалось получить список устройств: {devicesError}</p>
         )}
         {!devices && !devicesError && (
           <div className="flex items-center gap-2 text-sm text-[var(--color-text-muted)]">

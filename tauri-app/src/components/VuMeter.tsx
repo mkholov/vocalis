@@ -7,10 +7,10 @@ const SHAPE = [0.35, 0.55, 0.8, 1.0, 0.8, 0.55, 0.35];
 const MAX_HEIGHT = 20;
 
 function barColor(index: number, active: boolean) {
-  if (!active) return "rgba(255,255,255,0.12)";
-  if (index === 3) return "#c9bff2"; // peak — theme::ACCENT_300
-  if (index === 2 || index === 4) return "#a78bfa"; // theme::ACCENT
-  return "#8f7be0"; // theme::ACCENT_500
+  if (!active) return "transparent";
+  if (index === 3) return "var(--color-accent-text)"; // peak — theme::ACCENT_300
+  if (index === 2 || index === 4) return "var(--color-accent)"; // theme::ACCENT
+  return "color-mix(in srgb, var(--color-accent) 82%, black)"; // theme::ACCENT_500
 }
 
 /** A small VU meter: `level` is 0-100, `active` gates whether anything is
@@ -25,7 +25,7 @@ export function VuMeter({ level, active }: { level: number; active: boolean }) {
         const trackHeight = MAX_HEIGHT * shape;
         const fillHeight = active ? Math.max(fraction * trackHeight, fraction > 0.02 ? 2 : 0) : 0;
         return (
-          <div key={i} className="relative w-[6px] overflow-hidden rounded-sm bg-white/10" style={{ height: trackHeight }}>
+          <div key={i} className="relative w-[6px] overflow-hidden rounded-sm bg-overlay-hover" style={{ height: trackHeight }}>
             <motion.div
               className="absolute bottom-0 w-full rounded-sm"
               style={{ backgroundColor: barColor(i, active) }}
