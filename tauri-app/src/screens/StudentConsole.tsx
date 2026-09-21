@@ -21,6 +21,12 @@ interface Props {
 
 const partnerOptions = ROSTER.filter((_, i) => i % 2 === 1);
 
+/** The "Демо-переключатели" panel and the sample assignment card it drives are debugging aids — teacher
+ * events they stand in for (listening / lock / group / assignment) aren't delivered to this screen yet.
+ * `import.meta.env.DEV` is true only under `vite`/`tauri dev`: a production build (the installer) compiles
+ * the panel out entirely, so a real student sees neither it nor the made-up assignment. */
+const SHOW_DEMO_CONTROLS = import.meta.env.DEV;
+
 /** Step 6 (screen) + step 7 parts A/B (live mic level, live screen-demo
  * video) of the Tauri migration (vocalis_roadmap.md, section 8) — takes cues
  * from `student::app` in the egui app (lock overlay, listening/group
@@ -28,8 +34,8 @@ const partnerOptions = ROSTER.filter((_, i) => i % 2 === 1);
  * (👍/❓) are new, added directly on this stack per the roadmap's step-8
  * intro. Listening/grouped-with/lock/assignment are still local mock
  * state — there's no session delivering *those* yet — so the
- * "Демо-переключатели" panel at the bottom exists to make every such visual
- * state reachable for review (its "Демонстрация экрана" toggle is now purely
+ * "Демо-переключатели" panel at the bottom (dev builds only — see
+ * `SHOW_DEMO_CONTROLS`) exists to make every such visual state reachable for review (its "Демонстрация экрана" toggle is now purely
  * a manual placeholder-preview trigger, since real demos start themselves —
  * see below). `useStudentSession` connects for real on mount
  * (`commands/student_session.rs`, the same Hello/Welcome handshake and
@@ -53,7 +59,7 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
   const showingDemo = demoActive || Boolean(session.frame);
   const [screenLocked, setScreenLocked] = useState(false);
   const [micLocked, setMicLocked] = useState(false);
-  const [hasAssignment, setHasAssignment] = useState(true);
+  const [hasAssignment, setHasAssignment] = useState(SHOW_DEMO_CONTROLS);
   const [assignmentOpen, setAssignmentOpen] = useState(false);
   const assignment = hasAssignment ? { title: "Времена группы Present", kind: "test" as AssignmentKind } : null;
 
@@ -309,20 +315,22 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
         )}
       </AnimatePresence>
 
-      <DemoControls
-        listening={listening}
-        setListening={setListening}
-        partner={partner}
-        setPartner={setPartner}
-        demoActive={demoActive}
-        setDemoActive={setDemoActive}
-        screenLocked={screenLocked}
-        setScreenLocked={setScreenLocked}
-        micLocked={micLocked}
-        setMicLocked={setMicLocked}
-        hasAssignment={hasAssignment}
-        setHasAssignment={setHasAssignment}
-      />
+      {SHOW_DEMO_CONTROLS && (
+        <DemoControls
+          listening={listening}
+          setListening={setListening}
+          partner={partner}
+          setPartner={setPartner}
+          demoActive={demoActive}
+          setDemoActive={setDemoActive}
+          screenLocked={screenLocked}
+          setScreenLocked={setScreenLocked}
+          micLocked={micLocked}
+          setMicLocked={setMicLocked}
+          hasAssignment={hasAssignment}
+          setHasAssignment={setHasAssignment}
+        />
+      )}
     </div>
   );
 }
