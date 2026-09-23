@@ -111,6 +111,7 @@ export function TeacherConsole({ className, onEnd }: Props) {
                 onAdd={(title, content) => setTemplates((prev) => [{ id: nextTemplateId.current++, title, content }, ...prev])}
                 draft={assignmentDraft}
                 setDraft={setAssignmentDraft}
+                students={live.realStudents}
               />
             )}
             {tab === "stats" && <StatsPanel className={className} />}

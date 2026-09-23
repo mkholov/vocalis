@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-send-assignment"
+description = "Enables the send_assignment command without any pre-configured scope."
+commands.allow = ["send_assignment"]
+
+[[permission]]
+identifier = "deny-send-assignment"
+description = "Denies the send_assignment command without any pre-configured scope."
+commands.deny = ["send_assignment"]

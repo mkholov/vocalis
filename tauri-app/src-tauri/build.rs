@@ -29,6 +29,7 @@ fn main() {
             "stop_intercom",
             "create_group",
             "leave_group",
+            "send_assignment",
             "list_materials",
             "upload_material",
             "play_material",

@@ -31,6 +31,7 @@
     "allow-stop-intercom",
     "allow-create-group",
     "allow-leave-group",
+    "allow-send-assignment",
     "allow-list-materials",
     "allow-upload-material",
     "allow-play-material",

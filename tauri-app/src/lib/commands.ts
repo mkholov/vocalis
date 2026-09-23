@@ -4,6 +4,7 @@
 // discovery). What's mocked in this step is only what happens *after* a
 // successful pick (see screens/*.tsx's onSubmit handlers).
 import { invoke } from "@tauri-apps/api/core";
+import type { AssignmentContent } from "./assignments";
 
 export interface ClassDto {
   id: number;
@@ -57,6 +58,32 @@ export interface ClassStatsDto {
 
 export function classStats(className: string): Promise<ClassStatsDto> {
   return invoke<ClassStatsDto>("class_stats", { className });
+}
+
+// --- Real assignment delivery (commands/teacher_session.rs's `send_assignment`, commands/
+// student_session.rs's `assignments` event) — `AssignmentContent` (`lib/assignments.ts`) is exactly the
+// wire shape on both ends, so a draft built by `AssignmentEditor` needs no reshaping to send, and an
+// offer received here needs none to render.
+
+export interface SendAssignmentResultDto {
+  sent: number;
+}
+
+/** `studentIds`: real UUIDs (`LiveStudent.realId`) to target, or `[]` for every currently connected
+ * student ("отправить всему классу") — same empty-means-everyone convention `playMaterial` already uses.
+ * Persists a real `assignments` row per targeted student (same as egui's own send) and delivers a real
+ * `ServerToClient::AssignmentOffer`; rejects if no teacher session is running or nobody is connected. */
+export function sendAssignment(title: string, content: AssignmentContent, studentIds: string[]): Promise<SendAssignmentResultDto> {
+  return invoke<SendAssignmentResultDto>("send_assignment", { title, content, studentIds });
+}
+
+/** One assignment a student has actually received, in the "assignments" event's shape
+ * (`commands/student_session.rs`'s `AssignmentDto`) — `id` is the real `AssignmentId` the teacher's offer
+ * carried, needed later to report `ClientToServer::AssignmentDone`/`TestResult` back against it. */
+export interface AssignmentOfferDto {
+  id: string;
+  title: string;
+  content: AssignmentContent;
 }
 
 export interface DiscoveredTeacherDto {

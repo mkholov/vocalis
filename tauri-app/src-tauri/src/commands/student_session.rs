@@ -34,6 +34,9 @@ use super::screen_frame::jpeg_data_url;
 /// Comfortably under the 66.7ms/15fps frame budget `video-bench` measured,
 /// so this adds negligible latency on top of decode+JPEG themselves.
 const DEMO_POLL_INTERVAL_MS: u64 = 20;
+/// Assignments arrive rarely (a teacher click, not a media stream) — nowhere near frame-budget territory,
+/// so a much coarser poll than the demo-frame one above is plenty responsive.
+const ASSIGNMENT_POLL_INTERVAL_MS: u64 = 200;
 /// `student::net::connect_to_teacher` has no readiness callback of its own
 /// (unlike `teacher::mic::start_mic_capture`, which `student_mic.rs` gets a
 /// synchronous ready signal from) — it just sets `connected_teacher` once the
@@ -107,6 +110,60 @@ pub struct StudentSessionState(pub Mutex<Option<StudentSession>>);
 #[serde(rename_all = "camelCase")]
 pub struct StudentSessionInfo {
     pub teacher_name: String,
+}
+
+/// One `TestQuestion`, in the exact shape `lib/assignments.ts`'s `AssignmentContent` expects — the
+/// counterpart of `teacher_session.rs`'s `TestQuestionDto` (that one `Deserialize`s the same shape from
+/// the editor; this one `Serialize`s it for a student to render).
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TestQuestionDto {
+    pub text: String,
+    pub options: Vec<String>,
+    pub correct_index: usize,
+}
+
+/// The counterpart of `teacher_session.rs`'s `AssignmentContentDto`, in the same
+/// `{ kind: "test" | "listening" | "reading", ... }` shape `lib/assignments.ts` already knows how to
+/// render — a real `ServerToClient::AssignmentOffer`'s content reaches the student console with no
+/// reshaping on the frontend.
+#[derive(Serialize, Clone)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum AssignmentContentDto {
+    Test { questions: Vec<TestQuestionDto> },
+    Listening { material_title: String, questions: Vec<String> },
+    Reading { text: String },
+}
+
+impl From<&lingua_common::AssignmentContent> for AssignmentContentDto {
+    fn from(c: &lingua_common::AssignmentContent) -> Self {
+        match c {
+            lingua_common::AssignmentContent::Test { questions } => AssignmentContentDto::Test {
+                questions: questions
+                    .iter()
+                    .map(|q| TestQuestionDto { text: q.text.clone(), options: q.options.clone(), correct_index: q.correct_index })
+                    .collect(),
+            },
+            lingua_common::AssignmentContent::Listening { material_title, questions } => {
+                AssignmentContentDto::Listening { material_title: material_title.clone(), questions: questions.clone() }
+            }
+            lingua_common::AssignmentContent::Reading { text } => AssignmentContentDto::Reading { text: text.clone() },
+        }
+    }
+}
+
+/// One real assignment this student has received, straight from `student::state::AssignmentEntry` —
+/// emitted (the whole current list, same "just resend the snapshot" convention `student-levels` uses on
+/// the teacher side) as the `"assignments"` event whenever a new one arrives. A `content: None` entry (a
+/// bare label-only "quick send", e.g. egui's `Dialogue` — see `AssignmentOffer`'s own doc comment) has
+/// nothing here to render yet, so it's left out rather than shown as broken; taking an answer for one of
+/// these is a separate, later step (this is real *receipt and display*, not yet a full answer flow).
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AssignmentDto {
+    pub id: String,
+    pub title: String,
+    pub content: AssignmentContentDto,
 }
 
 /// Polls `stop` every 100ms — `run_outbound_and_group_audio` has no
@@ -271,6 +328,34 @@ pub fn connect_student_session<R: tauri::Runtime>(
             }
         }
     };
+    {
+        // Always-on, same idle-until-something-happens shape as the receivers above: nothing to show
+        // until the teacher actually sends something, real from the first assignment on.
+        let poll_state = app_state.clone();
+        let app = app.clone();
+        tasks.push(tauri::async_runtime::spawn(async move {
+            let mut last_len = 0usize;
+            let mut interval = tokio::time::interval(Duration::from_millis(ASSIGNMENT_POLL_INTERVAL_MS));
+            loop {
+                interval.tick().await;
+                let current_len = poll_state.lock().unwrap().assignments.len();
+                if current_len == last_len {
+                    continue;
+                }
+                last_len = current_len;
+                let list: Vec<AssignmentDto> = poll_state
+                    .lock()
+                    .unwrap()
+                    .assignments
+                    .iter()
+                    .filter_map(|a| {
+                        a.content.as_ref().map(|c| AssignmentDto { id: a.id.to_string(), title: a.title.clone(), content: c.into() })
+                    })
+                    .collect();
+                let _ = app.emit("assignments", list);
+            }
+        }));
+    }
     {
         let poll_state = app_state.clone();
         tasks.push(tauri::async_runtime::spawn(async move {

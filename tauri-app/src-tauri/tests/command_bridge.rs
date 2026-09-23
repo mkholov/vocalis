@@ -89,6 +89,110 @@ fn list_classes_returns_real_db_rows() {
 /// slightly different spellings — the whole point of grouping by `normalize_name` — plus one student who
 /// never scored anything) and a decoy second class, and checks that both the class-wide tiles and every
 /// per-student row match a hand-computed expectation, and that the decoy's rows never leak in.
+/// Real assignment delivery, end to end: `send_assignment`'s JSON payload is exactly what
+/// `AssignmentEditor`'s draft produces (see `lib/assignments.ts`'s `draftToContent`), the real
+/// `ServerToClient::AssignmentOffer` it triggers reaches a real connected student over the network, and
+/// the student side's own poller turns that into the real `"assignments"` event the console renders —
+/// verified as the JSON a `StudentConsole` would actually receive, not by peeking at Rust structs.
+#[test]
+fn sending_an_assignment_reaches_the_student_as_a_real_assignment_offer() {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+    use tauri::{Listener, Manager};
+    use tauri_app_lib::commands::{student_session, teacher_session};
+
+    let _db = ScratchDb::new("send_assignment");
+
+    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
+    let session_info = teacher_session::start_teacher_session(
+        teacher_app.handle().clone(),
+        teacher_state.clone(),
+        "E2E класс (задания)".to_string(),
+    )
+    .expect("start_teacher_session should succeed");
+    let teacher_webview = tauri::WebviewWindowBuilder::new(&teacher_app, "main", Default::default()).build().unwrap();
+    let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+        let body = match args {
+            serde_json::Value::Null => InvokeBody::default(),
+            other => InvokeBody::Json(other),
+        };
+        let request = InvokeRequest {
+            cmd: cmd.into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: if cfg!(any(windows, target_os = "android")) { "http://tauri.localhost" } else { "tauri://localhost" }
+                .parse()
+                .unwrap(),
+            body,
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.to_string(),
+        };
+        tauri::test::get_ipc_response(&teacher_webview, request).map(|b| b.deserialize::<serde_json::Value>().unwrap())
+    };
+
+    let student_app = build_app(tauri::test::mock_builder());
+    let student_state = student_app.state::<student_session::StudentSessionState>();
+    student_session::connect_student_session(
+        student_app.handle().clone(),
+        student_state.clone(),
+        "127.0.0.1".to_string(),
+        lingua_common::CONTROL_PORT,
+        "E2E ученик (задания)".to_string(),
+        session_info.pin.clone(),
+    )
+    .expect("student should connect to the real running control server");
+
+    let (assign_tx, assign_rx) = mpsc::channel::<serde_json::Value>();
+    student_app.listen("assignments", move |event| {
+        if let Ok(list) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+            let _ = assign_tx.send(list);
+        }
+    });
+
+    let content = serde_json::json!({
+        "kind": "test",
+        "questions": [{ "text": "She ___ to school.", "options": ["go", "goes"], "correctIndex": 1 }],
+    });
+    let result = call("send_assignment", serde_json::json!({"title": "Времена Present", "content": content, "studentIds": []}))
+        .expect("send_assignment should succeed with no explicit targets (\"whole class\")");
+    assert_eq!(result["sent"], 1, "the one real connected student");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut received = None;
+    while Instant::now() < deadline {
+        if let Ok(list) = assign_rx.recv_timeout(Duration::from_millis(200)) {
+            received = Some(list);
+            break;
+        }
+    }
+    let list = received.expect("a real \"assignments\" event should reach the student");
+    let arr = list.as_array().expect("expected an array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["title"], "Времена Present");
+    assert_eq!(arr[0]["content"]["kind"], "test");
+    assert_eq!(arr[0]["content"]["questions"][0]["text"], "She ___ to school.");
+    assert_eq!(arr[0]["content"]["questions"][0]["correctIndex"], 1);
+    assert!(arr[0]["id"].as_str().is_some(), "a real assignment id, not a placeholder");
+
+    // Persisted for real, the same way `TeacherApp::send_assignment_template` does.
+    let saved: i64 = {
+        let conn = vocalis::teacher::db::open().expect("open the scratch db");
+        conn.query_row("SELECT COUNT(*) FROM assignments WHERE title = ?1", ["Времена Present"], |r| r.get(0)).unwrap()
+    };
+    assert_eq!(saved, 1, "send_assignment should persist a real row, like egui's own send_assignment_template");
+
+    let err = call("send_assignment", serde_json::json!({"title": "  ", "content": content, "studentIds": []}))
+        .expect_err("an empty title is refused");
+    assert_eq!(err, "Введите название задания");
+    let err = call("send_assignment", serde_json::json!({"title": "X", "content": content, "studentIds": ["не-uuid"]}))
+        .expect_err("an invalid student id is refused");
+    assert!(err.as_str().unwrap().contains("invalid student id"), "got: {err}");
+
+    teacher_session::stop_teacher_session(teacher_state);
+    student_session::disconnect_student_session(student_state);
+}
+
 #[test]
 fn class_stats_reports_real_per_student_history_grouped_by_normalized_name() {
     use vocalis::teacher::db;

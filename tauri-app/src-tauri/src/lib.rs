@@ -44,6 +44,7 @@ pub fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::App<R>
             commands::teacher_session::stop_intercom,
             commands::teacher_session::create_group,
             commands::teacher_session::leave_group,
+            commands::teacher_session::send_assignment,
             commands::teacher_session::list_materials,
             commands::teacher_session::upload_material,
             commands::teacher_session::play_material,

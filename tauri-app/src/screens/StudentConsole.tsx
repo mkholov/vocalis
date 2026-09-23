@@ -6,11 +6,12 @@ import { Panel } from "../components/ui/Panel";
 import { VuMeter } from "../components/VuMeter";
 import { FlyingReactions, type FlyingReaction } from "../components/FlyingReactions";
 import { ROSTER } from "../lib/mockClassroom";
-import { KIND_META, tint, type AssignmentKind } from "../lib/assignments";
+import { KIND_META, tint, type AssignmentContent } from "../lib/assignments";
 import { useMicMeter } from "../lib/useMicMeter";
 import { useStudentSession } from "../lib/useStudentSession";
 import { useRecordings } from "../lib/useRecordings";
-import { setHandRaised as sendHandRaised } from "../lib/commands";
+import { setHandRaised as sendHandRaised, type AssignmentOfferDto } from "../lib/commands";
+import { useAssignments } from "../lib/useAssignments";
 
 interface Props {
   studentName: string;
@@ -22,11 +23,24 @@ interface Props {
 
 const partnerOptions = ROSTER.filter((_, i) => i % 2 === 1);
 
-/** The "Демо-переключатели" panel and the sample assignment card it drives are debugging aids — teacher
- * events they stand in for (listening / lock / group / assignment) aren't delivered to this screen yet.
- * `import.meta.env.DEV` is true only under `vite`/`tauri dev`: a production build (the installer) compiles
- * the panel out entirely, so a real student sees neither it nor the made-up assignment. */
+/** The "Демо-переключатели" panel is a debugging aid — most of the teacher events it stands in for
+ * (listening / lock / group) aren't delivered to this screen yet. Assignments are the exception: those
+ * *are* real (`useAssignments`) — its "Есть демо-задание" toggle just adds one synthetic extra on top, for
+ * reviewing the card's look without a real teacher session. `import.meta.env.DEV` is true only under
+ * `vite`/`tauri dev`: a production build (the installer) compiles the whole panel out, so a real student
+ * never sees a synthetic assignment. */
 const SHOW_DEMO_CONTROLS = import.meta.env.DEV;
+
+/** The one synthetic assignment `showDevAssignment` can add — clearly marked so it's never mistaken for a
+ * real offer, and given an id no real `Uuid::new_v4()` will ever collide with. */
+const DEV_ASSIGNMENT: AssignmentOfferDto = {
+  id: "dev-demo-assignment",
+  title: "Времена группы Present (демо)",
+  content: {
+    kind: "test",
+    questions: [{ text: "She ___ to school every day.", options: ["go", "goes", "going"], correctIndex: 1 }],
+  },
+};
 
 /** Step 6 (screen) + step 7 parts A/B (live mic level, live screen-demo
  * video) of the Tauri migration (vocalis_roadmap.md, section 8) — takes cues
@@ -60,9 +74,12 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
   const showingDemo = demoActive || Boolean(session.frame);
   const [screenLocked, setScreenLocked] = useState(false);
   const [micLocked, setMicLocked] = useState(false);
-  const [hasAssignment, setHasAssignment] = useState(SHOW_DEMO_CONTROLS);
-  const [assignmentOpen, setAssignmentOpen] = useState(false);
-  const assignment = hasAssignment ? { title: "Времена группы Present", kind: "test" as AssignmentKind } : null;
+  // Real assignments this session has actually received (`commands/student_session.rs`'s "assignments"
+  // event, itself a real `ServerToClient::AssignmentOffer`) — `showDevAssignment` (dev builds only) appends
+  // one synthetic entry on top, purely so the card is reviewable without a real teacher session running.
+  const realAssignments = useAssignments();
+  const [showDevAssignment, setShowDevAssignment] = useState(false);
+  const assignments = showDevAssignment ? [...realAssignments, DEV_ASSIGNMENT] : realAssignments;
 
   // Real "поднять руку" (`commands/student_session.rs`'s `set_hand_raised` — a real
   // `ClientToServer::RequestHelp` over the network, seen by the teacher as `needsHelp` on this student's
@@ -167,38 +184,9 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
               )}
             </Panel>
 
-            {assignment && (
-              <Panel>
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <span
-                      className="rounded-md px-2 py-0.5 text-xs font-medium"
-                      style={{ backgroundColor: tint(KIND_META[assignment.kind].color), color: KIND_META[assignment.kind].color }}
-                    >
-                      {KIND_META[assignment.kind].label}
-                    </span>
-                    <span className="font-medium">{assignment.title}</span>
-                  </div>
-                  <Button variant="secondary" className="px-3 py-1.5 text-sm" onClick={() => setAssignmentOpen((v) => !v)}>
-                    {assignmentOpen ? "Свернуть" : "Начать"}
-                  </Button>
-                </div>
-                <AnimatePresence>
-                  {assignmentOpen && (
-                    <motion.div
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: "auto" }}
-                      exit={{ opacity: 0, height: 0 }}
-                      className="overflow-hidden"
-                    >
-                      <p className="mt-4 rounded-lg bg-overlay px-3 py-2 text-sm text-[var(--color-text-muted)]">
-                        Прохождение задания появится на следующем шаге — здесь будет сам вопрос и вариант ответа.
-                      </p>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </Panel>
-            )}
+            {assignments.map((a) => (
+              <AssignmentCard key={a.id} assignment={a} />
+            ))}
 
             <Panel>
               <div className="flex items-center justify-between gap-3">
@@ -345,8 +333,8 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
           setScreenLocked={setScreenLocked}
           micLocked={micLocked}
           setMicLocked={setMicLocked}
-          hasAssignment={hasAssignment}
-          setHasAssignment={setHasAssignment}
+          hasAssignment={showDevAssignment}
+          setHasAssignment={setShowDevAssignment}
         />
       )}
     </div>
@@ -419,7 +407,7 @@ function DemoControls(props: DemoControlsProps) {
             <DemoToggle label="Экран заблокирован" checked={props.screenLocked} onChange={props.setScreenLocked} />
             <DemoToggle label="Микрофон заблокирован" checked={props.micLocked} onChange={props.setMicLocked} />
             <DemoToggle label="Демонстрация экрана" checked={props.demoActive} onChange={props.setDemoActive} />
-            <DemoToggle label="Есть задание" checked={props.hasAssignment} onChange={props.setHasAssignment} />
+            <DemoToggle label="Есть демо-задание" checked={props.hasAssignment} onChange={props.setHasAssignment} />
             <div>
               <label className="mb-1 block text-xs text-[var(--color-text-muted)]">В группе с</label>
               <select
@@ -456,4 +444,85 @@ function DemoToggle({ label, checked, onChange }: { label: string; checked: bool
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="accent-violet-400" />
     </label>
   );
+}
+
+/** One real received assignment: kind badge, title, and an expand/collapse toggle to see it. Answering is
+ * a later step (per-kind display only, for now — see this file's own module doc comment): reading the
+ * question is real, submitting an answer isn't wired up yet. */
+function AssignmentCard({ assignment }: { assignment: AssignmentOfferDto }) {
+  const [open, setOpen] = useState(false);
+  const meta = KIND_META[assignment.content.kind];
+  return (
+    <Panel>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <span
+            className="shrink-0 rounded-md px-2 py-0.5 text-xs font-medium"
+            style={{ backgroundColor: tint(meta.color), color: meta.color }}
+          >
+            {meta.label}
+          </span>
+          <span className="min-w-0 truncate font-medium">{assignment.title}</span>
+        </div>
+        <Button variant="secondary" className="shrink-0 px-3 py-1.5 text-sm" onClick={() => setOpen((v) => !v)}>
+          {open ? "Свернуть" : "Начать"}
+        </Button>
+      </div>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            className="overflow-hidden"
+          >
+            <div className="mt-4 rounded-lg bg-overlay px-3 py-3 text-sm">
+              <AssignmentBody content={assignment.content} />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </Panel>
+  );
+}
+
+function AssignmentBody({ content }: { content: AssignmentContent }) {
+  if (content.kind === "test") {
+    return (
+      <ol className="flex flex-col gap-3">
+        {content.questions.map((q, qi) => (
+          <li key={qi}>
+            <div className="mb-1.5 font-medium">
+              {qi + 1}. {q.text}
+            </div>
+            <ul className="flex flex-col gap-1 pl-4 text-[var(--color-text-muted)]">
+              {q.options.map((o, oi) => (
+                <li key={oi} className="flex items-center gap-2">
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-current" />
+                  {o}
+                </li>
+              ))}
+            </ul>
+          </li>
+        ))}
+      </ol>
+    );
+  }
+  if (content.kind === "listening") {
+    return (
+      <div>
+        <div className="mb-2 font-medium">{content.materialTitle}</div>
+        {content.questions.length > 0 && (
+          <ol className="flex flex-col gap-1 pl-4 text-[var(--color-text-muted)]">
+            {content.questions.map((q, qi) => (
+              <li key={qi}>
+                {qi + 1}. {q}
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    );
+  }
+  return <p className="whitespace-pre-wrap">{content.text}</p>;
 }

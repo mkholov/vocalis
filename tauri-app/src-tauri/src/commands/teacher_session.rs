@@ -25,8 +25,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lingua_common::{ServerToClient, StudentId, TEACHER_INTERCOM_PORT};
-use serde::Serialize;
+use lingua_common::{AssignmentKind, ServerToClient, StudentId, TEACHER_INTERCOM_PORT};
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use vocalis::teacher::{db, listen, materials, mic, net, screen, state};
 
@@ -668,6 +668,118 @@ pub fn leave_group(session: State<TeacherSessionState>, student_id: String) -> R
     let teacher_session = guard.as_ref().ok_or("нет активной сессии преподавателя")?;
     teacher_session.app_state.lock().unwrap().leave_group(id);
     Ok(())
+}
+
+/// One question of a `Test` assignment, exactly as `lib/assignments.ts`'s `AssignmentContent` shapes it —
+/// deserializing this straight from the editor's own draft is the whole point (see `send_assignment`'s doc
+/// comment), so this must stay in step with that TS type.
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TestQuestionDto {
+    text: String,
+    options: Vec<String>,
+    correct_index: usize,
+}
+
+/// The frontend's `AssignmentContent` (`lib/assignments.ts`), field-for-field — `#[serde(tag = "kind")]`
+/// matches its `{ kind: "test" | "listening" | "reading", ... }` discriminated union directly, so
+/// `AssignmentEditor`'s output needs no reshaping before it reaches `send_assignment`.
+#[derive(Deserialize, Clone)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum AssignmentContentDto {
+    Test { questions: Vec<TestQuestionDto> },
+    Listening { material_title: String, questions: Vec<String> },
+    Reading { text: String },
+}
+
+impl AssignmentContentDto {
+    /// `AssignmentKind` has no "Reading" of its own — the egui editor's own "Чтение / произношение" draft
+    /// kind maps to `AssignmentKind::Pronunciation` (see `TeacherApp::save_assignment_draft`), reused here
+    /// unchanged so a reading assignment sent from either UI looks identical to a connected student.
+    fn into_kind_and_content(self) -> (AssignmentKind, lingua_common::AssignmentContent) {
+        match self {
+            AssignmentContentDto::Test { questions } => (
+                AssignmentKind::Test,
+                lingua_common::AssignmentContent::Test {
+                    questions: questions
+                        .into_iter()
+                        .map(|q| lingua_common::TestQuestion { text: q.text, options: q.options, correct_index: q.correct_index })
+                        .collect(),
+                },
+            ),
+            AssignmentContentDto::Listening { material_title, questions } => {
+                (AssignmentKind::Listening, lingua_common::AssignmentContent::Listening { material_title, questions })
+            }
+            AssignmentContentDto::Reading { text } => (AssignmentKind::Pronunciation, lingua_common::AssignmentContent::Reading { text }),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendAssignmentResult {
+    pub sent: usize,
+}
+
+/// Sends a real assignment — built from the editor's own draft, not a stub — to `student_ids`, or every
+/// currently connected student if `student_ids` is empty ("отправить выбранным"/"отправить всему классу",
+/// same empty-means-everyone rule `play_material` already uses for "проиграть всем"). Reuses
+/// `TeacherApp::send_assignment_template`'s own steps exactly, just fed content straight from IPC instead
+/// of a saved template row: persists one real `assignments` row per targeted, currently-known student
+/// (`db::insert_assignment` — silently skipped for a student with no `db_id`, same as there), records it
+/// in that student's live `Student::assignments` (so it shows up in `TeacherApp::stats_tab`-style progress
+/// views), and delivers the real `ServerToClient::AssignmentOffer` — the student console renders whatever
+/// arrives, unchanged wire format.
+#[tauri::command]
+pub fn send_assignment(
+    session: State<TeacherSessionState>,
+    title: String,
+    content: AssignmentContentDto,
+    student_ids: Vec<String>,
+) -> Result<SendAssignmentResult, String> {
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return Err("Введите название задания".to_string());
+    }
+    let (kind, content) = content.into_kind_and_content();
+
+    let guard = session.0.lock().unwrap();
+    let teacher_session = guard.as_ref().ok_or("нет активной сессии преподавателя")?;
+    let mut state_guard = teacher_session.app_state.lock().unwrap();
+
+    let target_ids: Vec<StudentId> = if student_ids.is_empty() {
+        state_guard.students.keys().copied().collect()
+    } else {
+        student_ids.iter().map(|s| s.parse().map_err(|_| format!("invalid student id: {s}"))).collect::<Result<_, String>>()?
+    };
+    if target_ids.is_empty() {
+        return Err("Нет подключенных учеников".to_string());
+    }
+
+    let mut sent = 0;
+    for id in &target_ids {
+        let Some(student_db_id) = state_guard.students.get(id).map(|s| s.db_id) else { continue };
+        let assignment_db_id = student_db_id.and_then(|row_id| db::insert_assignment(&state_guard.db, row_id, &title, kind).ok());
+
+        let Some(s) = state_guard.students.get_mut(id) else { continue };
+        let assignment_id = uuid::Uuid::new_v4();
+        s.assignments.push(state::AssignmentInstance {
+            id: assignment_id,
+            title: title.clone(),
+            kind,
+            done: false,
+            db_id: assignment_db_id,
+            test_score: None,
+        });
+        let _ = s.to_client.send(ServerToClient::AssignmentOffer {
+            id: assignment_id,
+            title: title.clone(),
+            kind,
+            content: Some(content.clone()),
+        });
+        sent += 1;
+    }
+    Ok(SendAssignmentResult { sent })
 }
 
 #[derive(Serialize, Clone)]
