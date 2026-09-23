@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Cast, LogOut, Mic, MicOff, Monitor, MonitorOff, Music, Play, Square, Users } from "lucide-react";
+import { readSelectedMicDevice } from "../lib/micDevice";
 import { StudentCard } from "../components/StudentCard";
 import { LessonTimer } from "../components/LessonTimer";
 import { Button } from "../components/ui/Button";
@@ -137,7 +138,7 @@ export function TeacherClassGrid({ className, live, onEnd }: Props) {
       return;
     }
     try {
-      await startMicBroadcast();
+      await startMicBroadcast(readSelectedMicDevice());
       setMicBroadcasting(true);
       setMicBroadcastError(undefined);
       // Materials playback and the live mic broadcast share MIC_PORT — the
@@ -208,7 +209,7 @@ export function TeacherClassGrid({ className, live, onEnd }: Props) {
       return;
     }
     try {
-      await startIntercom(realId);
+      await startIntercom(realId, readSelectedMicDevice());
       setIntercomId(realId);
       setListeningId(realId);
       setIntercomError(undefined);

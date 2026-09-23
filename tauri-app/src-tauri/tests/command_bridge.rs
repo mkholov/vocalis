@@ -573,7 +573,7 @@ fn teacher_mic_broadcast_reaches_a_real_connected_student() {
     .expect("connect_student_session should succeed against a real running control server");
     assert_eq!(connected.teacher_name, "Tauri (тест)");
 
-    if let Err(e) = teacher_session::start_mic_broadcast(teacher_state.clone()) {
+    if let Err(e) = teacher_session::start_mic_broadcast(teacher_state.clone(), None) {
         println!("[e2e] skipping mic-broadcast verification: no real input device on this runner ({e})");
         teacher_session::stop_teacher_session(teacher_state);
         student_session::disconnect_student_session(student_state);
@@ -742,7 +742,7 @@ fn teacher_and_student_hear_each_other_over_a_real_intercom() {
 
     let student_id = id_rx.recv_timeout(Duration::from_secs(5)).expect("a real student-levels event naming this student should arrive");
 
-    let intercom_info = match teacher_session::start_intercom(teacher_state.clone(), student_id) {
+    let intercom_info = match teacher_session::start_intercom(teacher_state.clone(), student_id, None) {
         Ok(info) => info,
         Err(e) => {
             println!("[e2e] skipping intercom verification: no real input device on this runner (teacher side) ({e})");

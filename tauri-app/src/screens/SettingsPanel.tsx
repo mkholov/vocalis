@@ -5,6 +5,7 @@ import { MicTest } from "../components/MicTest";
 import { Panel } from "../components/ui/Panel";
 import { listAudioDevices, type AudioDevicesDto } from "../lib/commands";
 import { setTheme, useTheme, type Theme } from "../lib/theme";
+import { setSelectedMicDevice, useSelectedMicDevice } from "../lib/micDevice";
 
 type Quality = "high" | "medium" | "low";
 
@@ -26,13 +27,15 @@ const selectClasses =
 /** Step 5 of the Tauri migration (vocalis_roadmap.md, section 8): settings
  * screen. The device lists are real — `list_audio_devices` (step 2) hitting
  * the same `cpal` enumeration as the egui apps' own Settings tab, not a mock.
- * Theme/video-quality/language are working local UI state with no
- * persistence yet, per the roadmap ("остальное можно как рабочий UI без
- * сохранения") — no `settings.json`-equivalent exists for this stack. */
+ * The microphone choice is real too and persists (`lib/micDevice.ts`) —
+ * `TeacherClassGrid` reads it for the actual "Говорить с классом"/интерком
+ * capture. Output device/video-quality/language are still working local UI
+ * state with no effect yet, per the roadmap ("остальное можно как рабочий UI
+ * без сохранения"). */
 export function SettingsPanel({ onShowOnboarding }: { onShowOnboarding: () => void }) {
   const [devices, setDevices] = useState<AudioDevicesDto | null>(null);
   const [devicesError, setDevicesError] = useState<string | undefined>();
-  const [micDevice, setMicDevice] = useState("system");
+  const micDevice = useSelectedMicDevice() ?? "system";
   const [outputDevice, setOutputDevice] = useState("system");
   const [quality, setQuality] = useState<Quality>("high");
   const [language, setLanguage] = useState("ru");
@@ -107,7 +110,7 @@ export function SettingsPanel({ onShowOnboarding }: { onShowOnboarding: () => vo
           <div className="flex flex-col gap-4">
             <div>
               <label className="mb-1.5 block text-sm font-medium text-[var(--color-text-muted)]">Микрофон</label>
-              <select value={micDevice} onChange={(e) => setMicDevice(e.target.value)} className={selectClasses}>
+              <select value={micDevice} onChange={(e) => setSelectedMicDevice(e.target.value === "system" ? undefined : e.target.value)} className={selectClasses}>
                 <option value="system">Системное по умолчанию</option>
                 {devices.inputDevices.map((d) => (
                   <option key={d} value={d}>
@@ -117,7 +120,7 @@ export function SettingsPanel({ onShowOnboarding }: { onShowOnboarding: () => vo
               </select>
               <MicTest deviceName={micDevice === "system" ? undefined : micDevice} />
               <p className="mt-2 text-xs text-[var(--color-text-muted)]">
-                Проверка идёт на выбранном микрофоне. В самом уроке пока всегда работает микрофон по умолчанию — выбор здесь ещё не подключён к трансляции.
+                Этот микрофон используется и здесь, для проверки, и в самом уроке — «Говорить с классом» и интерком.
               </p>
             </div>
             <div>

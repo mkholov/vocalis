@@ -163,8 +163,10 @@ export function setHandRaised(raised: boolean): Promise<void> {
 // starts the real mic-broadcast receiver, which plays through real speakers
 // on its own (`student::audio::ensure_output_started`).
 
-export function startMicBroadcast(): Promise<void> {
-  return invoke("start_mic_broadcast");
+/** `deviceName`: the microphone selected in Settings; omitted (or a name that no longer exists) means the
+ * system default. */
+export function startMicBroadcast(deviceName?: string): Promise<void> {
+  return invoke("start_mic_broadcast", { deviceName });
 }
 
 export function stopMicBroadcast(): Promise<void> {
@@ -200,8 +202,9 @@ export interface IntercomInfo {
   studentName: string;
 }
 
-export function startIntercom(studentId: string): Promise<IntercomInfo> {
-  return invoke<IntercomInfo>("start_intercom", { studentId });
+/** Same `deviceName` convention as `startMicBroadcast`. */
+export function startIntercom(studentId: string, deviceName?: string): Promise<IntercomInfo> {
+  return invoke<IntercomInfo>("start_intercom", { studentId, deviceName });
 }
 
 export function stopIntercom(): Promise<void> {

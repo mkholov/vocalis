@@ -384,9 +384,14 @@ async fn wait_for_stop(stop: Arc<AtomicBool>) {
     }
 }
 
-fn run_mic_broadcast_thread(state: state::AppState, stop: Arc<AtomicBool>, ready_tx: std::sync::mpsc::Sender<Result<(), String>>) {
+fn run_mic_broadcast_thread(
+    state: state::AppState,
+    device_name: Option<String>,
+    stop: Arc<AtomicBool>,
+    ready_tx: std::sync::mpsc::Sender<Result<(), String>>,
+) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let (capture, native_rate) = match mic::start_mic_capture(tx, &mic::MIC_LEVEL_MILLIS, None) {
+    let (capture, native_rate) = match mic::start_mic_capture(tx, &mic::MIC_LEVEL_MILLIS, device_name.as_deref()) {
         Ok(v) => v,
         Err(e) => {
             let _ = ready_tx.send(Err(e.to_string()));
@@ -426,8 +431,10 @@ fn run_mic_broadcast_thread(state: state::AppState, stop: Arc<AtomicBool>, ready
 /// announcement is needed first: `run_mic_broadcast` just reads
 /// `SharedState.student_addrs_with_keys()` fresh on every frame, so students
 /// who join mid-broadcast are picked up automatically.
+/// `device_name`: the microphone the Settings screen has selected (`None`, or a name that no longer
+/// exists, falls back to the system default, same as `start_student_mic_meter`'s own `device_name`).
 #[tauri::command]
-pub fn start_mic_broadcast(session: State<TeacherSessionState>) -> Result<(), String> {
+pub fn start_mic_broadcast(session: State<TeacherSessionState>, device_name: Option<String>) -> Result<(), String> {
     let mut guard = session.0.lock().unwrap();
     let teacher_session = guard.as_mut().ok_or("нет активной сессии преподавателя")?;
     if teacher_session.mic_broadcast.is_some() {
@@ -443,7 +450,7 @@ pub fn start_mic_broadcast(session: State<TeacherSessionState>) -> Result<(), St
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = stop.clone();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
-    let thread = std::thread::spawn(move || run_mic_broadcast_thread(app_state, thread_stop, ready_tx));
+    let thread = std::thread::spawn(move || run_mic_broadcast_thread(app_state, device_name, thread_stop, ready_tx));
 
     match ready_rx.recv() {
         Ok(Ok(())) => {
@@ -503,11 +510,12 @@ pub fn stop_listen(session: State<TeacherSessionState>) {
 fn run_intercom_thread(
     target_ip: std::net::IpAddr,
     key: lingua_common::SessionKey,
+    device_name: Option<String>,
     stop: Arc<AtomicBool>,
     ready_tx: std::sync::mpsc::Sender<Result<(), String>>,
 ) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let (capture, native_rate) = match mic::start_mic_capture(tx, &mic::INTERCOM_MIC_LEVEL_MILLIS, None) {
+    let (capture, native_rate) = match mic::start_mic_capture(tx, &mic::INTERCOM_MIC_LEVEL_MILLIS, device_name.as_deref()) {
         Ok(v) => v,
         Err(e) => {
             let _ = ready_tx.send(Err(e.to_string()));
@@ -552,7 +560,7 @@ pub struct IntercomInfo {
 /// `TeacherApp::toggle_intercom`'s orchestration exactly, including
 /// stopping any previous intercom first.
 #[tauri::command]
-pub fn start_intercom(session: State<TeacherSessionState>, student_id: String) -> Result<IntercomInfo, String> {
+pub fn start_intercom(session: State<TeacherSessionState>, student_id: String, device_name: Option<String>) -> Result<IntercomInfo, String> {
     let id: StudentId = student_id.parse().map_err(|_| format!("invalid student id: {student_id}"))?;
     let mut guard = session.0.lock().unwrap();
     let teacher_session = guard.as_mut().ok_or("нет активной сессии преподавателя")?;
@@ -579,7 +587,7 @@ pub fn start_intercom(session: State<TeacherSessionState>, student_id: String) -
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = stop.clone();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
-    let thread = std::thread::spawn(move || run_intercom_thread(ip, key, thread_stop, ready_tx));
+    let thread = std::thread::spawn(move || run_intercom_thread(ip, key, device_name, thread_stop, ready_tx));
 
     match ready_rx.recv() {
         Ok(Ok(())) => {
