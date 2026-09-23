@@ -1,38 +1,61 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { ArrowRight, Send, X } from "lucide-react";
-import { ROSTER } from "../lib/mockClassroom";
 
 const WHOLE_CLASS = "Весь класс";
 
 interface Message {
   id: number;
   from: string;
-  to: string;
+  /** `WHOLE_CLASS`, or a student's real UUID (`LiveStudent.realId`) — never a bare name, so two students who
+   * happen to share a name can't be confused. */
+  toId: string;
+  /** The recipient's display name at the time this message was sent — kept alongside `toId` so history
+   * still reads correctly after that student disconnects and drops out of `students`. */
+  toName: string;
   text: string;
 }
 
-const INITIAL_MESSAGES: Message[] = [{ id: 1, from: "Система", to: WHOLE_CLASS, text: "Урок начался." }];
+/** The little a `ChatDrawer` needs to know about a real connected student — the same shape
+ * `LiveStudent` already has, kept minimal here so this component doesn't depend on the whole
+ * `useLiveClassroom` module for two fields. */
+export interface ChatStudent {
+  realId: string;
+  name: string;
+}
+
+const INITIAL_MESSAGES: Message[] = [{ id: 1, from: "Система", toId: WHOLE_CLASS, toName: WHOLE_CLASS, text: "Урок начался." }];
 
 /** Step 5 of the Tauri migration (vocalis_roadmap.md, section 8): teacher↔
- * class/student chat. Local state only — there's no network session to send
- * these over yet, that's step 7 (or whenever real data starts flowing).
- * Overlays as a right-hand drawer over whichever teacher screen is active,
- * rather than being its own nav tab, so it's reachable from anywhere. */
-export function ChatDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
+ * class/student chat. `students` is the real connected roster (`TeacherConsole`'s own
+ * `useLiveClassroom`, the same source the class grid uses) — no more invented names. Sending itself is
+ * still local state only: there's no `ChatMessage`-over-the-network wiring into this Tauri command bridge
+ * yet (the protocol already has `ClientToServer::ChatMessage`/receiving it is a separate, real network
+ * step for later — this UI is ready for it, but doesn't send anything over the wire today).
+ * Overlays as a right-hand drawer over whichever teacher screen is active, rather than being its own nav
+ * tab, so it's reachable from anywhere. */
+export function ChatDrawer({ open, onClose, students }: { open: boolean; onClose: () => void; students: ChatStudent[] }) {
   const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES);
   const [target, setTarget] = useState(WHOLE_CLASS);
   const [text, setText] = useState("");
+
+  // A student who disconnects while selected as the target must not leave the picker pointing at someone
+  // who's no longer there.
+  useEffect(() => {
+    if (target !== WHOLE_CLASS && !students.some((s) => s.realId === target)) setTarget(WHOLE_CLASS);
+  }, [students, target]);
 
   function send(e: FormEvent) {
     e.preventDefault();
     const trimmed = text.trim();
     if (!trimmed) return;
-    setMessages((prev) => [...prev, { id: Date.now(), from: "Вы", to: target, text: trimmed }]);
+    const toName = target === WHOLE_CLASS ? WHOLE_CLASS : (students.find((s) => s.realId === target)?.name ?? WHOLE_CLASS);
+    setMessages((prev) => [...prev, { id: Date.now(), from: "Вы", toId: target, toName, text: trimmed }]);
     setText("");
   }
 
-  const visible = messages.filter((m) => m.to === WHOLE_CLASS || m.to === target);
+  const targetName = target === WHOLE_CLASS ? WHOLE_CLASS : (students.find((s) => s.realId === target)?.name ?? WHOLE_CLASS);
+  const visible = messages.filter((m) => m.toId === WHOLE_CLASS || m.toId === target);
 
   return (
     <AnimatePresence>
@@ -68,9 +91,16 @@ export function ChatDrawer({ open, onClose }: { open: boolean; onClose: () => vo
               onChange={(e) => setTarget(e.target.value)}
               className="mb-4 rounded-xl border border-[var(--color-border-subtle)] bg-field px-3 py-2 text-sm outline-none focus:border-violet-400"
             >
-              <option>{WHOLE_CLASS}</option>
-              {ROSTER.map((name) => (
-                <option key={name}>{name}</option>
+              <option value={WHOLE_CLASS}>{WHOLE_CLASS}</option>
+              {students.length === 0 && (
+                <option value="" disabled>
+                  Никто не подключён
+                </option>
+              )}
+              {students.map((s) => (
+                <option key={s.realId} value={s.realId}>
+                  {s.name}
+                </option>
               ))}
             </select>
 
@@ -88,7 +118,7 @@ export function ChatDrawer({ open, onClose }: { open: boolean; onClose: () => vo
                       <span className="font-medium text-accent-text">{m.from}</span>
                       <span className="inline-flex items-center gap-1">
                         <ArrowRight size={12} />
-                        {m.to}
+                        {m.toName}
                       </span>
                     </div>
                     {m.text}
@@ -101,7 +131,7 @@ export function ChatDrawer({ open, onClose }: { open: boolean; onClose: () => vo
               <input
                 value={text}
                 onChange={(e) => setText(e.target.value)}
-                placeholder={`Сообщение (${target})`}
+                placeholder={`Сообщение (${targetName})`}
                 className="flex-1 rounded-xl border border-[var(--color-border-subtle)] bg-field px-3 py-2 text-sm outline-none focus:border-violet-400"
               />
               <button type="submit" className="inline-flex items-center justify-center rounded-xl bg-violet-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-violet-400">

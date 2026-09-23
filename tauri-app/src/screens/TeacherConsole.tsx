@@ -119,7 +119,7 @@ export function TeacherConsole({ className, onEnd }: Props) {
         </AnimatePresence>
       </div>
 
-      <ChatDrawer open={chatOpen} onClose={() => setChatOpen(false)} />
+      <ChatDrawer open={chatOpen} onClose={() => setChatOpen(false)} students={live.realStudents} />
       <Onboarding open={onboardingOpen} onClose={closeOnboarding} />
       <ToastStack items={toasts.items} onDismiss={toasts.dismiss} />
     </div>
