@@ -9,6 +9,7 @@ fn main() {
             "create_class",
             "rename_class",
             "delete_class",
+            "class_stats",
             "list_audio_devices",
             "discover_teachers",
             "capture_screen_preview",

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-class-stats"
+description = "Enables the class_stats command without any pre-configured scope."
+commands.allow = ["class_stats"]
+
+[[permission]]
+identifier = "deny-class-stats"
+description = "Denies the class_stats command without any pre-configured scope."
+commands.deny = ["class_stats"]

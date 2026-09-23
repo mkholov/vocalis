@@ -113,7 +113,7 @@ export function TeacherConsole({ className, onEnd }: Props) {
                 setDraft={setAssignmentDraft}
               />
             )}
-            {tab === "stats" && <StatsPanel />}
+            {tab === "stats" && <StatsPanel className={className} />}
             {tab === "settings" && <SettingsPanel onShowOnboarding={() => setOnboardingOpen(true)} />}
           </motion.div>
         </AnimatePresence>

@@ -28,6 +28,7 @@ pub fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::App<R>
             commands::db::create_class,
             commands::db::rename_class,
             commands::db::delete_class,
+            commands::db::class_stats,
             commands::audio::list_audio_devices,
             commands::network::discover_teachers,
             commands::video::capture_screen_preview,

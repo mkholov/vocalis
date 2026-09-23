@@ -11,6 +11,7 @@
     "allow-create-class",
     "allow-rename-class",
     "allow-delete-class",
+    "allow-class-stats",
     "allow-list-audio-devices",
     "allow-discover-teachers",
     "allow-capture-screen-preview",

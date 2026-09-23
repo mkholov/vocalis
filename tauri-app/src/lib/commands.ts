@@ -35,6 +35,30 @@ export function deleteClass(id: number): Promise<void> {
   return invoke<void>("delete_class", { id });
 }
 
+/** Real per-student progress for a class, one row per person who ever connected to one of its lessons,
+ * grouped by normalized name — not limited to its roster (`commands/db.rs`'s `class_stats`, built on
+ * `db::load_history_summary`/`db::normalize_name`, the same functions the egui console's own "Статистика"
+ * tab and per-student history card use). Rejects if no class with this name exists (renamed/deleted). */
+export interface StudentStatDto {
+  name: string;
+  lessons: number;
+  avgScore: number | null;
+  assignmentsDone: number;
+  assignmentsTotal: number;
+}
+
+export interface ClassStatsDto {
+  lessons: number;
+  avgScore: number | null;
+  assignmentsDone: number;
+  rosterSize: number;
+  students: StudentStatDto[];
+}
+
+export function classStats(className: string): Promise<ClassStatsDto> {
+  return invoke<ClassStatsDto>("class_stats", { className });
+}
+
 export interface DiscoveredTeacherDto {
   ip: string;
   teacherName: string;

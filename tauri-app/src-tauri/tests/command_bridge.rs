@@ -85,6 +85,71 @@ fn list_classes_returns_real_db_rows() {
 /// The "Создать класс" form on the class picker: `create_class` writes a real row (through the same
 /// `db::insert_class` egui uses), `list_classes` sees it immediately, bad names are refused with the
 /// egui texts, and starting a lesson for the created class reuses it instead of inserting a second row.
+/// Real class stats, straight from the DB: seeds a full history for one class (two students under
+/// slightly different spellings — the whole point of grouping by `normalize_name` — plus one student who
+/// never scored anything) and a decoy second class, and checks that both the class-wide tiles and every
+/// per-student row match a hand-computed expectation, and that the decoy's rows never leak in.
+#[test]
+fn class_stats_reports_real_per_student_history_grouped_by_normalized_name() {
+    use vocalis::teacher::db;
+    let _db = ScratchDb::new("class_stats");
+
+    let conn = db::open().expect("open the scratch db");
+    let class_id = db::insert_class(&conn, "E2E класс (статистика)").expect("insert the class");
+    let other_class_id = db::insert_class(&conn, "E2E другой класс (статистика)").expect("insert the decoy class");
+
+    // Lesson 1: "Иванов Пётр" scores 80 and finishes 1 of 2 assignments; "Смирнова Анна" connects but is
+    // never scored and never gets an assignment.
+    let lesson1 = db::insert_lesson(&conn, class_id, "E2E класс (статистика)").unwrap();
+    let ivanov1 = db::insert_student(&conn, lesson1, "Иванов Пётр", 1).unwrap();
+    db::update_score(&conn, ivanov1, 80).unwrap();
+    let a1 = db::insert_assignment(&conn, ivanov1, "Тест 1", lingua_common::protocol::AssignmentKind::Test).unwrap();
+    db::mark_assignment_done(&conn, a1).unwrap();
+    db::insert_assignment(&conn, ivanov1, "Тест 2", lingua_common::protocol::AssignmentKind::Test).unwrap(); // left undone
+    db::insert_student(&conn, lesson1, "Смирнова Анна", 2).unwrap();
+
+    // Lesson 2: "Иванов Пётр" reconnects as "иванов пётр" (different case, same spacing — `normalize_name`
+    // only lowercases and trims, it doesn't collapse internal whitespace — same person all the same) and
+    // scores 60.
+    let lesson2 = db::insert_lesson(&conn, class_id, "E2E класс (статистика)").unwrap();
+    let ivanov2 = db::insert_student(&conn, lesson2, "иванов пётр", 1).unwrap();
+    db::update_score(&conn, ivanov2, 60).unwrap();
+
+    // A decoy lesson on the *other* class — must never affect the first class's numbers.
+    let decoy_lesson = db::insert_lesson(&conn, other_class_id, "E2E другой класс (статистика)").unwrap();
+    let decoy_student = db::insert_student(&conn, decoy_lesson, "Чужой Ученик", 1).unwrap();
+    db::update_score(&conn, decoy_student, 1).unwrap();
+    db::insert_assignment(&conn, decoy_student, "Чужое задание", lingua_common::protocol::AssignmentKind::Test).unwrap();
+
+    let stats = invoke("class_stats", serde_json::json!({"className": "E2E класс (статистика)"})).expect("class_stats should succeed");
+    assert_eq!(stats["lessons"], 2, "two real lessons for this class");
+    assert_eq!(stats["assignmentsDone"], 1, "one of the two assignments was marked done");
+    assert_eq!(stats["rosterSize"], 0, "no roster-management screen in this UI yet — an honest 0, not hidden");
+    let avg = stats["avgScore"].as_f64().expect("a real average — Ivanov has been scored twice");
+    assert!((avg - 70.0).abs() < 0.01, "average of 80 and 60 across the two scored rows, got {avg}");
+
+    let students = stats["students"].as_array().expect("a students array");
+    assert_eq!(students.len(), 2, "two distinct people by normalized name, not three rows for Ivanov's two spellings");
+    let ivanov = students.iter().find(|s| s["name"] == "иванов пётр").expect("Ivanov, under his most recent spelling");
+    assert_eq!(ivanov["lessons"], 2, "attended both lessons under either spelling");
+    assert_eq!((ivanov["assignmentsDone"].as_i64(), ivanov["assignmentsTotal"].as_i64()), (Some(1), Some(2)));
+    let ivanov_avg = ivanov["avgScore"].as_f64().unwrap();
+    assert!((ivanov_avg - 70.0).abs() < 0.01, "Ivanov's own average across his two scores, got {ivanov_avg}");
+
+    let smirnova = students.iter().find(|s| s["name"] == "Смирнова Анна").expect("Smirnova");
+    assert_eq!(smirnova["lessons"], 1);
+    assert!(smirnova["avgScore"].is_null(), "never scored — must be null, not 0");
+    assert_eq!((smirnova["assignmentsDone"].as_i64(), smirnova["assignmentsTotal"].as_i64()), (Some(0), Some(0)));
+
+    assert!(
+        students.iter().all(|s| s["name"] != "Чужой Ученик"),
+        "the decoy class's student must never appear in this class's stats"
+    );
+
+    let err = invoke("class_stats", serde_json::json!({"className": "E2E нет такого класса"})).expect_err("a nonexistent class name is refused");
+    assert!(err.as_str().unwrap().contains("не найден"), "got: {err}");
+}
+
 #[test]
 fn creating_a_class_puts_a_real_row_in_the_list_and_a_lesson_reuses_it() {
     let _db = ScratchDb::new("create_class");
