@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use vocalis::student::{audio, mic, net, screen, state};
+use lingua_common::ClientToServer;
 
 use super::screen_frame::jpeg_data_url;
 
@@ -327,4 +328,18 @@ pub fn disconnect_student_session(session: State<StudentSessionState>) {
         }
     }
     *guard = None;
+}
+
+/// Real "поднять руку": sends `ClientToServer::RequestHelp` over this session's already-encrypted control
+/// connection — the same message and the same `net::connect_to_teacher`-owned channel the egui student
+/// app's `toggle_help` uses (`state.to_server`), so the teacher side (`teacher::net`'s handler, unchanged)
+/// needs no new plumbing to see it: it already sets `Student::needs_help`, which `emit_levels` in
+/// `teacher_session.rs` now reports as `needsHelp` on every connected student.
+#[tauri::command]
+pub fn set_hand_raised(session: State<StudentSessionState>, raised: bool) -> Result<(), String> {
+    let guard = session.0.lock().unwrap();
+    let student = guard.as_ref().ok_or("нет активного подключения к преподавателю")?;
+    let to_server = student.app_state.lock().unwrap().to_server.clone();
+    let tx = to_server.ok_or("подключение к преподавателю ещё не готово")?;
+    tx.send(ClientToServer::RequestHelp { needed: raised }).map_err(|_| "соединение с преподавателем разорвано".to_string())
 }

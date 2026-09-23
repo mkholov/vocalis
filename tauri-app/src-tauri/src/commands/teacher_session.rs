@@ -157,6 +157,10 @@ pub struct StudentLevelDto {
     /// currently in, straight from `Student::group` — lets the frontend
     /// show a badge and a "leave group" action without a separate command.
     pub group: Option<usize>,
+    /// Straight from `Student::needs_help` — set by the real `ClientToServer::RequestHelp` a student's
+    /// "Поднять руку" sends (`commands/student_session.rs`'s `set_hand_raised`), handled by
+    /// `teacher::net` unchanged. Drives the card's raised-hand badge and the "просит помощи" toast.
+    pub needs_help: bool,
 }
 
 fn emit_levels<R: tauri::Runtime>(app: &AppHandle<R>, app_state: &state::AppState) {
@@ -170,6 +174,7 @@ fn emit_levels<R: tauri::Runtime>(app: &AppHandle<R>, app_state: &state::AppStat
             level: s.last_level,
             seconds_since_report: s.last_level_at.map(|at| at.elapsed().as_secs_f32()).unwrap_or(f32::MAX),
             group: s.group,
+            needs_help: s.needs_help,
         })
         .collect();
     drop(guard);

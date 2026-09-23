@@ -39,6 +39,7 @@ fn main() {
             "delete_recording",
             "connect_student_session",
             "disconnect_student_session",
+            "set_hand_raised",
         ]),
     );
     tauri_build::try_build(attributes).expect("failed to run tauri-build codegen");

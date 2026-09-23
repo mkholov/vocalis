@@ -797,6 +797,90 @@ fn teacher_and_student_hear_each_other_over_a_real_intercom() {
 /// verifying real peer-to-peer *audio* — see the comment further down,
 /// after `create_group` succeeds, for why that specifically can't be
 /// simulated with two students on one test machine.
+/// Real "поднять руку", end to end: the student side's `set_hand_raised` sends a real
+/// `ClientToServer::RequestHelp` over the encrypted control connection, `teacher::net`'s existing handler
+/// (unchanged) sets `Student::needs_help`, and the teacher's `student-levels` event now carries that as
+/// `needsHelp` — the field the class grid's card badge and "просит помощи" toast key off. Two real
+/// processes' worth of state (as `creating_a_group_relays_real_peer_info_to_both_real_students` below
+/// does), calling the command functions directly since this is about the real session/protocol plumbing,
+/// not re-proving IPC dispatch.
+#[test]
+fn raising_a_hand_reaches_the_teacher_as_a_real_needs_help_flag() {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+    use tauri::{Listener, Manager};
+    use tauri_app_lib::commands::{student_session, teacher_session};
+
+    let _db = ScratchDb::new("raise_hand");
+
+    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
+    let session_info = teacher_session::start_teacher_session(
+        teacher_app.handle().clone(),
+        teacher_state.clone(),
+        "E2E класс (рука)".to_string(),
+    )
+    .expect("start_teacher_session should succeed");
+
+    // Latest `needsHelp` seen for the (one) real connected student, updated on every real event.
+    let (levels_tx, levels_rx) = mpsc::channel::<bool>();
+    teacher_app.listen("student-levels", move |event| {
+        if let Ok(levels) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+            if let Some(row) = levels.as_array().and_then(|a| a.first()) {
+                if let Some(needs_help) = row["needsHelp"].as_bool() {
+                    let _ = levels_tx.send(needs_help);
+                }
+            }
+        }
+    });
+
+    let student_app = build_app(tauri::test::mock_builder());
+    let student_state = student_app.state::<student_session::StudentSessionState>();
+    student_session::connect_student_session(
+        student_app.handle().clone(),
+        student_state.clone(),
+        "127.0.0.1".to_string(),
+        lingua_common::CONTROL_PORT,
+        "E2E ученик (рука)".to_string(),
+        session_info.pin.clone(),
+    )
+    .expect("student should connect to the real running control server");
+
+    // Wait for the real, initial `needsHelp: false` first — the same event this student's connection
+    // itself triggers — so the assertions below observe a state *change*, not just the field existing.
+    let initial = levels_rx.recv_timeout(Duration::from_secs(5)).expect("a real student-levels event for the connected student");
+    assert!(!initial, "a freshly connected student must not already be flagged as needing help");
+
+    student_session::set_hand_raised(student_state.clone(), true).expect("sending RequestHelp should succeed over a real connection");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut raised = false;
+    while Instant::now() < deadline {
+        if let Ok(v) = levels_rx.recv_timeout(Duration::from_millis(200)) {
+            if v {
+                raised = true;
+                break;
+            }
+        }
+    }
+    assert!(raised, "the teacher's real student-levels event should report needsHelp: true after RequestHelp{{needed: true}}");
+
+    student_session::set_hand_raised(student_state.clone(), false).expect("lowering the hand should succeed too");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut lowered = false;
+    while Instant::now() < deadline {
+        if let Ok(v) = levels_rx.recv_timeout(Duration::from_millis(200)) {
+            if !v {
+                lowered = true;
+                break;
+            }
+        }
+    }
+    assert!(lowered, "and back to needsHelp: false after RequestHelp{{needed: false}}");
+
+    teacher_session::stop_teacher_session(teacher_state);
+    student_session::disconnect_student_session(student_state);
+}
+
 #[test]
 fn creating_a_group_relays_real_peer_info_to_both_real_students() {
     use std::sync::mpsc;

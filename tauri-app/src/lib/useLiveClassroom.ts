@@ -58,12 +58,14 @@ export function useLiveClassroom(className: string) {
             }
             const fresh = s.secondsSinceReport < STALE_AFTER_SECONDS;
             const level = fresh ? s.level : 0;
+            // Same priority as egui's `Student::presence()`: a raised hand outranks "speaking".
+            const presence = s.needsHelp ? "needsHelp" : level >= SPEAKING_THRESHOLD ? "speaking" : "connected";
             return {
               id: numericId,
               realId: s.id,
               seat: numericId,
               name: s.name,
-              presence: level >= SPEAKING_THRESHOLD ? "speaking" : "connected",
+              presence,
               level,
               screenLocked: false,
               micLocked: false,

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-hand-raised"
+description = "Enables the set_hand_raised command without any pre-configured scope."
+commands.allow = ["set_hand_raised"]
+
+[[permission]]
+identifier = "deny-set-hand-raised"
+description = "Denies the set_hand_raised command without any pre-configured scope."
+commands.deny = ["set_hand_raised"]

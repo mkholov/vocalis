@@ -81,6 +81,8 @@ export interface StudentLevelDto {
   /** Step 7.5's groups/pairs: which group (if any) this student is
    * currently in, straight from the real `Student::group`. */
   group: number | null;
+  /** Real "поднять руку" (`ClientToServer::RequestHelp`), straight from `Student::needs_help`. */
+  needsHelp: boolean;
 }
 
 /** `deviceName`: which input to open; omitted (or a name that no longer exists) means the system default. */
@@ -144,6 +146,13 @@ export function connectStudentSession(teacherIp: string, controlPort: number, st
 
 export function disconnectStudentSession(): Promise<void> {
   return invoke("disconnect_student_session");
+}
+
+/** Real "поднять руку" (`commands/student_session.rs`'s `set_hand_raised`): sends `ClientToServer::
+ * RequestHelp` over this student's already-connected session. Rejects if there is no active connection
+ * yet — the caller should keep its own local toggle state and revert it on a rejection. */
+export function setHandRaised(raised: boolean): Promise<void> {
+  return invoke("set_hand_raised", { raised });
 }
 
 // --- Step 7.5 (vocalis_roadmap.md, section 8): teacher's mic broadcast ---

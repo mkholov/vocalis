@@ -10,6 +10,7 @@ import { KIND_META, tint, type AssignmentKind } from "../lib/assignments";
 import { useMicMeter } from "../lib/useMicMeter";
 import { useStudentSession } from "../lib/useStudentSession";
 import { useRecordings } from "../lib/useRecordings";
+import { setHandRaised as sendHandRaised } from "../lib/commands";
 
 interface Props {
   studentName: string;
@@ -63,8 +64,24 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
   const [assignmentOpen, setAssignmentOpen] = useState(false);
   const assignment = hasAssignment ? { title: "Времена группы Present", kind: "test" as AssignmentKind } : null;
 
-  const [handRaised, setHandRaised] = useState(false);
+  // Real "поднять руку" (`commands/student_session.rs`'s `set_hand_raised` — a real
+  // `ClientToServer::RequestHelp` over the network, seen by the teacher as `needsHelp` on this student's
+  // card): optimistic — flips immediately, then reverts with an error if the send actually failed (no
+  // session yet, or it dropped).
+  const [handRaised, setHandRaisedLocal] = useState(false);
+  const [handError, setHandError] = useState<string | undefined>();
   const [reactions, setReactions] = useState<FlyingReaction[]>([]);
+
+  function toggleHand() {
+    const next = !handRaised;
+    setHandRaisedLocal(next);
+    sendHandRaised(next)
+      .then(() => setHandError(undefined))
+      .catch((err) => {
+        setHandRaisedLocal(!next);
+        setHandError(String(err));
+      });
+  }
 
   function fireReaction(icon: LucideIcon, tone: string) {
     const id = Date.now() + Math.random();
@@ -255,7 +272,7 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
               <motion.div whileTap={{ scale: 0.95 }}>
                 <button
                   type="button"
-                  onClick={() => setHandRaised((v) => !v)}
+                  onClick={toggleHand}
                   className={
                     "inline-flex items-center gap-2 rounded-xl px-5 py-3 font-medium transition-colors " +
                     (handRaised ? "bg-amber-400/20 text-warn-text" : "bg-overlay text-[var(--color-text-muted)] hover:bg-overlay-hover")
@@ -271,6 +288,7 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
                   {handRaised ? "Рука поднята" : "Поднять руку"}
                 </button>
               </motion.div>
+              {handError && <p className="self-center text-xs text-danger-text">{handError}</p>}
 
               <motion.button
                 type="button"
