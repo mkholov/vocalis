@@ -159,12 +159,21 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
                       className="absolute inset-0 h-full w-full object-contain bg-black"
                     />
                   ) : (
-                    <motion.div
-                      className="absolute inset-0"
-                      style={{ background: "linear-gradient(120deg, #2a2140, #1a1a2e, #241a38)", backgroundSize: "200% 200%" }}
-                      animate={{ backgroundPosition: ["0% 50%", "100% 50%", "0% 50%"] }}
-                      transition={{ duration: 6, repeat: Infinity, ease: "linear" }}
-                    />
+                    <>
+                      {/* Opaque backing layer: this placeholder is meant to always read as a dark video
+                          screen, in both themes — same as the teacher-side preview thumbnail's plain
+                          `bg-black` (`TeacherClassGrid.tsx`). Without it, `Panel`'s own theme-reactive
+                          background could show through the gradient below (its `motion.div` sometimes
+                          renders with a computed opacity under 1 during its keyframe animation), so the
+                          "connecting" state would look lighter in light theme instead of staying dark. */}
+                      <div className="absolute inset-0 bg-black" />
+                      <motion.div
+                        className="absolute inset-0"
+                        style={{ background: "linear-gradient(120deg, #2a2140, #1a1a2e, #241a38)", backgroundSize: "200% 200%" }}
+                        animate={{ backgroundPosition: ["0% 50%", "100% 50%", "0% 50%"] }}
+                        transition={{ duration: 6, repeat: Infinity, ease: "linear" }}
+                      />
+                    </>
                   )}
                   <span className="absolute left-3 top-3 rounded-md bg-black/50 px-2 py-1 text-xs font-medium text-accent-text backdrop-blur">
                     <Monitor size={14} className="mr-1.5 inline-block align-[-2px]" />
