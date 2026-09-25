@@ -37,6 +37,12 @@ const DEMO_POLL_INTERVAL_MS: u64 = 20;
 /// Assignments arrive rarely (a teacher click, not a media stream) — nowhere near frame-budget territory,
 /// so a much coarser poll than the demo-frame one above is plenty responsive.
 const ASSIGNMENT_POLL_INTERVAL_MS: u64 = 200;
+/// How often to check whether the connection to the teacher is still up. A dropped TCP connection (the
+/// teacher ends the lesson, closes the app, or the network blips) is invisible to this student's own UI
+/// otherwise — `connect_student_session`'s promise only ever resolves once, at the start, so nothing tells
+/// a still-mounted `StudentConsole` its "подключено к …" header has gone stale. Coarse on purpose: this is
+/// "tell the user eventually," not a latency-sensitive media path.
+const DISCONNECT_POLL_INTERVAL_MS: u64 = 300;
 /// `student::net::connect_to_teacher` has no readiness callback of its own
 /// (unlike `teacher::mic::start_mic_capture`, which `student_mic.rs` gets a
 /// synchronous ready signal from) — it just sets `connected_teacher` once the
@@ -328,6 +334,25 @@ pub fn connect_student_session<R: tauri::Runtime>(
             }
         }
     };
+    {
+        // Fires exactly once: `connected_teacher` only ever goes `Some` -> `None` (`net::connect_to_teacher`
+        // has no reconnect logic — once its read loop exits, this `AppState` is done for good), so there is
+        // nothing left to watch once it does. Real detection, not a guess: this is the same field the
+        // control connection's own read loop clears on a real socket close (teacher stopped the lesson,
+        // quit the app, or the network died) — not a heartbeat/ping this command invents itself.
+        let poll_state = app_state.clone();
+        let app = app.clone();
+        tasks.push(tauri::async_runtime::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(DISCONNECT_POLL_INTERVAL_MS));
+            loop {
+                interval.tick().await;
+                if poll_state.lock().unwrap().connected_teacher.is_none() {
+                    let _ = app.emit("teacher-disconnected", ());
+                    break;
+                }
+            }
+        }));
+    }
     {
         // Always-on, same idle-until-something-happens shape as the receivers above: nothing to show
         // until the teacher actually sends something, real from the first assignment on.

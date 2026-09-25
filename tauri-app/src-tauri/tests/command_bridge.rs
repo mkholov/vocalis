@@ -1145,6 +1145,325 @@ fn creating_a_group_relays_real_peer_info_to_both_real_students() {
     student_session::disconnect_student_session(student_b_state);
 }
 
+/// Real disconnect, not a mock: student B's session is torn down for real (its tasks — including the one
+/// holding the TCP stream — are aborted, so the socket actually closes), while grouped with student A. Two
+/// things must hold on the teacher's own real, live view of the class, verified through the real Tauri
+/// event bridge rather than trusted from reading `teacher::net`/`teacher::state`: the departed student must
+/// vanish from `student-levels` (no ghost row for someone no longer connected), and the *remaining*
+/// student's `group` must reset to `null` (no ghost group membership pointing at someone who left).
+#[test]
+fn a_real_student_disconnect_clears_their_group_membership_and_leaves_no_ghost_row() {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+    use tauri::{Listener, Manager};
+    use tauri_app_lib::commands::{student_session, teacher_session};
+
+    let _db = ScratchDb::new("disconnect_cleanup");
+
+    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
+    let session_info = teacher_session::start_teacher_session(
+        teacher_app.handle().clone(),
+        teacher_state.clone(),
+        "E2E класс (отключение)".to_string(),
+    )
+    .expect("start_teacher_session should succeed");
+
+    let (levels_tx, levels_rx) = mpsc::channel::<serde_json::Value>();
+    teacher_app.listen("student-levels", move |event| {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+            let _ = levels_tx.send(v);
+        }
+    });
+
+    let student_a_app = build_app(tauri::test::mock_builder());
+    let student_a_state = student_a_app.state::<student_session::StudentSessionState>();
+    student_session::connect_student_session(
+        student_a_app.handle().clone(),
+        student_a_state.clone(),
+        "127.0.0.1".to_string(),
+        lingua_common::CONTROL_PORT,
+        "E2E ученик A (отключение)".to_string(),
+        session_info.pin.clone(),
+    )
+    .expect("student A should connect to the real running control server");
+
+    let student_b_app = build_app(tauri::test::mock_builder());
+    let student_b_state = student_b_app.state::<student_session::StudentSessionState>();
+    student_session::connect_student_session(
+        student_b_app.handle().clone(),
+        student_b_state.clone(),
+        "127.0.0.1".to_string(),
+        lingua_common::CONTROL_PORT,
+        "E2E ученик B (отключение)".to_string(),
+        session_info.pin.clone(),
+    )
+    .expect("student B should connect to the real running control server");
+
+    // Wait for a real event naming both, then group them for real.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let ids = loop {
+        assert!(Instant::now() < deadline, "a real student-levels event naming both students should arrive");
+        let v = levels_rx.recv_timeout(Duration::from_millis(200)).unwrap_or(serde_json::Value::Null);
+        if let Some(arr) = v.as_array() {
+            if arr.len() >= 2 {
+                break arr.iter().map(|s| s["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+            }
+        }
+    };
+    teacher_session::create_group(teacher_state.clone(), ids.clone()).expect("create_group should succeed for two real connected students");
+
+    // Real disconnect: student B's session is torn down for real.
+    student_session::disconnect_student_session(student_b_state);
+
+    // The teacher's real, live view must settle on exactly one connected student, and that student ungrouped.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut settled: Option<Vec<serde_json::Value>> = None;
+    while Instant::now() < deadline {
+        if let Ok(v) = levels_rx.recv_timeout(Duration::from_millis(200)) {
+            if let Some(arr) = v.as_array() {
+                if arr.len() == 1 {
+                    settled = Some(arr.clone());
+                    break;
+                }
+            }
+        }
+    }
+    let arr = settled.expect("a real student-levels event should settle to exactly one connected student");
+    let remaining_id = arr[0]["id"].as_str().unwrap().to_string();
+    assert!(ids.contains(&remaining_id), "the one student left should be a real one of the original two, not a ghost id");
+    assert!(arr[0]["group"].is_null(), "the remaining student must no longer show a group — their only partner just disconnected");
+
+    teacher_session::stop_teacher_session(teacher_state);
+    student_session::disconnect_student_session(student_a_state);
+}
+
+/// The bug this reproduces: before `student_session.rs` grew a disconnect watcher, nothing ever told a
+/// connected student's own Tauri layer that the *teacher* ended the connection — `connect_student_session`
+/// resolves exactly once, at the start, and every other task in that session watches something else
+/// (frames, assignments, mic audio). A student's console could sit there still saying "подключено к …"
+/// indefinitely after the teacher stopped the lesson (or the app crashed, or the network died), with no way
+/// to tell the two apart from a genuinely live session. Real teardown here, not a fake flag: the control
+/// server is really stopped, the real TCP socket really closes, and this asserts a real `"teacher-
+/// disconnected"` event reaches the student side within a bounded, real time window.
+#[test]
+fn a_real_teacher_side_stop_notifies_the_student_it_actually_disconnected() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use tauri::{Listener, Manager};
+    use tauri_app_lib::commands::{student_session, teacher_session};
+
+    let _db = ScratchDb::new("teacher_disconnect_notice");
+
+    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
+    let session_info = teacher_session::start_teacher_session(
+        teacher_app.handle().clone(),
+        teacher_state.clone(),
+        "E2E класс (учитель отключился)".to_string(),
+    )
+    .expect("start_teacher_session should succeed");
+
+    let student_app = build_app(tauri::test::mock_builder());
+    let student_state = student_app.state::<student_session::StudentSessionState>();
+    student_session::connect_student_session(
+        student_app.handle().clone(),
+        student_state.clone(),
+        "127.0.0.1".to_string(),
+        lingua_common::CONTROL_PORT,
+        "E2E ученик (учитель отключился)".to_string(),
+        session_info.pin.clone(),
+    )
+    .expect("student should connect to the real running control server");
+
+    let (tx, rx) = mpsc::channel::<()>();
+    student_app.listen("teacher-disconnected", move |_event| {
+        let _ = tx.send(());
+    });
+
+    // A real stop, not a simulated flag flip: drops the `TeacherSession`, which aborts the control-server
+    // task, which closes the real TCP socket the student is on.
+    teacher_session::stop_teacher_session(teacher_state);
+
+    rx.recv_timeout(Duration::from_secs(5))
+        .expect("a real \"teacher-disconnected\" event should reach the student within a few polls of the real socket actually closing");
+
+    student_session::disconnect_student_session(student_state);
+}
+
+/// Checked for real rather than assumed from the design: `stop_teacher_session` drops the whole
+/// `TeacherSession`, and its `Drop` aborts every spawned task — including the one running
+/// `net::run_control_server`, the actual TCP listener. If that really closes the port, an old PIN has
+/// nothing left to talk to; and once a new lesson starts, that old PIN is simply the *wrong* PIN for the
+/// new listener, not a leftover backdoor into it.
+#[test]
+fn a_stopped_lessons_pin_cannot_reach_a_later_lesson_on_the_same_machine() {
+    use std::time::Duration;
+    use tauri::Manager;
+    use tauri_app_lib::commands::{student_session, teacher_session};
+
+    let _db = ScratchDb::new("stale_pin");
+
+    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
+    let session1 = teacher_session::start_teacher_session(
+        teacher_app.handle().clone(),
+        teacher_state.clone(),
+        "E2E класс А (устаревший PIN)".to_string(),
+    )
+    .expect("first lesson should start");
+    let old_pin = session1.pin.clone();
+
+    // Prove the first lesson's control server is really up: a real connect with its real PIN succeeds.
+    let probe_app = build_app(tauri::test::mock_builder());
+    let probe_state = probe_app.state::<student_session::StudentSessionState>();
+    student_session::connect_student_session(
+        probe_app.handle().clone(),
+        probe_state.clone(),
+        "127.0.0.1".to_string(),
+        lingua_common::CONTROL_PORT,
+        "E2E проверка (устаревший PIN)".to_string(),
+        old_pin.clone(),
+    )
+    .expect("connecting to the live first lesson with its own real PIN should succeed");
+    student_session::disconnect_student_session(probe_state);
+
+    teacher_session::stop_teacher_session(teacher_state.clone());
+    // Task abort is asynchronous (`JoinHandle::abort` just schedules cancellation) — give the runtime a
+    // moment to actually run it and drop the listener before probing the now-closed port.
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Nothing is listening now — even the *correct*, just-used PIN must fail (there is no session left to
+    // check it against at all), not merely "a wrong pin against a still-live session".
+    let gone_app = build_app(tauri::test::mock_builder());
+    let gone_state = gone_app.state::<student_session::StudentSessionState>();
+    let result = student_session::connect_student_session(
+        gone_app.handle().clone(),
+        gone_state.clone(),
+        "127.0.0.1".to_string(),
+        lingua_common::CONTROL_PORT,
+        "E2E ученик (устаревший PIN, после остановки)".to_string(),
+        old_pin.clone(),
+    );
+    let err = match result {
+        Ok(_) => panic!("with the control server actually stopped, there is nothing to connect to at all"),
+        Err(e) => e,
+    };
+    println!("[e2e] connect after stop failed as expected: {err}");
+
+    // A brand new lesson starts — on the same machine, right after the last one stopped, the exact sequence
+    // a teacher does between back-to-back classes. Retried briefly: a just-aborted listener can take the
+    // runtime a moment to actually free the port, and a teacher starting the next lesson immediately after
+    // ending the last one is a real sequence this needs to survive, not just eventually succeed at.
+    let mut session2 = None;
+    for _ in 0..20 {
+        match teacher_session::start_teacher_session(teacher_app.handle().clone(), teacher_state.clone(), "E2E класс Б (устаревший PIN)".to_string()) {
+            Ok(info) => {
+                session2 = Some(info);
+                break;
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(100)),
+        }
+    }
+    let session2 = session2.expect("the second lesson should start on the same, now-free port");
+    assert_ne!(session1.class_name, session2.class_name);
+
+    // The meaningful case, pinned explicitly rather than left to chance: the *old* PIN, now stale, must be
+    // rejected by the *new* lesson's real (almost certainly different) PIN check.
+    if old_pin != session2.pin {
+        let late_app = build_app(tauri::test::mock_builder());
+        let late_state = late_app.state::<student_session::StudentSessionState>();
+        let result = student_session::connect_student_session(
+            late_app.handle().clone(),
+            late_state.clone(),
+            "127.0.0.1".to_string(),
+            lingua_common::CONTROL_PORT,
+            "E2E ученик (старый PIN, новый урок)".to_string(),
+            old_pin.clone(),
+        );
+        let err = match result {
+            Ok(_) => panic!("the old lesson's PIN must be rejected by the new lesson's real, different PIN"),
+            Err(e) => e,
+        };
+        println!("[e2e] old PIN rejected by the new lesson: {err}");
+    }
+
+    // And the new lesson's own real PIN really works.
+    let real_app = build_app(tauri::test::mock_builder());
+    let real_state = real_app.state::<student_session::StudentSessionState>();
+    student_session::connect_student_session(
+        real_app.handle().clone(),
+        real_state.clone(),
+        "127.0.0.1".to_string(),
+        lingua_common::CONTROL_PORT,
+        "E2E ученик (новый PIN, новый урок)".to_string(),
+        session2.pin.clone(),
+    )
+    .expect("the new lesson's own real PIN should let a real student in");
+
+    teacher_session::stop_teacher_session(teacher_state);
+    student_session::disconnect_student_session(real_state);
+}
+
+/// Pre-deployment audit: does deleting a class leave orphaned rows anywhere else in the real schema now
+/// that groups/pairs, the materials library, chat, and voice recordings all exist? Checked against the
+/// real, live schema rather than assumed: groups/pairs and chat are in-memory only (`teacher::state::
+/// SharedState`, never written to SQLite — nothing to orphan there, and `delete_class` already refuses
+/// while a lesson of that class is live, so no in-memory group can even reference it at delete time), and
+/// voice recordings are plain files in the *student's own* recordings folder with no database row at all
+/// (see `student::recording`) — structurally impossible for a teacher-side `delete_class` to touch. What
+/// *is* real and lives in this same database — the materials library and the assignment-template library —
+/// must survive a class deletion (`commands/db.rs`'s own doc comment says so; this proves it against a real
+/// row, not just the SQL). The `sqlite_master` enumeration below is a schema-drift tripwire: if a future
+/// table gets added, this fails loudly instead of silently missing it from `delete_class`'s cascade.
+#[test]
+fn deleting_a_class_leaves_the_global_materials_and_template_libraries_untouched_and_orphans_nothing_else() {
+    use vocalis::teacher::db;
+
+    let _db = ScratchDb::new("delete_class_globals");
+    let mut conn = db::open().expect("open the scratch db");
+
+    let class_id = db::insert_class(&conn, "E2E класс (глобальные библиотеки)").expect("insert class");
+    let material_id = db::insert_material(&conn, "Общий материал", "/tmp/e2e_material.wav").expect("insert material");
+    let template_id = db::insert_assignment_template(&mut conn, lingua_common::protocol::AssignmentKind::Test, "Общий шаблон", None, None, &[])
+        .expect("insert assignment template");
+
+    invoke("delete_class", serde_json::json!({"id": class_id})).expect("delete_class should succeed");
+
+    let materials = db::list_materials(&conn).expect("list_materials");
+    assert!(materials.iter().any(|m| m.id == material_id), "the global materials library must survive deleting a class");
+    let templates = db::list_assignment_templates(&conn).expect("list_assignment_templates");
+    assert!(templates.iter().any(|t| t.id == template_id), "the global assignment-template library must survive deleting a class");
+
+    // Schema-drift tripwire, not a hypothetical: the real, live set of tables. If this fails, a new table
+    // was added — decide whether `delete_class` (commands/db.rs) needs to cascade into it, then update
+    // this list to match.
+    let mut stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").unwrap();
+    let tables: Vec<String> = stmt.query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+    let known = [
+        "assignment_question_options",
+        "assignment_questions",
+        "assignment_templates",
+        "assignments",
+        "classes",
+        "connection_log",
+        "lessons",
+        "materials",
+        "roster",
+        // SQLite's own bookkeeping table (present because at least one of the above uses AUTOINCREMENT),
+        // not one of ours — listed here so the tripwire stays exact instead of stripping the check away.
+        "sqlite_sequence",
+        "students",
+        "teacher_profile",
+        "test_results",
+    ];
+    assert_eq!(
+        tables,
+        known.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        "a table was added to (or removed from) the schema — review whether delete_class's cascade needs updating for it"
+    );
+}
+
 /// Points `vocalis::teacher::db::open()` (and `student::recording`'s Recordings folder) at a throwaway
 /// directory for as long as the guard lives, then restores the environment and deletes it.
 ///

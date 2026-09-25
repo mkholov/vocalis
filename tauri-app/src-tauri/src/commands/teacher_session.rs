@@ -292,9 +292,34 @@ pub fn start_teacher_session<R: tauri::Runtime>(
     Ok(info)
 }
 
+/// Ending the lesson must actually disconnect whoever is still connected, not just stop *accepting* new
+/// students. Merely dropping the `TeacherSession` (what this used to do on its own) only aborts the
+/// control server's *accept* loop (`net::run_control_server`'s own task, tracked in `TeacherSession.tasks`)
+/// — it does nothing to a connection already in progress, since each one is handled by its own
+/// independently-`tokio::spawn`ed task inside `teacher::net::handle_student` (unchanged, untracked by
+/// `TeacherSession.tasks` on purpose — that's how one slow/stuck student was always meant to not block
+/// shutdown of the rest). Left alone, an already-connected student's session would sit there fully
+/// connected, invisible and uncontrollable from this Tauri layer (no more `TeacherSessionState` to reach
+/// it through) — a resource leak on the teacher's machine and a student console stuck reading "подключено
+/// к …" from a lesson that, as far as the teacher can tell, no longer exists.
+///
+/// Fixed without touching `teacher::net`/`common` (both shared with the egui app): clearing `students`
+/// drops every `Student`, and with it its `to_client: mpsc::UnboundedSender<ServerToClient>` — the one
+/// thing keeping `handle_student`'s writer task (`while let Some(msg) = rx.recv().await`) alive. Every
+/// sender gone means that loop ends and drops its half of the real TCP socket, sending a real FIN — which
+/// is what lets each student's own `connect_to_teacher` read loop notice a real disconnect and clean up
+/// (`connected_teacher = None`), which `student_session.rs`'s own disconnect watcher then reports to that
+/// student's UI as a real `"teacher-disconnected"` event. The rest of that student's own disconnect
+/// bookkeeping (`teacher::net`'s `leave_group`, the `connection_log` "disconnected" row) still happens
+/// exactly as it always did, just a moment later, once the teacher's own read half for that connection
+/// also sees the student close their end in turn.
 #[tauri::command]
 pub fn stop_teacher_session(session: State<TeacherSessionState>) {
-    *session.0.lock().unwrap() = None;
+    let mut guard = session.0.lock().unwrap();
+    if let Some(teacher_session) = guard.as_ref() {
+        teacher_session.app_state.lock().unwrap().students.clear();
+    }
+    *guard = None;
 }
 
 #[derive(Serialize)]

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { CircleHelp, FlaskConical, Hand, Link2, Lock, Mic, MicOff, Monitor, Play, Radio, Square, ThumbsUp, Trash2, X, type LucideIcon } from "lucide-react";
+import { CircleHelp, FlaskConical, Hand, Link2, Lock, Mic, MicOff, Monitor, Play, Radio, Square, ThumbsUp, Trash2, WifiOff, X, type LucideIcon } from "lucide-react";
 import { Button } from "../components/ui/Button";
 import { Panel } from "../components/ui/Panel";
 import { VuMeter } from "../components/VuMeter";
@@ -120,7 +120,8 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
             <div>
               <h1 className="text-xl font-semibold tracking-tight text-accent">Vocalis — ученик</h1>
               <p className="text-sm text-[var(--color-text-muted)]">
-                {studentName} · подключено к {teacherLabel}
+                {studentName} ·{" "}
+                {session.disconnected ? <span className="text-danger-text">отключено от {teacherLabel}</span> : `подключено к ${teacherLabel}`}
               </p>
               {mic.error && <p className="text-xs text-danger-text">Микрофон недоступен: {mic.error}</p>}
               {session.error && <p className="text-xs text-danger-text">Не удалось подключиться: {session.error}</p>}
@@ -142,6 +143,14 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
 
           <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-4">
             <AnimatePresence>
+              {session.disconnected && (
+                <StatusBanner
+                  key="disconnected"
+                  color="var(--color-status-danger)"
+                  icon={<WifiOff size={16} />}
+                  text="Соединение с преподавателем потеряно — урок завершён или пропала сеть. Чтобы продолжить, отключитесь и подключитесь заново."
+                />
+              )}
               {micLocked && <StatusBanner key="mic" color="var(--color-status-danger)" icon={<MicOff size={16} />} text="Микрофон заблокирован преподавателем" />}
               {listening && <StatusBanner key="listen" color="var(--color-status-warn)" icon={<Radio size={16} />} text="Учитель слушает ваш микрофон в реальном времени" />}
               {partner && <StatusBanner key="partner" color="var(--color-status-accent)" icon={<Link2 size={16} />} text={`В группе с: ${partner}`} />}

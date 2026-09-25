@@ -18,16 +18,24 @@ interface Params {
  * started yet, or the teacher just stopped one — `screen-demo-stopped`
  * clears it so a finished demo doesn't leave a frozen last frame on
  * screen). `error` is set on a genuine connection failure (wrong PIN,
- * unreachable teacher) rather than thrown. */
+ * unreachable teacher) rather than thrown.
+ *
+ * `disconnected` starts `false` and only ever goes `true`, on a real `"teacher-disconnected"` event —
+ * `commands/student_session.rs`'s own watcher, which fires once the *real* control connection actually
+ * closes (the teacher ended the lesson, quit, or the network died), not a guess. Before that event
+ * existed, nothing told this hook (or `StudentConsole`) a stale "подключено к …" was no longer true. */
 export function useStudentSession(params: Params) {
   const [frame, setFrame] = useState<ScreenDemoFrameDto | null>(null);
   const [error, setError] = useState<string | undefined>();
   const [teacherName, setTeacherName] = useState<string | undefined>();
+  const [disconnected, setDisconnected] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     let unlistenFrame: (() => void) | undefined;
     let unlistenStopped: (() => void) | undefined;
+    let unlistenDisconnected: (() => void) | undefined;
+    setDisconnected(false);
 
     connectStudentSession(params.teacherIp, params.controlPort, params.studentName, params.pin)
       .then((info) => {
@@ -36,6 +44,7 @@ export function useStudentSession(params: Params) {
         return Promise.all([
           listen<ScreenDemoFrameDto>("screen-demo-frame", (event) => setFrame(event.payload)),
           listen("screen-demo-stopped", () => setFrame(null)),
+          listen("teacher-disconnected", () => setDisconnected(true)),
         ]);
       })
       .then((fns) => {
@@ -43,7 +52,7 @@ export function useStudentSession(params: Params) {
         if (cancelled) {
           fns.forEach((fn) => fn());
         } else {
-          [unlistenFrame, unlistenStopped] = fns;
+          [unlistenFrame, unlistenStopped, unlistenDisconnected] = fns;
         }
       })
       .catch((err) => setError(String(err)));
@@ -52,10 +61,11 @@ export function useStudentSession(params: Params) {
       cancelled = true;
       unlistenFrame?.();
       unlistenStopped?.();
+      unlistenDisconnected?.();
       setFrame(null);
       disconnectStudentSession().catch(() => {});
     };
   }, [params.teacherIp, params.controlPort, params.studentName, params.pin]);
 
-  return { frame, error, teacherName };
+  return { frame, error, teacherName, disconnected };
 }
