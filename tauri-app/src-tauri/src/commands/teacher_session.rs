@@ -31,6 +31,9 @@ use tauri::{AppHandle, Emitter, State};
 use vocalis::teacher::{db, listen, materials, mic, net, screen, state};
 
 const LEVEL_EMIT_INTERVAL_MS: u64 = 150;
+/// Chat is a person typing, not a media stream — nowhere near frame-budget territory, so a much coarser
+/// poll than the level emitter above is plenty responsive.
+const CHAT_POLL_INTERVAL_MS: u64 = 250;
 // A fresh `SharedState`'s `class_size` doesn't matter for this step — nothing
 // here renders a seat grid off this state, only mic levels — so a generous
 // fixed size just leaves room for any number of test connections.
@@ -40,6 +43,10 @@ const TEST_CLASS_SIZE: usize = 30;
 /// `start_teacher_session`'s doc comment), so this is a fixed placeholder,
 /// same spirit as `"Tauri (тест)"` below for discovery announcements.
 const SCREEN_DEMO_PRESENTER_NAME: &str = "Преподаватель";
+/// This Tauri prototype has no stored teacher profile/login name yet (see `start_teacher_session`'s doc
+/// comment) — one fixed placeholder used everywhere a display name is needed, including as the real
+/// `from` on a chat message this teacher sends.
+const TEACHER_DISPLAY_NAME: &str = "Tauri (тест)";
 
 /// The teacher's class-wide mic broadcast (step 7.5 — `vocalis_roadmap.md`,
 /// section 8). `teacher::mic::MicCapture` wraps a `cpal::Stream`, which isn't
@@ -232,7 +239,7 @@ pub fn start_teacher_session<R: tauri::Runtime>(
     )));
 
     let mut tasks = Vec::new();
-    let teacher_name: Arc<str> = Arc::from("Tauri (тест)");
+    let teacher_name: Arc<str> = Arc::from(TEACHER_DISPLAY_NAME);
 
     {
         let name = teacher_name.to_string();
@@ -258,6 +265,31 @@ pub fn start_teacher_session<R: tauri::Runtime>(
             loop {
                 interval.tick().await;
                 emit_levels(&app, &app_state);
+            }
+        }));
+    }
+    {
+        // Real incoming chat, not a mock: `SharedState.chat_log` only ever grows (a plain `Vec::push`, in
+        // `teacher::net`, unchanged — the same log egui's own chat tab reads), and every entry it gains
+        // that this command didn't put there itself is something worth telling the frontend about —
+        // a student's real `ClientToServer::ChatMessage`, but also e.g. the "не найден(а) в списке класса"
+        // system note `teacher::net` logs on a roster mismatch, exactly like the egui chat tab shows both.
+        // `send_chat_message` below deliberately never touches `chat_log` itself (the frontend already
+        // knows what it just sent), so nothing here can ever echo the teacher's own message back to them.
+        let app = app.clone();
+        let app_state = app_state.clone();
+        tasks.push(tauri::async_runtime::spawn(async move {
+            let mut last_len = app_state.lock().unwrap().chat_log.len();
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(CHAT_POLL_INTERVAL_MS));
+            loop {
+                interval.tick().await;
+                let guard = app_state.lock().unwrap();
+                if guard.chat_log.len() > last_len {
+                    for entry in &guard.chat_log[last_len..] {
+                        let _ = app.emit("chat-message", ChatMessageDto { from: entry.from.clone(), text: entry.text.clone() });
+                    }
+                    last_len = guard.chat_log.len();
+                }
             }
         }));
     }
@@ -805,6 +837,59 @@ pub fn send_assignment(
         sent += 1;
     }
     Ok(SendAssignmentResult { sent })
+}
+
+/// One real chat message, in or out — the same `{from, text}` shape `teacher::state::ChatEntry` (incoming)
+/// and `ServerToClient::ChatMessage`/`ClientToServer::ChatMessage` (the wire messages themselves) already
+/// use, so nothing needs reshaping in either direction.
+#[derive(Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessageDto {
+    pub from: String,
+    pub text: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendChatResult {
+    pub sent: usize,
+}
+
+/// Sends a real chat message to `student_ids`, or every currently connected student if empty ("весь
+/// класс") — same empty-means-everyone convention `send_assignment`/`play_material` already use. Reuses
+/// the real, existing `ServerToClient::ChatMessage` — `teacher::net`'s student-side handling of it
+/// (unchanged) already logs it into that student's own `chat_log`, which `student_session.rs`'s own poller
+/// reports to their UI. Deliberately does *not* touch this teacher's own `chat_log`: the frontend already
+/// knows what it just sent (that's what triggered this call), so echoing it back here would show it twice.
+#[tauri::command]
+pub fn send_chat_message(session: State<TeacherSessionState>, text: String, student_ids: Vec<String>) -> Result<SendChatResult, String> {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err("Пустое сообщение не отправляется".to_string());
+    }
+
+    let guard = session.0.lock().unwrap();
+    let teacher_session = guard.as_ref().ok_or("нет активной сессии преподавателя")?;
+    let state_guard = teacher_session.app_state.lock().unwrap();
+
+    let target_ids: Vec<StudentId> = if student_ids.is_empty() {
+        state_guard.students.keys().copied().collect()
+    } else {
+        student_ids.iter().map(|s| s.parse().map_err(|_| format!("invalid student id: {s}"))).collect::<Result<_, String>>()?
+    };
+    if target_ids.is_empty() {
+        return Err("Нет подключенных учеников".to_string());
+    }
+
+    let msg = ServerToClient::ChatMessage { from: TEACHER_DISPLAY_NAME.to_string(), text };
+    let mut sent = 0;
+    for id in &target_ids {
+        if let Some(s) = state_guard.students.get(id) {
+            let _ = s.to_client.send(msg.clone());
+            sent += 1;
+        }
+    }
+    Ok(SendChatResult { sent })
 }
 
 #[derive(Serialize, Clone)]

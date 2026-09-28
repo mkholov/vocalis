@@ -32,6 +32,7 @@
     "allow-create-group",
     "allow-leave-group",
     "allow-send-assignment",
+    "allow-send-chat-message",
     "allow-list-materials",
     "allow-upload-material",
     "allow-play-material",
@@ -45,6 +46,7 @@
     "allow-disconnect-student-session",
     "allow-set-hand-raised",
     "allow-submit-test-answers",
-    "allow-submit-assignment-done"
+    "allow-submit-assignment-done",
+    "allow-submit-chat-message"
   ]
 }

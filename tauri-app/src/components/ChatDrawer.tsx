@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { ArrowRight, Send, X } from "lucide-react";
+import { sendChatMessage } from "../lib/commands";
+import { useChat } from "../lib/useChat";
 
 const WHOLE_CLASS = "Весь класс";
 
@@ -26,18 +28,21 @@ export interface ChatStudent {
 
 const INITIAL_MESSAGES: Message[] = [{ id: 1, from: "Система", toId: WHOLE_CLASS, toName: WHOLE_CLASS, text: "Урок начался." }];
 
-/** Step 5 of the Tauri migration (vocalis_roadmap.md, section 8): teacher↔
- * class/student chat. `students` is the real connected roster (`TeacherConsole`'s own
- * `useLiveClassroom`, the same source the class grid uses) — no more invented names. Sending itself is
- * still local state only: there's no `ChatMessage`-over-the-network wiring into this Tauri command bridge
- * yet (the protocol already has `ClientToServer::ChatMessage`/receiving it is a separate, real network
- * step for later — this UI is ready for it, but doesn't send anything over the wire today).
+/** Step 5 of the Tauri migration (vocalis_roadmap.md, section 8): teacher↔class/student chat, real in both
+ * directions. `students` is the real connected roster (`TeacherConsole`'s own `useLiveClassroom`, the same
+ * source the class grid uses). Sending calls `sendChatMessage` (a real `ServerToClient::ChatMessage`,
+ * targeted or to the whole class); incoming messages arrive via `useChat`'s real `"chat-message"` event —
+ * tagged `toId: WHOLE_CLASS` regardless of who sent them (a student can only ever write *to the teacher*,
+ * there's no student-side target to preserve), so an incoming message is never hidden by whichever student
+ * happens to be selected in the picker.
  * Overlays as a right-hand drawer over whichever teacher screen is active, rather than being its own nav
  * tab, so it's reachable from anywhere. */
 export function ChatDrawer({ open, onClose, students }: { open: boolean; onClose: () => void; students: ChatStudent[] }) {
-  const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES);
+  const [sentMessages, setSentMessages] = useState<Message[]>(INITIAL_MESSAGES);
+  const received = useChat();
   const [target, setTarget] = useState(WHOLE_CLASS);
   const [text, setText] = useState("");
+  const [error, setError] = useState<string | undefined>();
 
   // A student who disconnects while selected as the target must not leave the picker pointing at someone
   // who's no longer there.
@@ -45,14 +50,29 @@ export function ChatDrawer({ open, onClose, students }: { open: boolean; onClose
     if (target !== WHOLE_CLASS && !students.some((s) => s.realId === target)) setTarget(WHOLE_CLASS);
   }, [students, target]);
 
-  function send(e: FormEvent) {
+  async function send(e: FormEvent) {
     e.preventDefault();
     const trimmed = text.trim();
     if (!trimmed) return;
     const toName = target === WHOLE_CLASS ? WHOLE_CLASS : (students.find((s) => s.realId === target)?.name ?? WHOLE_CLASS);
-    setMessages((prev) => [...prev, { id: Date.now(), from: "Вы", toId: target, toName, text: trimmed }]);
-    setText("");
+    try {
+      await sendChatMessage(trimmed, target === WHOLE_CLASS ? [] : [target]);
+      setSentMessages((prev) => [...prev, { id: Date.now(), from: "Вы", toId: target, toName, text: trimmed }]);
+      setText("");
+      setError(undefined);
+    } catch (err) {
+      setError(String(err));
+    }
   }
+
+  // Merged and re-sorted by arrival: `sentMessages` (this side's own, appended the instant a send
+  // succeeds) and `received` (the other side's, real-time from the network) are two independent streams —
+  // `id` is a monotonic counter/timestamp in both, so interleaving by it keeps the transcript in the order
+  // things actually happened rather than "everything I sent, then everything I got".
+  const messages: Message[] = [
+    ...sentMessages,
+    ...received.map((m) => ({ id: m.id + 1_000_000_000, from: m.from, toId: WHOLE_CLASS, toName: "Вам", text: m.text })),
+  ].sort((a, b) => a.id - b.id);
 
   const targetName = target === WHOLE_CLASS ? WHOLE_CLASS : (students.find((s) => s.realId === target)?.name ?? WHOLE_CLASS);
   const visible = messages.filter((m) => m.toId === WHOLE_CLASS || m.toId === target);
@@ -127,6 +147,7 @@ export function ChatDrawer({ open, onClose, students }: { open: boolean; onClose
               </AnimatePresence>
             </div>
 
+            {error && <p className="mb-2 text-xs text-danger-text">{error}</p>}
             <form onSubmit={send} className="mt-3 flex gap-2">
               <input
                 value={text}

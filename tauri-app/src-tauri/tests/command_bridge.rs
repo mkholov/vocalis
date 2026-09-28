@@ -186,6 +186,154 @@ fn sending_an_assignment_reaches_the_student_as_a_real_assignment_offer() {
     student_session::disconnect_student_session(student_state);
 }
 
+/// Real chat, both directions, end to end: no protocol change was needed — `ClientToServer::ChatMessage`
+/// and `ServerToClient::ChatMessage` already existed and were already fully handled by `teacher::net`
+/// (unchanged); what was missing was purely on the Tauri side (`send_chat_message`/`submit_chat_message`,
+/// and the two `"chat-message"` pollers). Two real students: a broadcast message reaches both, a message
+/// targeted at just one does not leak to the other, and a student's own message reaches the teacher labeled
+/// with their real name — the same `chat_log` `teacher::net`'s handler (unchanged) already writes it under.
+#[test]
+fn chat_messages_reach_both_sides_for_real_and_respect_the_chosen_target() {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+    use tauri::{Listener, Manager};
+    use tauri_app_lib::commands::{student_session, teacher_session};
+
+    let _db = ScratchDb::new("chat");
+
+    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
+    let session_info = teacher_session::start_teacher_session(
+        teacher_app.handle().clone(),
+        teacher_state.clone(),
+        "E2E класс (чат)".to_string(),
+    )
+    .expect("start_teacher_session should succeed");
+    let teacher_webview = tauri::WebviewWindowBuilder::new(&teacher_app, "main", Default::default()).build().unwrap();
+    let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+        let body = match args {
+            serde_json::Value::Null => InvokeBody::default(),
+            other => InvokeBody::Json(other),
+        };
+        let request = InvokeRequest {
+            cmd: cmd.into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: if cfg!(any(windows, target_os = "android")) { "http://tauri.localhost" } else { "tauri://localhost" }
+                .parse()
+                .unwrap(),
+            body,
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.to_string(),
+        };
+        tauri::test::get_ipc_response(&teacher_webview, request).map(|b| b.deserialize::<serde_json::Value>().unwrap())
+    };
+
+    let (teacher_chat_tx, teacher_chat_rx) = mpsc::channel::<serde_json::Value>();
+    teacher_app.listen("chat-message", move |event| {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+            let _ = teacher_chat_tx.send(v);
+        }
+    });
+
+    let student_a_app = build_app(tauri::test::mock_builder());
+    let student_a_state = student_a_app.state::<student_session::StudentSessionState>();
+    student_session::connect_student_session(
+        student_a_app.handle().clone(),
+        student_a_state.clone(),
+        "127.0.0.1".to_string(),
+        lingua_common::CONTROL_PORT,
+        "E2E ученик А (чат)".to_string(),
+        session_info.pin.clone(),
+    )
+    .expect("student A should connect to the real running control server");
+    let (a_chat_tx, a_chat_rx) = mpsc::channel::<serde_json::Value>();
+    student_a_app.listen("chat-message", move |event| {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+            let _ = a_chat_tx.send(v);
+        }
+    });
+
+    let student_b_app = build_app(tauri::test::mock_builder());
+    let student_b_state = student_b_app.state::<student_session::StudentSessionState>();
+    student_session::connect_student_session(
+        student_b_app.handle().clone(),
+        student_b_state.clone(),
+        "127.0.0.1".to_string(),
+        lingua_common::CONTROL_PORT,
+        "E2E ученик Б (чат)".to_string(),
+        session_info.pin.clone(),
+    )
+    .expect("student B should connect to the real running control server");
+    let (b_chat_tx, b_chat_rx) = mpsc::channel::<serde_json::Value>();
+    student_b_app.listen("chat-message", move |event| {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+            let _ = b_chat_tx.send(v);
+        }
+    });
+
+    // Learn both students' real ids from a real `student-levels` event, same as the groups test does.
+    let (levels_tx, levels_rx) = mpsc::channel::<serde_json::Value>();
+    teacher_app.listen("student-levels", move |event| {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+            let _ = levels_tx.send(v);
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let ids = loop {
+        assert!(Instant::now() < deadline, "a real student-levels event naming both students should arrive");
+        let v = levels_rx.recv_timeout(Duration::from_millis(200)).unwrap_or(serde_json::Value::Null);
+        if let Some(arr) = v.as_array() {
+            if arr.len() >= 2 {
+                let by_name: std::collections::HashMap<String, String> =
+                    arr.iter().map(|s| (s["name"].as_str().unwrap().to_string(), s["id"].as_str().unwrap().to_string())).collect();
+                if let (Some(a), Some(b)) = (by_name.get("E2E ученик А (чат)"), by_name.get("E2E ученик Б (чат)")) {
+                    break (a.clone(), b.clone());
+                }
+            }
+        }
+    };
+    let a_id = ids.0;
+
+    // 1) Teacher -> whole class: both students get it.
+    let result = call("send_chat_message", serde_json::json!({"text": "Урок начался, всем привет", "studentIds": []}))
+        .expect("send_chat_message to the whole class should succeed");
+    assert_eq!(result["sent"], 2);
+
+    let recv_a = a_chat_rx.recv_timeout(Duration::from_secs(5)).expect("student A should really receive the broadcast");
+    assert_eq!(recv_a["from"], "Tauri (тест)");
+    assert_eq!(recv_a["text"], "Урок начался, всем привет");
+    let recv_b = b_chat_rx.recv_timeout(Duration::from_secs(5)).expect("student B should really receive the broadcast too");
+    assert_eq!(recv_b["text"], "Урок начался, всем привет");
+
+    // 2) Teacher -> student A only: A gets it, B must not.
+    call("send_chat_message", serde_json::json!({"text": "Пётр, зайди после урока", "studentIds": [a_id]}))
+        .expect("send_chat_message to one real student should succeed");
+    let recv_a2 = a_chat_rx.recv_timeout(Duration::from_secs(5)).expect("student A should receive the targeted message");
+    assert_eq!(recv_a2["text"], "Пётр, зайди после урока");
+    let leaked = b_chat_rx.recv_timeout(Duration::from_millis(800));
+    assert!(leaked.is_err(), "a message addressed to student A only must not reach student B, got: {leaked:?}");
+
+    // 3) Student A -> teacher: a real reply, labeled with A's real name — the same `chat_log` entry
+    // `teacher::net`'s unchanged `ClientToServer::ChatMessage` handler writes.
+    student_session::submit_chat_message(student_a_state.clone(), "Хорошо, зайду".to_string())
+        .expect("submit_chat_message should succeed over a real connection");
+    let recv_teacher =
+        teacher_chat_rx.recv_timeout(Duration::from_secs(5)).expect("the teacher should really receive student A's reply");
+    assert_eq!(recv_teacher["from"], "E2E ученик А (чат)");
+    assert_eq!(recv_teacher["text"], "Хорошо, зайду");
+
+    // Empty messages are refused on both sides, real state untouched.
+    let err = call("send_chat_message", serde_json::json!({"text": "   ", "studentIds": []})).expect_err("blank teacher message refused");
+    assert_eq!(err, "Пустое сообщение не отправляется");
+    let err = student_session::submit_chat_message(student_a_state.clone(), "  ".to_string()).expect_err("blank student message refused");
+    assert_eq!(err, "Пустое сообщение не отправляется");
+
+    teacher_session::stop_teacher_session(teacher_state);
+    student_session::disconnect_student_session(student_a_state);
+    student_session::disconnect_student_session(student_b_state);
+}
+
 /// The full answer flow, end to end: the teacher sends a real `Test` assignment, a real connected student
 /// answers it (one right, one wrong) through `submit_test_answers` — the same command
 /// `AssignmentCard`'s "Отправить" button calls — and the teacher really sees the graded result land: a

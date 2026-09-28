@@ -45,6 +45,7 @@ pub fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::App<R>
             commands::teacher_session::create_group,
             commands::teacher_session::leave_group,
             commands::teacher_session::send_assignment,
+            commands::teacher_session::send_chat_message,
             commands::teacher_session::list_materials,
             commands::teacher_session::upload_material,
             commands::teacher_session::play_material,
@@ -63,6 +64,7 @@ pub fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::App<R>
             commands::student_session::set_hand_raised,
             commands::student_session::submit_test_answers,
             commands::student_session::submit_assignment_done,
+            commands::student_session::submit_chat_message,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

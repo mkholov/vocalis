@@ -43,6 +43,8 @@ const ASSIGNMENT_POLL_INTERVAL_MS: u64 = 200;
 /// a still-mounted `StudentConsole` its "подключено к …" header has gone stale. Coarse on purpose: this is
 /// "tell the user eventually," not a latency-sensitive media path.
 const DISCONNECT_POLL_INTERVAL_MS: u64 = 300;
+/// Chat is a person typing, not a media stream — same reasoning as `ASSIGNMENT_POLL_INTERVAL_MS`.
+const CHAT_POLL_INTERVAL_MS: u64 = 250;
 /// `student::net::connect_to_teacher` has no readiness callback of its own
 /// (unlike `teacher::mic::start_mic_capture`, which `student_mic.rs` gets a
 /// synchronous ready signal from) — it just sets `connected_teacher` once the
@@ -406,6 +408,28 @@ pub fn connect_student_session<R: tauri::Runtime>(
         }));
     }
     {
+        // Real incoming chat: `student::state::AppState.chat_log` only ever grows (`student::net`'s
+        // unchanged read loop pushes to it on a real `ServerToClient::ChatMessage`) — this student's own
+        // sent messages never land here (`submit_chat_message` below only ever sends, it never touches
+        // `chat_log`), so every entry this sees is a real message from the teacher, safe to just forward.
+        let poll_state = app_state.clone();
+        let app = app.clone();
+        tasks.push(tauri::async_runtime::spawn(async move {
+            let mut last_len = poll_state.lock().unwrap().chat_log.len();
+            let mut interval = tokio::time::interval(Duration::from_millis(CHAT_POLL_INTERVAL_MS));
+            loop {
+                interval.tick().await;
+                let guard = poll_state.lock().unwrap();
+                if guard.chat_log.len() > last_len {
+                    for entry in &guard.chat_log[last_len..] {
+                        let _ = app.emit("chat-message", ChatMessageDto { from: entry.from.clone(), text: entry.text.clone() });
+                    }
+                    last_len = guard.chat_log.len();
+                }
+            }
+        }));
+    }
+    {
         let poll_state = app_state.clone();
         tasks.push(tauri::async_runtime::spawn(async move {
             let mut last_frame_version = 0u64;
@@ -547,4 +571,34 @@ pub fn submit_assignment_done(session: State<StudentSessionState>, assignment_id
 
     let tx = to_server.ok_or("подключение к преподавателю ещё не готово")?;
     tx.send(ClientToServer::AssignmentDone { id }).map_err(|_| "соединение с преподавателем разорвано".to_string())
+}
+
+/// One real chat message, in or out — same `{from, text}` shape as `student::state::ChatEntry` and the two
+/// wire messages themselves (`ServerToClient::ChatMessage`/`ClientToServer::ChatMessage`), so nothing needs
+/// reshaping in either direction. A separate type from `teacher_session.rs`'s own `ChatMessageDto` (same
+/// shape) purely to keep the two command modules independent, the same reason `AssignmentContentDto` is
+/// duplicated between them.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessageDto {
+    pub from: String,
+    pub text: String,
+}
+
+/// Sends a real chat message to the teacher — there is only ever one possible recipient from a student's
+/// side, unlike the teacher's own `send_chat_message`, so no target to pick. Reuses the real, existing
+/// `ClientToServer::ChatMessage` — `teacher::net`'s handling of it (unchanged) already logs it into
+/// `SharedState.chat_log` under this student's real name, which is what the teacher's own "Чат" panel and
+/// its `chat-message` event read.
+#[tauri::command]
+pub fn submit_chat_message(session: State<StudentSessionState>, text: String) -> Result<(), String> {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err("Пустое сообщение не отправляется".to_string());
+    }
+    let guard = session.0.lock().unwrap();
+    let student = guard.as_ref().ok_or("нет активного подключения к преподавателю")?;
+    let to_server = student.app_state.lock().unwrap().to_server.clone();
+    let tx = to_server.ok_or("подключение к преподавателю ещё не готово")?;
+    tx.send(ClientToServer::ChatMessage { text }).map_err(|_| "соединение с преподавателем разорвано".to_string())
 }

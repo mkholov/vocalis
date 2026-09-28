@@ -30,6 +30,7 @@ fn main() {
             "create_group",
             "leave_group",
             "send_assignment",
+            "send_chat_message",
             "list_materials",
             "upload_material",
             "play_material",
@@ -44,6 +45,7 @@ fn main() {
             "set_hand_raised",
             "submit_test_answers",
             "submit_assignment_done",
+            "submit_chat_message",
         ]),
     );
     tauri_build::try_build(attributes).expect("failed to run tauri-build codegen");

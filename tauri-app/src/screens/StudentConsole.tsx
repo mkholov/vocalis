@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, CircleHelp, FlaskConical, Hand, Link2, Lock, Mic, MicOff, Monitor, Play, Radio, Send, Square, ThumbsUp, Trash2, WifiOff, X, type LucideIcon } from "lucide-react";
+import { Check, CircleHelp, FlaskConical, Hand, Link2, Lock, Mic, MessageSquare, MicOff, Monitor, Play, Radio, Send, Square, ThumbsUp, Trash2, WifiOff, X, type LucideIcon } from "lucide-react";
 import { Button } from "../components/ui/Button";
 import { Panel } from "../components/ui/Panel";
+import { inputClasses } from "../components/ui/fieldStyles";
 import { VuMeter } from "../components/VuMeter";
 import { FlyingReactions, type FlyingReaction } from "../components/FlyingReactions";
 import { ROSTER } from "../lib/mockClassroom";
@@ -10,8 +11,9 @@ import { KIND_META, tint, type AssignmentContent } from "../lib/assignments";
 import { useMicMeter } from "../lib/useMicMeter";
 import { useStudentSession } from "../lib/useStudentSession";
 import { useRecordings } from "../lib/useRecordings";
-import { setHandRaised as sendHandRaised, submitAssignmentDone, submitTestAnswers, type AssignmentOfferDto } from "../lib/commands";
+import { setHandRaised as sendHandRaised, submitAssignmentDone, submitChatMessage, submitTestAnswers, type AssignmentOfferDto } from "../lib/commands";
 import { useAssignments } from "../lib/useAssignments";
+import { useChat } from "../lib/useChat";
 
 interface Props {
   studentName: string;
@@ -275,6 +277,8 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
                 <p className="mt-3 text-sm text-[var(--color-text-muted)]">Пока нет записей.</p>
               )}
             </Panel>
+
+            <StudentChatPanel />
 
             <div className="mt-auto flex items-center justify-center gap-3 pt-4">
               <motion.div whileTap={{ scale: 0.95 }}>
@@ -619,4 +623,76 @@ function AssignmentAnswerForm({
     );
   }
   return <p className="whitespace-pre-wrap">{content.text}</p>;
+}
+
+/** Real chat with the teacher — the only possible recipient from here, so no target picker like the
+ * teacher's own `ChatDrawer` needs. `useChat` supplies real incoming messages (`"chat-message"`, the same
+ * event the teacher's own chat emits from, in both directions); this side's own sent messages are appended
+ * locally the instant `submitChatMessage` succeeds (never echoed back by the backend — see `useChat`'s own
+ * doc comment) and interleaved with the incoming ones by arrival order. */
+function StudentChatPanel() {
+  const received = useChat();
+  const [sent, setSent] = useState<{ id: number; text: string }[]>([]);
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+
+  const messages = [
+    ...sent.map((m) => ({ id: m.id, from: "Вы", text: m.text })),
+    ...received.map((m) => ({ id: m.id + 1_000_000_000, from: m.from, text: m.text })),
+  ].sort((a, b) => a.id - b.id);
+
+  async function send(e: React.FormEvent) {
+    e.preventDefault();
+    const trimmed = text.trim();
+    if (!trimmed || sending) return;
+    setSending(true);
+    try {
+      await submitChatMessage(trimmed);
+      setSent((prev) => [...prev, { id: Date.now(), text: trimmed }]);
+      setText("");
+      setError(undefined);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <Panel>
+      <div className="mb-3 flex items-center gap-2 font-medium">
+        <MessageSquare size={16} />
+        Чат с преподавателем
+      </div>
+      <div className="flex max-h-48 flex-col gap-2 overflow-y-auto pr-1">
+        {messages.length === 0 ? (
+          <p className="text-sm text-[var(--color-text-muted)]">Сообщений пока нет.</p>
+        ) : (
+          messages.map((m) => (
+            <div key={m.id} className="rounded-xl bg-overlay px-3 py-2 text-sm">
+              <div className="mb-0.5 text-xs font-medium text-accent-text">{m.from}</div>
+              {m.text}
+            </div>
+          ))
+        )}
+      </div>
+      {error && <p className="mt-2 text-xs text-danger-text">{error}</p>}
+      <form onSubmit={send} className="mt-3 flex gap-2">
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="Сообщение преподавателю"
+          className={inputClasses + " py-2"}
+        />
+        <button
+          type="submit"
+          disabled={sending}
+          className="inline-flex shrink-0 items-center justify-center rounded-xl bg-violet-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-violet-400 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Send size={16} />
+        </button>
+      </form>
+    </Panel>
+  );
 }

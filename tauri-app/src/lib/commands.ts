@@ -113,6 +113,28 @@ export function submitAssignmentDone(assignmentId: string): Promise<void> {
   return invoke<void>("submit_assignment_done", { assignmentId });
 }
 
+// --- Real chat delivery (commands/teacher_session.rs's `send_chat_message`, commands/student_session.rs's
+// `submit_chat_message`) — receiving is the shared `"chat-message"` event both sides emit, see
+// `lib/useChat.ts`.
+
+export interface SendChatResultDto {
+  sent: number;
+}
+
+/** Teacher -> `studentIds`, or every currently connected student if `studentIds` is empty ("весь класс") —
+ * same empty-means-everyone convention `sendAssignment`/`playMaterial` already use. Delivers a real
+ * `ServerToClient::ChatMessage`; rejects a blank message or (like every other teacher command) no active
+ * session / no connected students. */
+export function sendChatMessage(text: string, studentIds: string[]): Promise<SendChatResultDto> {
+  return invoke<SendChatResultDto>("send_chat_message", { text, studentIds });
+}
+
+/** Student -> teacher — the only possible recipient, so no target to pick. Delivers a real
+ * `ClientToServer::ChatMessage`. */
+export function submitChatMessage(text: string): Promise<void> {
+  return invoke<void>("submit_chat_message", { text });
+}
+
 export interface DiscoveredTeacherDto {
   ip: string;
   teacherName: string;
