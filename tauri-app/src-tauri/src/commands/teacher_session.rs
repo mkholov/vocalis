@@ -26,6 +26,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lingua_common::{AssignmentKind, ServerToClient, StudentId, TEACHER_INTERCOM_PORT};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use vocalis::teacher::{db, listen, materials, mic, net, screen, state};
@@ -1019,4 +1021,62 @@ pub fn stop_playback(session: State<TeacherSessionState>) {
     let mut guard = session.0.lock().unwrap();
     let Some(teacher_session) = guard.as_mut() else { return };
     stop_playback_locked(teacher_session);
+}
+
+/// The same directory `teacher::net`'s (unexported, private) `save_received_file` writes into — this
+/// reconstructs the identical path rather than calling it (there is nothing to call: it's a private helper
+/// inside `app/src/teacher/net.rs`'s own module) because `run_control_server` runs as a task inside this
+/// very process (`start_teacher_session` spawns it), so `std::env::temp_dir()` resolves to the exact same
+/// place either way — not a guess, just the one directory a student's `ClientToServer::FileOffer` (in
+/// particular, "Отправить учителю" on a voice recording — see `student_recording.rs`'s own
+/// `send_recording_to_teacher`) has ever been able to land in.
+fn received_recordings_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join("VocalisReceivedFromStudents")
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ReceivedRecordingDto {
+    /// The file name a student's `send_recording_to_teacher` chose — human-readable on purpose:
+    /// `"<student> — <recording> (эталон: <title>)"` when it was compared against a reference, so the
+    /// attribution and context travel with the file itself, not just a chat-log line.
+    pub name: String,
+    pub received_at_epoch: Option<u64>,
+}
+
+/// Every real recording a student has sent this run of the app ("Отправить учителю"), newest first — a
+/// plain directory listing (`.wav` only), the same "just files on disk, nothing else to persist" approach
+/// `student_recording.rs`'s own `list_recordings` already uses. Empty, not an error, if nobody's sent one
+/// yet — `teacher::net`'s handler for `FileOffer` only ever creates this directory once it has a real file
+/// to put in it.
+#[tauri::command]
+pub fn list_received_recordings() -> Vec<ReceivedRecordingDto> {
+    let Ok(entries) = std::fs::read_dir(received_recordings_dir()) else {
+        return Vec::new();
+    };
+    let mut rows: Vec<(std::time::SystemTime, ReceivedRecordingDto)> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("wav"))
+        .filter_map(|e| {
+            let modified = e.metadata().and_then(|m| m.modified()).ok()?;
+            let received_at_epoch = modified.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs());
+            Some((modified, ReceivedRecordingDto { name: e.file_name().to_string_lossy().to_string(), received_at_epoch }))
+        })
+        .collect();
+    rows.sort_by(|a, b| b.0.cmp(&a.0));
+    rows.into_iter().map(|(_, dto)| dto).collect()
+}
+
+/// A received recording's audio as a `data:audio/wav;base64,…` URL — same shape and same reason
+/// `student_recording.rs`'s own `read_recording` already returns one: direct `<audio>` playback in the
+/// webview. `name` is only ever accepted if it exactly matches a real entry `list_received_recordings`
+/// just listed — the same path-traversal guard that module's own `find_recording` uses, for the same
+/// reason (the webview must never be able to turn an arbitrary string into an arbitrary file read).
+#[tauri::command]
+pub fn read_received_recording(name: String) -> Result<String, String> {
+    if !list_received_recordings().iter().any(|r| r.name == name) {
+        return Err("запись не найдена".to_string());
+    }
+    let bytes = std::fs::read(received_recordings_dir().join(&name)).map_err(|e| format!("не удалось прочитать запись: {e}"))?;
+    Ok(format!("data:audio/wav;base64,{}", BASE64.encode(bytes)))
 }

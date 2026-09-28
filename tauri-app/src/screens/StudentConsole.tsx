@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, CircleHelp, FlaskConical, Hand, Link2, Lock, Mic, MessageSquare, MicOff, Monitor, Play, Radio, Send, Square, ThumbsUp, Trash2, WifiOff, X, type LucideIcon } from "lucide-react";
+import { Check, CircleHelp, FlaskConical, Hand, Headphones, Link2, Lock, Mic, MessageSquare, MicOff, Monitor, Play, Radio, Send, Square, ThumbsUp, Trash2, Upload, WifiOff, X, type LucideIcon } from "lucide-react";
 import { Button } from "../components/ui/Button";
 import { Panel } from "../components/ui/Panel";
 import { inputClasses } from "../components/ui/fieldStyles";
@@ -11,6 +11,7 @@ import { KIND_META, tint, type AssignmentContent } from "../lib/assignments";
 import { useMicMeter } from "../lib/useMicMeter";
 import { useStudentSession } from "../lib/useStudentSession";
 import { useRecordings } from "../lib/useRecordings";
+import { useReference } from "../lib/useReference";
 import { setHandRaised as sendHandRaised, submitAssignmentDone, submitChatMessage, submitTestAnswers, type AssignmentOfferDto } from "../lib/commands";
 import { useAssignments } from "../lib/useAssignments";
 import { useChat } from "../lib/useChat";
@@ -65,12 +66,16 @@ const DEV_ASSIGNMENT: AssignmentOfferDto = {
  * likewise a real `cpal` capture (`useMicMeter`), not a mock, exactly like
  * the egui app's own top-bar VU meter. "Запись голоса" (`useRecordings`,
  * step 7.5 item 6) is real too: it records the same mic PCM the session
- * already streams, saves it as a WAV, and plays it back in-app — comparing a
- * recording to the teacher's reference is a separate, later step. */
+ * already streams, saves it as a WAV, and plays it back in-app; comparing a
+ * recording against the teacher's reference (`useReference`, the material
+ * last played to this student) and sending one to the teacher for real
+ * (`ClientToServer::FileOffer`) are real as well — see the "Запись голоса"
+ * panel below. */
 export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDisconnect }: Props) {
   const mic = useMicMeter();
   const session = useStudentSession({ studentName, teacherIp, controlPort, pin });
   const voice = useRecordings();
+  const reference = useReference();
   const teacherLabel = session.teacherName ?? "подключение…";
   const [listening, setListening] = useState(false);
   const [partner, setPartner] = useState<string | null>(null);
@@ -234,6 +239,28 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
                 </Button>
               </div>
               {voice.error && <p className="mt-3 rounded-lg bg-rose-400/10 px-3 py-2 text-sm text-danger-text">{voice.error}</p>}
+
+              {reference && (
+                <div className="mt-3 flex items-center gap-3 rounded-xl bg-violet-400/10 px-3 py-2">
+                  <motion.button
+                    type="button"
+                    whileTap={{ scale: 0.9 }}
+                    onClick={() => voice.togglePlayReference(reference.dataUrl)}
+                    className={
+                      "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm transition-colors " +
+                      (voice.isPlayingReference ? "bg-violet-400/30 text-accent-text" : "bg-overlay-hover text-[var(--color-text-muted)] hover:bg-overlay-strong")
+                    }
+                    title={voice.isPlayingReference ? "Остановить" : "Прослушать эталон"}
+                  >
+                    {voice.isPlayingReference ? <Square size={13} /> : <Headphones size={13} />}
+                  </motion.button>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium text-accent-text">Эталон: {reference.title ?? "модельное произношение"}</div>
+                    <div className="text-xs text-[var(--color-text-muted)]">{formatDuration(Math.round(reference.durationSecs))} — сравните со своей записью ниже</div>
+                  </div>
+                </div>
+              )}
+
               <AnimatePresence initial={false}>
                 {voice.recordings.map((r) => (
                   <motion.div
@@ -261,6 +288,26 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
                         <div className="truncate text-sm">{recordingLabel(r.recordedAtEpoch, r.name)}</div>
                         <div className="text-xs text-[var(--color-text-muted)]">{formatDuration(Math.round(r.durationSecs))}</div>
                       </div>
+                      <button
+                        type="button"
+                        onClick={() => voice.sendToTeacher(r.name)}
+                        disabled={voice.sendingTo === r.name}
+                        className={
+                          "shrink-0 rounded-md px-2 py-1 text-sm transition-colors disabled:opacity-50 " +
+                          (voice.sentNames.has(r.name) ? "text-ok-text" : "text-[var(--color-text-muted)] hover:bg-overlay-hover hover:text-accent-text")
+                        }
+                        title={voice.sentNames.has(r.name) ? "Отправлено учителю — отправить ещё раз" : "Отправить учителю"}
+                      >
+                        {voice.sendingTo === r.name ? (
+                          <motion.span animate={{ opacity: [1, 0.3, 1] }} transition={{ repeat: Infinity, duration: 1 }}>
+                            <Upload size={16} />
+                          </motion.span>
+                        ) : voice.sentNames.has(r.name) ? (
+                          <Check size={16} />
+                        ) : (
+                          <Upload size={16} />
+                        )}
+                      </button>
                       <button
                         type="button"
                         onClick={() => voice.remove(r.name)}

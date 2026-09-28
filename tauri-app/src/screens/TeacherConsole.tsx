@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChartColumn, ClipboardList, LayoutGrid, MessageSquare, Settings, type LucideIcon } from "lucide-react";
+import { ChartColumn, ClipboardList, Headphones, LayoutGrid, MessageSquare, Settings, type LucideIcon } from "lucide-react";
 import logo from "../assets/vocalis-logo.png";
 import { TeacherClassGrid } from "./TeacherClassGrid";
 import { AssignmentsPanel } from "./AssignmentsPanel";
@@ -10,6 +10,7 @@ import { emptyDraft, type AssignmentDraft, type AssignmentTemplate } from "../li
 import { Onboarding } from "../components/Onboarding";
 import { hasSeenOnboarding, markOnboardingSeen } from "../lib/onboarding";
 import { ChatDrawer } from "../components/ChatDrawer";
+import { ReceivedRecordingsDrawer } from "../components/ReceivedRecordingsDrawer";
 import { ToastStack, useToasts } from "../components/Toast";
 import { useLiveClassroom } from "../lib/useLiveClassroom";
 import { useClassroomToasts } from "../lib/useClassroomToasts";
@@ -37,6 +38,7 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
 export function TeacherConsole({ className, onEnd }: Props) {
   const [tab, setTab] = useState<Tab>("class");
   const [chatOpen, setChatOpen] = useState(false);
+  const [recordingsOpen, setRecordingsOpen] = useState(false);
   // First-run walkthrough: opens by itself the first time the console is entered, and from Settings on demand.
   const [onboardingOpen, setOnboardingOpen] = useState(() => !hasSeenOnboarding());
   const closeOnboarding = () => {
@@ -91,6 +93,14 @@ export function TeacherConsole({ className, onEnd }: Props) {
             <MessageSquare className="h-5 w-5" strokeWidth={1.75} />
             <span>Чат</span>
           </button>
+          <button
+            type="button"
+            onClick={() => setRecordingsOpen(true)}
+            className="flex w-[4.5rem] flex-col items-center gap-1 rounded-xl py-2.5 text-xs text-[var(--color-text-muted)] outline-none transition-colors hover:bg-overlay hover:text-[var(--color-text-primary)] focus-visible:ring-2 focus-visible:ring-violet-400"
+          >
+            <Headphones className="h-5 w-5" strokeWidth={1.75} />
+            <span>Записи</span>
+          </button>
         </div>
       </nav>
 
@@ -121,6 +131,7 @@ export function TeacherConsole({ className, onEnd }: Props) {
       </div>
 
       <ChatDrawer open={chatOpen} onClose={() => setChatOpen(false)} students={live.realStudents} />
+      <ReceivedRecordingsDrawer open={recordingsOpen} onClose={() => setRecordingsOpen(false)} />
       <Onboarding open={onboardingOpen} onClose={closeOnboarding} />
       <ToastStack items={toasts.items} onDismiss={toasts.dismiss} />
     </div>

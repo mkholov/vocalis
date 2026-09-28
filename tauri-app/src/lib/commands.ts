@@ -376,8 +376,9 @@ export function stopPlayback(): Promise<void> {
 // commands/student_recording.rs. Reuses `student::recording` (save/list/delete) and
 // the recording tap in `student::audio::run_outbound_and_group_audio` unchanged.
 // Recordings are addressed by file `name` only, never by path — the backend refuses
-// anything that isn't an entry of its own recordings directory. Comparing a
-// recording to the teacher's reference and sending one to the teacher are not here.
+// anything that isn't an entry of its own recordings directory. Comparing against the
+// teacher's reference (readReferenceRecording) and sending a recording to the teacher
+// (sendRecordingToTeacher) are real too — see those functions' own comments below.
 
 export interface RecordingDto {
   /** File name (`recording_<epoch>.wav`) — the recording's id. */
@@ -408,4 +409,53 @@ export function readRecording(name: string): Promise<string> {
 
 export function deleteRecording(name: string): Promise<void> {
   return invoke("delete_recording", { name });
+}
+
+export interface ReferenceRecordingDto {
+  /** The material's title, exactly as the teacher named it when playing it. */
+  title: string | null;
+  durationSecs: number;
+  /** `data:audio/wav;base64,…` — same shape `readRecording` returns. */
+  dataUrl: string;
+}
+
+/**
+ * The teacher's own "модельное произношение" material, captured locally the moment it
+ * last finished playing to this student — real, not a stub (`ServerToClient::
+ * MaterialPlaying`/`MaterialStopped`, unchanged). `null` before any material has been
+ * played this session, not an error. Also arrives pushed as a `"reference-updated"`
+ * event (see `useReference` below) whenever a new one is captured, so a panel already
+ * open updates itself without a manual re-fetch.
+ */
+export function readReferenceRecording(): Promise<ReferenceRecordingDto | null> {
+  return invoke<ReferenceRecordingDto | null>("read_reference_recording");
+}
+
+/**
+ * Sends a saved recording to the teacher for real, over the same encrypted control
+ * connection as chat/hand-raise (`ClientToServer::FileOffer` — unchanged, already
+ * handled on the teacher's side). Attribution (which student, and which reference it
+ * was compared against, if any) travels baked into the file's own name; see the
+ * backend command's own doc comment for the exact format.
+ */
+export function sendRecordingToTeacher(name: string): Promise<void> {
+  return invoke("send_recording_to_teacher", { name });
+}
+
+// --- Teacher side: recordings received from students (commands/teacher_session.rs) ---
+
+export interface ReceivedRecordingDto {
+  /** `"<student> — <recording> (эталон: <title>)"` — chosen by the student's own client. */
+  name: string;
+  receivedAtEpoch: number | null;
+}
+
+/** Every recording a student has sent this run, newest first. Empty, not an error, if none yet. */
+export function listReceivedRecordings(): Promise<ReceivedRecordingDto[]> {
+  return invoke<ReceivedRecordingDto[]>("list_received_recordings");
+}
+
+/** A received recording's audio as a `data:audio/wav;base64,…` URL. */
+export function readReceivedRecording(name: string): Promise<string> {
+  return invoke<string>("read_received_recording", { name });
 }

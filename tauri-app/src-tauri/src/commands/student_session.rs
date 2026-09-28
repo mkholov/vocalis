@@ -26,6 +26,8 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use vocalis::student::{audio, mic, net, screen, state};
+
+use super::student_recording::reference_dto_for_poll;
 use lingua_common::ClientToServer;
 
 use super::screen_frame::jpeg_data_url;
@@ -45,6 +47,10 @@ const ASSIGNMENT_POLL_INTERVAL_MS: u64 = 200;
 const DISCONNECT_POLL_INTERVAL_MS: u64 = 300;
 /// Chat is a person typing, not a media stream — same reasoning as `ASSIGNMENT_POLL_INTERVAL_MS`.
 const CHAT_POLL_INTERVAL_MS: u64 = 250;
+/// How often to check whether a material just finished playing (so its cached reference recording is
+/// ready to report) — a teacher's material-playing toggle, not a media stream, same reasoning as
+/// `CHAT_POLL_INTERVAL_MS`.
+const REFERENCE_POLL_INTERVAL_MS: u64 = 300;
 /// `student::net::connect_to_teacher` has no readiness callback of its own
 /// (unlike `teacher::mic::start_mic_capture`, which `student_mic.rs` gets a
 /// synchronous ready signal from) — it just sets `connected_teacher` once the
@@ -91,6 +97,11 @@ pub struct StudentSession {
     #[allow(dead_code)]
     pub mix: audio::SharedMix,
     teacher_name: String,
+    /// This student's own display name, as typed on the connect screen — `connect_student_session`'s own
+    /// parameter, kept around so `student_recording.rs`'s `send_recording_to_teacher` can attribute a sent
+    /// recording to a real person by name (the wire `ClientToServer::FileOffer` has no student-id field of
+    /// its own, so this is baked straight into its `name` string — see that command's own doc comment).
+    pub student_name: String,
     tasks: Vec<tauri::async_runtime::JoinHandle<()>>,
     /// `None` if this machine has no usable input device — listen-in/
     /// groups/intercom simply aren't available then, same non-fatal
@@ -259,6 +270,7 @@ pub fn connect_student_session<R: tauri::Runtime>(
     let ip: IpAddr = teacher_ip.parse().map_err(|_| format!("invalid teacher IP: {teacher_ip}"))?;
     let addr = SocketAddr::new(ip, control_port);
     let app_state: state::AppState = Arc::new(Mutex::new(state::SharedState::default()));
+    let own_name = student_name.clone();
 
     let connect_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let connect_task = {
@@ -430,6 +442,30 @@ pub fn connect_student_session<R: tauri::Runtime>(
         }));
     }
     {
+        // Watches for a real `material_playing: true -> false` transition — the moment `MaterialStopped`
+        // (`student::net`, unchanged) finalizes `state.reference` — and re-announces the (possibly new)
+        // reference recording as a real `"reference-updated"` event, so "Сравнение с эталоном" updates
+        // itself without the student needing to leave and re-enter the recording panel. The short sleep
+        // after noticing the transition gives `save_reference`'s own disk write (a few seconds of WAV, well
+        // under this) time to land before reading it back.
+        let poll_state = app_state.clone();
+        let app = app.clone();
+        tasks.push(tauri::async_runtime::spawn(async move {
+            let mut was_playing = false;
+            let mut interval = tokio::time::interval(Duration::from_millis(REFERENCE_POLL_INTERVAL_MS));
+            loop {
+                interval.tick().await;
+                let now_playing = poll_state.lock().unwrap().material_playing;
+                if was_playing && !now_playing {
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                    let dto = reference_dto_for_poll(&poll_state.lock().unwrap());
+                    let _ = app.emit("reference-updated", dto);
+                }
+                was_playing = now_playing;
+            }
+        }));
+    }
+    {
         let poll_state = app_state.clone();
         tasks.push(tauri::async_runtime::spawn(async move {
             let mut last_frame_version = 0u64;
@@ -468,7 +504,7 @@ pub fn connect_student_session<R: tauri::Runtime>(
     }
 
     let info = StudentSessionInfo { teacher_name: teacher_name.clone() };
-    *guard = Some(StudentSession { app_state, mix, teacher_name, tasks, outbound_mic });
+    *guard = Some(StudentSession { app_state, mix, teacher_name, student_name: own_name, tasks, outbound_mic });
     Ok(info)
 }
 

@@ -10,9 +10,13 @@
 //! where the mic capture is — while listing, playing and deleting only touch
 //! files on disk.
 //!
-//! Not here on purpose: comparing a recording against the teacher's reference
-//! (`student::state::reference`, `recording::save_reference`) and sending one
-//! to the teacher (`ClientToServer::FileOffer`) — separate follow-ups.
+//! Comparing a recording against the teacher's reference (`student::state::reference`,
+//! `recording::save_reference`) and sending one to the teacher (`ClientToServer::FileOffer`) live here too
+//! now — both real, both reusing unchanged `student::net`/`teacher::net` plumbing: the reference is
+//! already fully captured by the time this reads it (`ServerToClient::MaterialPlaying`/`MaterialStopped`,
+//! handled in `student::net` exactly like the egui app), and `FileOffer` already has a real, working
+//! handler on the teacher's side (`teacher::net::handle_student`, saves the bytes to a real file and logs
+//! who sent it) — nothing needed adding to the protocol for either.
 //!
 //! Recordings are addressed by **file name**, never by path. The webview must
 //! not be able to make `read_recording`/`delete_recording` touch an arbitrary
@@ -21,10 +25,11 @@
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use lingua_common::ClientToServer;
 use serde::Serialize;
 use tauri::State;
 use vocalis::student::recording;
-use vocalis::student::state::{ActiveRecording, RecordingEntry};
+use vocalis::student::state::{self, ActiveRecording, RecordingEntry};
 
 use super::student_session::StudentSessionState;
 
@@ -116,4 +121,82 @@ pub fn read_recording(name: String) -> Result<String, String> {
 pub fn delete_recording(name: String) -> Result<(), String> {
     let entry = find_recording(&name)?;
     recording::delete(&entry.path).map_err(|e| format!("не удалось удалить запись: {e:#}"))
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ReferenceRecordingDto {
+    /// The material's title, exactly as the teacher's `play_material` named it — `None` only if a reference
+    /// somehow got cached with no material context (shouldn't happen in practice, not fatal either).
+    pub title: Option<String>,
+    pub duration_secs: f32,
+    /// Same `data:audio/wav;base64,…` shape `readRecording` returns — this plays back through the exact
+    /// same `<audio>` element the UI already drives for the student's own recordings, no separate path.
+    pub data_url: String,
+}
+
+fn build_reference_dto(state_guard: &state::SharedState) -> Option<ReferenceRecordingDto> {
+    let reference = state_guard.reference.as_ref()?;
+    let bytes = std::fs::read(&reference.path).ok()?;
+    Some(ReferenceRecordingDto {
+        title: state_guard.material_title.clone(),
+        duration_secs: reference.duration_secs,
+        data_url: format!("data:audio/wav;base64,{}", BASE64.encode(bytes)),
+    })
+}
+
+/// The reference recording currently cached for this student — the teacher's own "модельное произношение"
+/// material, captured locally the moment it finished playing. Real, not a stub: `ServerToClient::
+/// MaterialPlaying`/`MaterialStopped` (`student::net`'s handling of them) and `recording::save_reference`
+/// are all unchanged — this only reads back what that pipeline already produces. `None` before any material
+/// has been played to this student this session, or if capturing it failed (best-effort, per that code's
+/// own doc comment) — not an error, just nothing to compare against yet.
+#[tauri::command]
+pub fn read_reference_recording(session: State<StudentSessionState>) -> Result<Option<ReferenceRecordingDto>, String> {
+    let guard = session.0.lock().unwrap();
+    let student = guard.as_ref().ok_or("нет подключения к преподавателю")?;
+    let state_guard = student.app_state.lock().unwrap();
+    Ok(build_reference_dto(&state_guard))
+}
+
+/// `pub(crate)` only so `student_session.rs`'s own reference-changed poller can build the identical DTO to
+/// emit as a real `"reference-updated"` event — not part of the command surface itself.
+pub(crate) fn reference_dto_for_poll(state_guard: &state::SharedState) -> Option<ReferenceRecordingDto> {
+    build_reference_dto(state_guard)
+}
+
+/// Sends a saved recording to the teacher for real — a real `ClientToServer::FileOffer` over this
+/// session's already-encrypted control connection, the same message/channel `set_hand_raised`/
+/// `submit_chat_message` already use. `teacher::net`'s existing (unchanged) handler for it saves the bytes
+/// to a real file on the teacher's machine and logs who sent it in the real chat log, which
+/// `teacher_session.rs`'s own poller already reports as a `"chat-message"` event; `teacher_session.rs`'s
+/// `list_received_recordings`/`read_received_recording` (new, alongside this) read that same file back for
+/// real playback.
+///
+/// `FileOffer` has no field of its own for "which student sent this" or "compared against which
+/// reference" — both are baked straight into the file's own name instead, human-readably: `"<student> —
+/// <recording> (эталон: <title>)"`, the `(эталон: …)` part only present if a reference was actually cached
+/// when this was sent. That's also literally the file name the teacher ends up with on disk, so it reads
+/// the same way whether browsed through the app or a plain file manager.
+#[tauri::command]
+pub fn send_recording_to_teacher(session: State<StudentSessionState>, name: String) -> Result<(), String> {
+    let entry = find_recording(&name)?;
+    let data = std::fs::read(&entry.path).map_err(|e| format!("не удалось прочитать запись: {e}"))?;
+
+    let guard = session.0.lock().unwrap();
+    let student = guard.as_ref().ok_or("нет подключения к преподавателю")?;
+    let state_guard = student.app_state.lock().unwrap();
+    let reference_title = if state_guard.reference.is_some() { state_guard.material_title.clone() } else { None };
+    let to_server = state_guard.to_server.clone();
+    drop(state_guard);
+
+    let tx = to_server.ok_or("подключение к преподавателю ещё не готово")?;
+    let stem = name.strip_suffix(".wav").unwrap_or(&name);
+    let mut label = format!("{} — {stem}", student.student_name);
+    if let Some(title) = reference_title {
+        label.push_str(&format!(" (эталон: {title})"));
+    }
+    label.push_str(".wav");
+
+    tx.send(ClientToServer::FileOffer { name: label, data }).map_err(|_| "соединение с преподавателем разорвано".to_string())
 }

@@ -1,12 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { deleteRecording, listRecordings, readRecording, startRecording, stopRecording, type RecordingDto } from "./commands";
+import { deleteRecording, listRecordings, readRecording, sendRecordingToTeacher, startRecording, stopRecording, type RecordingDto } from "./commands";
+
+/** The sentinel `playing` takes to mean "the reference recording, not one of `recordings`" — lets a single
+ * play/pause slot (and a single `<audio>` element) cover both, so starting one always stops the other. No
+ * real recording name can ever collide with it (real names are `recording_<epoch>.wav`). */
+const REFERENCE_SLOT = "__reference__";
 
 /** The student's own voice recordings (step 7.5 item 6 — `vocalis_roadmap.md`,
- * section 8): record, list, play back in-app, delete. All of it real —
- * `commands/student_recording.rs` reuses `student::recording` and the recording
- * tap in `student::audio` unchanged; nothing here is a mock. Needs the live
- * student session (`useStudentSession`) only for *recording* (that's where the
- * mic capture is); the list/playback/delete only touch files on disk.
+ * section 8): record, list, play back in-app, delete, compare against the teacher's reference, and send to
+ * the teacher. All of it real — `commands/student_recording.rs` reuses `student::recording` and the
+ * recording tap in `student::audio` unchanged, the reference comes from a real (unchanged) `student::net`
+ * capture, and sending is a real `ClientToServer::FileOffer`; nothing here is a mock. Needs the live
+ * student session (`useStudentSession`) for *recording* (that's where the mic capture is) and for *sending*
+ * (that's where the network connection is); list/playback/delete only touch files on disk.
  *
  * `error` carries what the backend said — notably "микрофон недоступен" on a
  * machine with no input device — rather than throwing. Leaving the screen
@@ -18,6 +24,8 @@ export function useRecordings() {
   const [elapsedSecs, setElapsedSecs] = useState(0);
   const [playing, setPlaying] = useState<string | null>(null);
   const [error, setError] = useState<string | undefined>();
+  const [sendingTo, setSendingTo] = useState<string | null>(null);
+  const [sentNames, setSentNames] = useState<Set<string>>(new Set());
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const recordingRef = useRef(false);
 
@@ -109,5 +117,57 @@ export function useRecordings() {
     await refresh();
   }
 
-  return { recordings, recording, elapsedSecs, playing, error, toggleRecording, togglePlay, remove };
+  /** Plays the teacher's reference recording — same play/pause slot as `togglePlay`, so it's mutually
+   * exclusive with playing one of the student's own recordings, which is the point: "прослушать оба
+   * подряд/переключаясь в одном месте" means only one plays at a time. */
+  async function togglePlayReference(dataUrl: string) {
+    if (playing === REFERENCE_SLOT) {
+      stopPlayback();
+      return;
+    }
+    stopPlayback();
+    try {
+      const audio = new Audio(dataUrl);
+      audio.onended = () => setPlaying((cur) => (cur === REFERENCE_SLOT ? null : cur));
+      audioRef.current = audio;
+      setPlaying(REFERENCE_SLOT);
+      await audio.play();
+      setError(undefined);
+    } catch (err) {
+      setPlaying(null);
+      setError(String(err));
+    }
+  }
+
+  /** Sends a saved recording to the teacher for real (`ClientToServer::FileOffer`). `sentNames` just tracks
+   * "sent at least once this screen visit" for a checkmark — re-sending is allowed (e.g. after re-recording
+   * a take with the same idea in mind), it isn't a one-shot lock like assignment submission. */
+  async function sendToTeacher(name: string) {
+    setSendingTo(name);
+    try {
+      await sendRecordingToTeacher(name);
+      setSentNames((prev) => new Set(prev).add(name));
+      setError(undefined);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSendingTo(null);
+    }
+  }
+
+  return {
+    recordings,
+    recording,
+    elapsedSecs,
+    playing,
+    isPlayingReference: playing === REFERENCE_SLOT,
+    error,
+    sendingTo,
+    sentNames,
+    toggleRecording,
+    togglePlay,
+    togglePlayReference,
+    remove,
+    sendToTeacher,
+  };
 }

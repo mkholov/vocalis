@@ -2093,3 +2093,157 @@ fn student_recording_captures_the_real_microphone() {
     assert!((recorded - saved.duration_secs).abs() < 0.01, "DTO and file disagree: {} vs {recorded}", saved.duration_secs);
     assert!(recorded > 1.0 && recorded < wall + 0.2, "recorded {recorded:.2}s over {wall:.2}s of wall time");
 }
+
+/// Step 7.5 items 7-8: comparing a recording against the teacher's reference, and sending one to the
+/// teacher for real. Two real processes: the teacher plays a real material (the same real decode -> Opus
+/// -> UDP -> decrypt -> decode chain `playing_a_material_reaches_a_real_connected_student` exercises,
+/// which the student's own `reference_capture` tap in `student::audio` caches unchanged), the student
+/// records a synthetic take of their own (no real mic needed in CI — same injection technique
+/// `student_recordings_save_list_play_back_and_delete` uses), sends it to the teacher over a real
+/// `ClientToServer::FileOffer`, and the teacher reads it back — checking the exact bytes arrived, not just
+/// that some file of the right size showed up.
+#[test]
+fn a_student_can_compare_against_the_reference_and_send_their_recording_to_the_teacher() {
+    use std::time::{Duration, Instant};
+    use tauri::Manager;
+    use tauri_app_lib::commands::{student_recording, student_session, teacher_session};
+    use vocalis::student::state::ActiveRecording;
+
+    let _db = ScratchDb::new("recording_send");
+
+    // The teacher-side received-recordings directory lives in the real OS temp dir, not under
+    // `ScratchDb`'s throwaway HOME, so it's shared across test runs — start this test from a clean slate
+    // rather than risking a stale file from an earlier run being mistaken for this test's own delivery.
+    let received_dir = std::env::temp_dir().join("VocalisReceivedFromStudents");
+    std::fs::remove_dir_all(&received_dir).ok();
+
+    let wav_path = std::env::temp_dir().join(format!("vocalis_e2e_reference_{}.wav", std::process::id()));
+    write_test_wav(&wav_path);
+
+    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
+    let session_info = teacher_session::start_teacher_session(
+        teacher_app.handle().clone(),
+        teacher_state.clone(),
+        "E2E класс (эталон и отправка)".to_string(),
+    )
+    .expect("start_teacher_session should succeed");
+
+    let student_app = build_app(tauri::test::mock_builder());
+    let student_state = student_app.state::<student_session::StudentSessionState>();
+    student_session::connect_student_session(
+        student_app.handle().clone(),
+        student_state.clone(),
+        "127.0.0.1".to_string(),
+        lingua_common::CONTROL_PORT,
+        "E2E ученик (эталон)".to_string(),
+        session_info.pin.clone(),
+    )
+    .expect("connect_student_session should succeed against a real running control server");
+
+    // Nothing to compare against before any material has played.
+    assert!(
+        student_recording::read_reference_recording(student_state.clone()).unwrap().is_none(),
+        "no material has played yet"
+    );
+
+    let material = teacher_session::upload_material(teacher_state.clone(), wav_path.to_string_lossy().to_string(), "Образцовое произношение".to_string())
+        .expect("upload_material should succeed with a real decodable WAV file");
+    let playback = teacher_session::play_material(teacher_state.clone(), material.id, Vec::new()).expect("play_material should succeed");
+    assert_eq!(playback.target_count, 1, "the one real connected student");
+
+    // Let real decoded audio actually accumulate in the student's `reference_capture` tap before stopping —
+    // the same real playback pipe `playing_a_material_reaches_a_real_connected_student` waits on.
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut captured_any = false;
+    while Instant::now() < deadline {
+        captured_any = student_state
+            .0
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| s.app_state.lock().unwrap().reference_capture.as_ref().map(|r| !r.samples.is_empty()).unwrap_or(false))
+            .unwrap_or(false);
+        if captured_any {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(captured_any, "expected real decoded material audio to reach the student's reference tap within 8s");
+
+    teacher_session::stop_playback(teacher_state.clone());
+
+    // `MaterialStopped` -> `recording::save_reference` happens asynchronously on the student's own net
+    // task; poll the real command rather than sleeping a guessed amount.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut reference = None;
+    while Instant::now() < deadline {
+        reference = student_recording::read_reference_recording(student_state.clone()).unwrap();
+        if reference.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let reference = reference.expect("the reference recording should have been captured and saved for real");
+    assert_eq!(reference.title.as_deref(), Some("Образцовое произношение"));
+    assert!(reference.duration_secs > 0.0);
+    assert!(reference.data_url.starts_with("data:audio/wav;base64,"));
+
+    // The student's own attempt: a synthetic 1s take.
+    let sine: Vec<i16> = (0..16_000)
+        .map(|i| (0.3 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16_000.0).sin() * i16::MAX as f32) as i16)
+        .collect();
+    {
+        let guard = student_state.0.lock().unwrap();
+        guard.as_ref().unwrap().app_state.lock().unwrap().recording = Some(ActiveRecording { samples: sine.clone(), sample_rate: 16_000 });
+    }
+    let saved = student_recording::stop_recording(student_state.clone())
+        .expect("stop_recording should succeed")
+        .expect("something was captured, so a recording should come back");
+
+    // The exact bytes about to be sent, independently re-derived here so they can be compared byte-for-byte
+    // against whatever the teacher ends up with.
+    let expected_bytes = {
+        let url = student_recording::read_recording(saved.name.clone()).unwrap();
+        let b64 = url.strip_prefix("data:audio/wav;base64,").unwrap();
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).unwrap()
+    };
+
+    assert!(teacher_session::list_received_recordings().is_empty(), "nothing sent yet");
+
+    student_recording::send_recording_to_teacher(student_state.clone(), saved.name.clone())
+        .expect("send_recording_to_teacher should succeed over a real, connected session");
+
+    // Delivery is a real TCP message handled by a spawned task on the teacher's side; poll for it.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut received = Vec::new();
+    while Instant::now() < deadline {
+        received = teacher_session::list_received_recordings();
+        if !received.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(received.len(), 1, "expected exactly the one recording the student just sent");
+    let entry = &received[0];
+    assert!(entry.name.contains("E2E ученик (эталон)"), "the student's real name should be baked into the file name, got {:?}", entry.name);
+    assert!(entry.name.contains("Образцовое произношение"), "the reference title should be baked in too, got {:?}", entry.name);
+    assert!(entry.received_at_epoch.is_some());
+
+    let received_url = teacher_session::read_received_recording(entry.name.clone()).expect("read_received_recording should succeed");
+    let b64 = received_url.strip_prefix("data:audio/wav;base64,").unwrap();
+    let received_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).unwrap();
+    assert_eq!(received_bytes, expected_bytes, "the teacher must receive the exact bytes the student sent, not just a same-sized file");
+
+    // Path-traversal guard, same convention as the student-side recordings.
+    for evil in ["../../../etc/passwd", "/etc/passwd", "not-a-real-file.wav"] {
+        assert!(teacher_session::read_received_recording(evil.to_string()).is_err(), "read_received_recording({evil:?}) must be refused");
+    }
+
+    teacher_session::stop_teacher_session(teacher_state);
+    student_session::disconnect_student_session(student_state);
+    std::fs::remove_file(&wav_path).ok();
+    std::fs::remove_dir_all(&received_dir).ok();
+
+    println!("[e2e] real recording delivery: teacher received {} real bytes as {:?}", received_bytes.len(), entry.name);
+}
