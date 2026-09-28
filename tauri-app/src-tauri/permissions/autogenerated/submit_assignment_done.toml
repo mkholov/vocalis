@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-submit-assignment-done"
+description = "Enables the submit_assignment_done command without any pre-configured scope."
+commands.allow = ["submit_assignment_done"]
+
+[[permission]]
+identifier = "deny-submit-assignment-done"
+description = "Denies the submit_assignment_done command without any pre-configured scope."
+commands.deny = ["submit_assignment_done"]

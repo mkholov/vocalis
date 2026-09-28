@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-submit-test-answers"
+description = "Enables the submit_test_answers command without any pre-configured scope."
+commands.allow = ["submit_test_answers"]
+
+[[permission]]
+identifier = "deny-submit-test-answers"
+description = "Denies the submit_test_answers command without any pre-configured scope."
+commands.deny = ["submit_test_answers"]

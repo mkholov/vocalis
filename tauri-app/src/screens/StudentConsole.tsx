@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { CircleHelp, FlaskConical, Hand, Link2, Lock, Mic, MicOff, Monitor, Play, Radio, Square, ThumbsUp, Trash2, WifiOff, X, type LucideIcon } from "lucide-react";
+import { Check, CircleHelp, FlaskConical, Hand, Link2, Lock, Mic, MicOff, Monitor, Play, Radio, Send, Square, ThumbsUp, Trash2, WifiOff, X, type LucideIcon } from "lucide-react";
 import { Button } from "../components/ui/Button";
 import { Panel } from "../components/ui/Panel";
 import { VuMeter } from "../components/VuMeter";
@@ -10,7 +10,7 @@ import { KIND_META, tint, type AssignmentContent } from "../lib/assignments";
 import { useMicMeter } from "../lib/useMicMeter";
 import { useStudentSession } from "../lib/useStudentSession";
 import { useRecordings } from "../lib/useRecordings";
-import { setHandRaised as sendHandRaised, type AssignmentOfferDto } from "../lib/commands";
+import { setHandRaised as sendHandRaised, submitAssignmentDone, submitTestAnswers, type AssignmentOfferDto } from "../lib/commands";
 import { useAssignments } from "../lib/useAssignments";
 
 interface Props {
@@ -40,6 +40,8 @@ const DEV_ASSIGNMENT: AssignmentOfferDto = {
     kind: "test",
     questions: [{ text: "She ___ to school every day.", options: ["go", "goes", "going"], correctIndex: 1 }],
   },
+  done: false,
+  lastScore: null,
 };
 
 /** Step 6 (screen) + step 7 parts A/B (live mic level, live screen-demo
@@ -469,7 +471,37 @@ function DemoToggle({ label, checked, onChange }: { label: string; checked: bool
  * question is real, submitting an answer isn't wired up yet. */
 function AssignmentCard({ assignment }: { assignment: AssignmentOfferDto }) {
   const [open, setOpen] = useState(false);
+  // Question index -> chosen option index. Local only until "Отправить" — the real submission is one
+  // request with every answer, there is no partial/autosave.
+  const [answers, setAnswers] = useState<Record<number, number>>({});
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | undefined>();
   const meta = KIND_META[assignment.content.kind];
+  const isTest = assignment.content.kind === "test";
+  const totalQuestions = assignment.content.kind === "test" ? assignment.content.questions.length : 0;
+  const answeredCount = Object.keys(answers).length;
+  const canSubmit = !isTest || answeredCount === totalQuestions;
+
+  async function submit() {
+    if (submitting) return;
+    setSubmitting(true);
+    setError(undefined);
+    try {
+      if (assignment.content.kind === "test") {
+        // Sent in question order — `answers` is keyed by index, `canSubmit` already guarantees every one
+        // of them is present.
+        const ordered = assignment.content.questions.map((_, qi) => answers[qi]);
+        await submitTestAnswers(assignment.id, ordered);
+      } else {
+        await submitAssignmentDone(assignment.id);
+      }
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   return (
     <Panel>
       <div className="flex items-center justify-between gap-3">
@@ -482,12 +514,19 @@ function AssignmentCard({ assignment }: { assignment: AssignmentOfferDto }) {
           </span>
           <span className="min-w-0 truncate font-medium">{assignment.title}</span>
         </div>
-        <Button variant="secondary" className="shrink-0 px-3 py-1.5 text-sm" onClick={() => setOpen((v) => !v)}>
-          {open ? "Свернуть" : "Начать"}
-        </Button>
+        {assignment.done ? (
+          <span className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-emerald-400/15 px-3 py-1.5 text-sm font-medium text-ok-text">
+            <Check size={15} />
+            {assignment.lastScore ? `Ответ отправлен — ${assignment.lastScore.correct}/${assignment.lastScore.total}` : "Ответ отправлен"}
+          </span>
+        ) : (
+          <Button variant="secondary" className="shrink-0 px-3 py-1.5 text-sm" onClick={() => setOpen((v) => !v)}>
+            {open ? "Свернуть" : "Начать"}
+          </Button>
+        )}
       </div>
       <AnimatePresence>
-        {open && (
+        {open && !assignment.done && (
           <motion.div
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: "auto" }}
@@ -495,7 +534,23 @@ function AssignmentCard({ assignment }: { assignment: AssignmentOfferDto }) {
             className="overflow-hidden"
           >
             <div className="mt-4 rounded-lg bg-overlay px-3 py-3 text-sm">
-              <AssignmentBody content={assignment.content} />
+              <AssignmentAnswerForm
+                content={assignment.content}
+                answers={answers}
+                onAnswer={(qi, oi) => setAnswers((prev) => ({ ...prev, [qi]: oi }))}
+              />
+              {error && <p className="mt-3 text-danger-text">{error}</p>}
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                <Button className="px-3 py-1.5 text-sm" disabled={!canSubmit || submitting} onClick={submit}>
+                  <Send size={14} />
+                  {submitting ? "Отправка…" : "Отправить"}
+                </Button>
+                {isTest && !canSubmit && (
+                  <span className="text-xs text-[var(--color-text-muted)]">
+                    Ответьте на все вопросы ({answeredCount}/{totalQuestions})
+                  </span>
+                )}
+              </div>
             </div>
           </motion.div>
         )}
@@ -504,23 +559,44 @@ function AssignmentCard({ assignment }: { assignment: AssignmentOfferDto }) {
   );
 }
 
-function AssignmentBody({ content }: { content: AssignmentContent }) {
+/** The interactive body while an assignment is still open — a `Test` is answered here (one radio group per
+ * question); `Listening`/`Reading` have no per-question answer to take (not auto-graded — see
+ * `AssignmentContent`'s own doc comment), so this just shows what to do, and "Отправить" alone marks it
+ * done. */
+function AssignmentAnswerForm({
+  content,
+  answers,
+  onAnswer,
+}: {
+  content: AssignmentContent;
+  answers: Record<number, number>;
+  onAnswer: (questionIndex: number, optionIndex: number) => void;
+}) {
   if (content.kind === "test") {
     return (
-      <ol className="flex flex-col gap-3">
+      <ol className="flex flex-col gap-4">
         {content.questions.map((q, qi) => (
           <li key={qi}>
             <div className="mb-1.5 font-medium">
               {qi + 1}. {q.text}
             </div>
-            <ul className="flex flex-col gap-1 pl-4 text-[var(--color-text-muted)]">
+            <div className="flex flex-col gap-1">
               {q.options.map((o, oi) => (
-                <li key={oi} className="flex items-center gap-2">
-                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-current" />
+                <label
+                  key={oi}
+                  className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-overlay-hover"
+                >
+                  <input
+                    type="radio"
+                    name={`assignment-question-${qi}`}
+                    checked={answers[qi] === oi}
+                    onChange={() => onAnswer(qi, oi)}
+                    className="accent-violet-400"
+                  />
                   {o}
-                </li>
+                </label>
               ))}
-            </ul>
+            </div>
           </li>
         ))}
       </ol>

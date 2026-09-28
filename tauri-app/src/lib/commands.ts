@@ -80,10 +80,37 @@ export function sendAssignment(title: string, content: AssignmentContent, studen
 /** One assignment a student has actually received, in the "assignments" event's shape
  * (`commands/student_session.rs`'s `AssignmentDto`) — `id` is the real `AssignmentId` the teacher's offer
  * carried, needed later to report `ClientToServer::AssignmentDone`/`TestResult` back against it. */
+export interface TestScoreDto {
+  correct: number;
+  total: number;
+}
+
 export interface AssignmentOfferDto {
   id: string;
   title: string;
   content: AssignmentContent;
+  /** Whether this student has already answered — a real `ClientToServer::TestResult`/`AssignmentDone` has
+   * gone out for it. Set locally the instant `submitTestAnswers`/`submitAssignmentDone` succeeds, so this
+   * flips before any round trip back from the teacher. */
+  done: boolean;
+  /** Set only for a `Test` once answered — `null` for a never-scored test and always for Listening/Reading
+   * (they have no right answer to grade against). */
+  lastScore: TestScoreDto | null;
+}
+
+/** Grades a real `Test` client-side (same rule egui's own answer flow uses: compare each chosen option's
+ * index against the question's `correctIndex`, already part of the real offer this student received) and
+ * reports it — persists a real `test_results` row on the teacher's side and marks the assignment done.
+ * `answers[i]` is the chosen option index for `content.questions[i]`; every question needs an answer.
+ * Rejects a second submission for the same assignment. */
+export function submitTestAnswers(assignmentId: string, answers: number[]): Promise<TestScoreDto> {
+  return invoke<TestScoreDto>("submit_test_answers", { assignmentId, answers });
+}
+
+/** Marks a real `Listening`/`Reading` assignment done — no score, just a real `ClientToServer::
+ * AssignmentDone`. Same one-submission-only rule as `submitTestAnswers`. */
+export function submitAssignmentDone(assignmentId: string): Promise<void> {
+  return invoke<void>("submit_assignment_done", { assignmentId });
 }
 
 export interface DiscoveredTeacherDto {

@@ -121,7 +121,7 @@ pub struct StudentSessionInfo {
 /// One `TestQuestion`, in the exact shape `lib/assignments.ts`'s `AssignmentContent` expects — the
 /// counterpart of `teacher_session.rs`'s `TestQuestionDto` (that one `Deserialize`s the same shape from
 /// the editor; this one `Serialize`s it for a student to render).
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TestQuestionDto {
     pub text: String,
@@ -133,7 +133,7 @@ pub struct TestQuestionDto {
 /// `{ kind: "test" | "listening" | "reading", ... }` shape `lib/assignments.ts` already knows how to
 /// render — a real `ServerToClient::AssignmentOffer`'s content reaches the student console with no
 /// reshaping on the frontend.
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum AssignmentContentDto {
     Test { questions: Vec<TestQuestionDto> },
@@ -158,18 +158,31 @@ impl From<&lingua_common::AssignmentContent> for AssignmentContentDto {
     }
 }
 
+/// `AssignmentEntry::last_score` once a `Test` has been submitted — `(correct, total)` as a named pair
+/// instead of a bare tuple, so the JSON reads as `{ "correct": 1, "total": 2 }` rather than `[1, 2]`.
+#[derive(Serialize, Clone, Copy, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TestScoreDto {
+    pub correct: u32,
+    pub total: u32,
+}
+
 /// One real assignment this student has received, straight from `student::state::AssignmentEntry` —
 /// emitted (the whole current list, same "just resend the snapshot" convention `student-levels` uses on
-/// the teacher side) as the `"assignments"` event whenever a new one arrives. A `content: None` entry (a
-/// bare label-only "quick send", e.g. egui's `Dialogue` — see `AssignmentOffer`'s own doc comment) has
-/// nothing here to render yet, so it's left out rather than shown as broken; taking an answer for one of
-/// these is a separate, later step (this is real *receipt and display*, not yet a full answer flow).
-#[derive(Serialize, Clone)]
+/// the teacher side) as the `"assignments"` event whenever a new one arrives or an answer is submitted for
+/// one of them. A `content: None` entry (a bare label-only "quick send", e.g. egui's `Dialogue` — see
+/// `AssignmentOffer`'s own doc comment) has nothing here to render yet, so it's left out rather than shown
+/// as broken. `done`/`last_score` are this same student's own `AssignmentEntry` fields — real state, kept
+/// in step with `submit_test_answers`/`submit_assignment_done` below (which are what set them), so the
+/// frontend can tell "already answered" from "still open" without any state of its own to lose track of.
+#[derive(Serialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AssignmentDto {
     pub id: String,
     pub title: String,
     pub content: AssignmentContentDto,
+    pub done: bool,
+    pub last_score: Option<TestScoreDto>,
 }
 
 /// Polls `stop` every 100ms — `run_outbound_and_group_audio` has no
@@ -359,24 +372,35 @@ pub fn connect_student_session<R: tauri::Runtime>(
         let poll_state = app_state.clone();
         let app = app.clone();
         tasks.push(tauri::async_runtime::spawn(async move {
-            let mut last_len = 0usize;
+            // Compares the *whole built snapshot*, not just `assignments.len()`: submitting an answer
+            // mutates an existing entry's `done`/`last_score` in place rather than adding a new one, so a
+            // length-only check would miss it and the console would never see its own submission confirmed.
+            // Starts at `Some(vec![])`, not `None` — matching the real starting state (no assignments yet)
+            // exactly, so the first tick doesn't read as "changed" and emit a spurious empty event before
+            // anything has actually happened.
+            let mut last_sent: Option<Vec<AssignmentDto>> = Some(Vec::new());
             let mut interval = tokio::time::interval(Duration::from_millis(ASSIGNMENT_POLL_INTERVAL_MS));
             loop {
                 interval.tick().await;
-                let current_len = poll_state.lock().unwrap().assignments.len();
-                if current_len == last_len {
-                    continue;
-                }
-                last_len = current_len;
                 let list: Vec<AssignmentDto> = poll_state
                     .lock()
                     .unwrap()
                     .assignments
                     .iter()
                     .filter_map(|a| {
-                        a.content.as_ref().map(|c| AssignmentDto { id: a.id.to_string(), title: a.title.clone(), content: c.into() })
+                        a.content.as_ref().map(|c| AssignmentDto {
+                            id: a.id.to_string(),
+                            title: a.title.clone(),
+                            content: c.into(),
+                            done: a.done,
+                            last_score: a.last_score.map(|(correct, total)| TestScoreDto { correct, total }),
+                        })
                     })
                     .collect();
+                if last_sent.as_ref() == Some(&list) {
+                    continue;
+                }
+                last_sent = Some(list.clone());
                 let _ = app.emit("assignments", list);
             }
         }));
@@ -452,4 +476,75 @@ pub fn set_hand_raised(session: State<StudentSessionState>, raised: bool) -> Res
     let to_server = student.app_state.lock().unwrap().to_server.clone();
     let tx = to_server.ok_or("подключение к преподавателю ещё не готово")?;
     tx.send(ClientToServer::RequestHelp { needed: raised }).map_err(|_| "соединение с преподавателем разорвано".to_string())
+}
+
+/// Grades a real `Test` assignment client-side and reports the result — the same rule egui's own
+/// `submit_test` uses (compare each chosen option's index against `TestQuestion::correct_index`, sent to
+/// this student as part of the real `AssignmentOffer` content — see that struct's own doc comment for why
+/// the correct answer already being on this machine is by design, not a leak this introduces). Also marks
+/// the assignment done, both locally (so `list_assignments`'s next real snapshot already reflects it,
+/// before the teacher's own ack even arrives) and over the wire via a real `ClientToServer::TestResult` —
+/// `teacher::net`'s existing handler (unchanged) persists it as a real `test_results` row and marks the
+/// `assignments` row done, which is what `class_stats` already reads.
+///
+/// `answers[i]` is the option index chosen for `questions[i]`; refuses if the counts don't match (an
+/// unanswered question) or if this assignment was already submitted — a student can send an answer exactly
+/// once.
+#[tauri::command]
+pub fn submit_test_answers(session: State<StudentSessionState>, assignment_id: String, answers: Vec<usize>) -> Result<TestScoreDto, String> {
+    let id: lingua_common::AssignmentId = assignment_id.parse().map_err(|_| format!("invalid assignment id: {assignment_id}"))?;
+    let guard = session.0.lock().unwrap();
+    let student = guard.as_ref().ok_or("нет активного подключения к преподавателю")?;
+    let mut state_guard = student.app_state.lock().unwrap();
+
+    let assignment = state_guard.assignments.iter().find(|a| a.id == id).ok_or("задание не найдено")?;
+    if assignment.done {
+        return Err("ответ на это задание уже отправлен".to_string());
+    }
+    let questions = match &assignment.content {
+        Some(lingua_common::AssignmentContent::Test { questions }) => questions.clone(),
+        _ => return Err("это задание не тест".to_string()),
+    };
+    if answers.len() != questions.len() {
+        return Err("нужно ответить на все вопросы".to_string());
+    }
+
+    let correct = questions.iter().zip(answers.iter()).filter(|(q, &a)| q.correct_index == a).count() as u32;
+    let total = questions.len() as u32;
+
+    if let Some(a) = state_guard.assignments.iter_mut().find(|a| a.id == id) {
+        a.done = true;
+        a.last_score = Some((correct, total));
+    }
+    let to_server = state_guard.to_server.clone();
+    drop(state_guard);
+
+    let tx = to_server.ok_or("подключение к преподавателю ещё не готово")?;
+    tx.send(ClientToServer::TestResult { id, correct, total }).map_err(|_| "соединение с преподавателем разорвано".to_string())?;
+    Ok(TestScoreDto { correct, total })
+}
+
+/// Marks a real `Listening`/`Reading` assignment done — these aren't auto-graded (no right answer to check
+/// client-side), so there's no score, just a real `ClientToServer::AssignmentDone`, mirroring egui's own
+/// `mark_assignment_done` exactly: sets `done` locally first, then sends. Refuses a second submission the
+/// same way `submit_test_answers` does.
+#[tauri::command]
+pub fn submit_assignment_done(session: State<StudentSessionState>, assignment_id: String) -> Result<(), String> {
+    let id: lingua_common::AssignmentId = assignment_id.parse().map_err(|_| format!("invalid assignment id: {assignment_id}"))?;
+    let guard = session.0.lock().unwrap();
+    let student = guard.as_ref().ok_or("нет активного подключения к преподавателю")?;
+    let mut state_guard = student.app_state.lock().unwrap();
+
+    let already_done = state_guard.assignments.iter().find(|a| a.id == id).ok_or("задание не найдено")?.done;
+    if already_done {
+        return Err("ответ на это задание уже отправлен".to_string());
+    }
+    if let Some(a) = state_guard.assignments.iter_mut().find(|a| a.id == id) {
+        a.done = true;
+    }
+    let to_server = state_guard.to_server.clone();
+    drop(state_guard);
+
+    let tx = to_server.ok_or("подключение к преподавателю ещё не готово")?;
+    tx.send(ClientToServer::AssignmentDone { id }).map_err(|_| "соединение с преподавателем разорвано".to_string())
 }

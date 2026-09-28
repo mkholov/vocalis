@@ -82,13 +82,6 @@ fn list_classes_returns_real_db_rows() {
     }
 }
 
-/// The "Создать класс" form on the class picker: `create_class` writes a real row (through the same
-/// `db::insert_class` egui uses), `list_classes` sees it immediately, bad names are refused with the
-/// egui texts, and starting a lesson for the created class reuses it instead of inserting a second row.
-/// Real class stats, straight from the DB: seeds a full history for one class (two students under
-/// slightly different spellings — the whole point of grouping by `normalize_name` — plus one student who
-/// never scored anything) and a decoy second class, and checks that both the class-wide tiles and every
-/// per-student row match a hand-computed expectation, and that the decoy's rows never leak in.
 /// Real assignment delivery, end to end: `send_assignment`'s JSON payload is exactly what
 /// `AssignmentEditor`'s draft produces (see `lib/assignments.ts`'s `draftToContent`), the real
 /// `ServerToClient::AssignmentOffer` it triggers reaches a real connected student over the network, and
@@ -193,6 +186,160 @@ fn sending_an_assignment_reaches_the_student_as_a_real_assignment_offer() {
     student_session::disconnect_student_session(student_state);
 }
 
+/// The full answer flow, end to end: the teacher sends a real `Test` assignment, a real connected student
+/// answers it (one right, one wrong) through `submit_test_answers` — the same command
+/// `AssignmentCard`'s "Отправить" button calls — and the teacher really sees the graded result land: a
+/// real `test_results` row with the correct score, the `assignments` row marked done, and `class_stats`
+/// (the same command `StatsPanel` calls) reflecting it in that student's own real numbers. Also checks the
+/// two guarantees around resubmission: the student's own "assignments" event reports `done`/`lastScore`
+/// immediately (no waiting on the teacher to round-trip anything back), and a second submit is refused
+/// rather than silently re-scoring or double-counting.
+#[test]
+fn a_student_answering_a_test_reaches_the_teacher_as_a_real_graded_result() {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+    use tauri::{Listener, Manager};
+    use tauri_app_lib::commands::{student_session, teacher_session};
+
+    let _db = ScratchDb::new("submit_test_answers");
+
+    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
+    let session_info = teacher_session::start_teacher_session(
+        teacher_app.handle().clone(),
+        teacher_state.clone(),
+        "E2E класс (ответ на задание)".to_string(),
+    )
+    .expect("start_teacher_session should succeed");
+    let teacher_webview = tauri::WebviewWindowBuilder::new(&teacher_app, "main", Default::default()).build().unwrap();
+    let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+        let body = match args {
+            serde_json::Value::Null => InvokeBody::default(),
+            other => InvokeBody::Json(other),
+        };
+        let request = InvokeRequest {
+            cmd: cmd.into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: if cfg!(any(windows, target_os = "android")) { "http://tauri.localhost" } else { "tauri://localhost" }
+                .parse()
+                .unwrap(),
+            body,
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.to_string(),
+        };
+        tauri::test::get_ipc_response(&teacher_webview, request).map(|b| b.deserialize::<serde_json::Value>().unwrap())
+    };
+
+    let student_app = build_app(tauri::test::mock_builder());
+    let student_state = student_app.state::<student_session::StudentSessionState>();
+    student_session::connect_student_session(
+        student_app.handle().clone(),
+        student_state.clone(),
+        "127.0.0.1".to_string(),
+        lingua_common::CONTROL_PORT,
+        "E2E ученик (ответ на задание)".to_string(),
+        session_info.pin.clone(),
+    )
+    .expect("student should connect to the real running control server");
+
+    let (assign_tx, assign_rx) = mpsc::channel::<serde_json::Value>();
+    student_app.listen("assignments", move |event| {
+        if let Ok(list) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+            let _ = assign_tx.send(list);
+        }
+    });
+
+    // Two questions: student will get the first right, the second wrong — 1/2, not a suspiciously perfect
+    // or empty score.
+    let content = serde_json::json!({
+        "kind": "test",
+        "questions": [
+            { "text": "She ___ to school.", "options": ["go", "goes"], "correctIndex": 1 },
+            { "text": "They ___ TV now.", "options": ["watch", "watches"], "correctIndex": 0 },
+        ],
+    });
+    call("send_assignment", serde_json::json!({"title": "Present tenses", "content": content, "studentIds": []}))
+        .expect("send_assignment should succeed");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut offer = None;
+    while Instant::now() < deadline {
+        if let Ok(list) = assign_rx.recv_timeout(Duration::from_millis(200)) {
+            if let Some(arr) = list.as_array() {
+                if !arr.is_empty() {
+                    offer = Some(arr[0].clone());
+                    break;
+                }
+            }
+        }
+    }
+    let offer = offer.expect("a real \"assignments\" event should reach the student");
+    assert_eq!(offer["done"], false, "freshly received, not yet answered");
+    assert!(offer["lastScore"].is_null());
+    let assignment_id = offer["id"].as_str().unwrap().to_string();
+
+    // Right answer to question 1 (index 1 = "goes"), wrong to question 2 (index 1 = "watches", correct is 0).
+    let score = student_session::submit_test_answers(student_state.clone(), assignment_id.clone(), vec![1, 1])
+        .expect("submit_test_answers should succeed the first time");
+    assert_eq!((score.correct, score.total), (1, 2), "one of the two answers was right");
+
+    // The student's own real "assignments" snapshot must reflect the submission immediately — this is
+    // what lets `AssignmentCard` show "Ответ отправлен" without waiting on anything from the teacher.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut settled = None;
+    while Instant::now() < deadline {
+        if let Ok(list) = assign_rx.recv_timeout(Duration::from_millis(200)) {
+            if let Some(arr) = list.as_array() {
+                if arr[0]["done"] == true {
+                    settled = Some(arr[0].clone());
+                    break;
+                }
+            }
+        }
+    }
+    let settled = settled.expect("a real \"assignments\" event should report the submission as done");
+    assert_eq!(settled["lastScore"]["correct"], 1);
+    assert_eq!(settled["lastScore"]["total"], 2);
+
+    // A second submission must be refused, not silently re-scored.
+    let err = student_session::submit_test_answers(student_state.clone(), assignment_id.clone(), vec![1, 0])
+        .expect_err("submitting the same assignment twice must be refused");
+    assert!(err.contains("уже отправлен"), "got: {err}");
+
+    // The teacher's side, for real: a `test_results` row with the actual score, and the `assignments` row
+    // marked done — the same two writes `TeacherApp::send_assignment_template`'s own flow makes for a
+    // manually-graded quick-send, just triggered by the real network message instead.
+    let (correct, total, done): (i64, i64, i64) = {
+        let conn = vocalis::teacher::db::open().expect("open the scratch db");
+        conn.query_row(
+            "SELECT tr.correct, tr.total, a.done FROM test_results tr JOIN assignments a ON a.id = tr.assignment_id WHERE a.title = ?1",
+            ["Present tenses"],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("a real test_results row joined to its real assignments row")
+    };
+    assert_eq!((correct, total, done), (1, 2, 1));
+
+    // And through the same command the real Statistics screen calls: the student's own real progress
+    // reflects the graded assignment.
+    let stats = call("class_stats", serde_json::json!({"className": "E2E класс (ответ на задание)"}))
+        .expect("class_stats should succeed");
+    let students = stats["students"].as_array().unwrap();
+    let me = students
+        .iter()
+        .find(|s| s["name"] == "E2E ученик (ответ на задание)")
+        .expect("this student should have a real row in class_stats");
+    assert_eq!((me["assignmentsDone"].as_i64(), me["assignmentsTotal"].as_i64()), (Some(1), Some(1)));
+
+    teacher_session::stop_teacher_session(teacher_state);
+    student_session::disconnect_student_session(student_state);
+}
+
+/// Real class stats, straight from the DB: seeds a full history for one class (two students under
+/// slightly different spellings — the whole point of grouping by `normalize_name` — plus one student who
+/// never scored anything) and a decoy second class, and checks that both the class-wide tiles and every
+/// per-student row match a hand-computed expectation, and that the decoy's rows never leak in.
 #[test]
 fn class_stats_reports_real_per_student_history_grouped_by_normalized_name() {
     use vocalis::teacher::db;
@@ -254,6 +401,9 @@ fn class_stats_reports_real_per_student_history_grouped_by_normalized_name() {
     assert!(err.as_str().unwrap().contains("не найден"), "got: {err}");
 }
 
+/// The "Создать класс" form on the class picker: `create_class` writes a real row (through the same
+/// `db::insert_class` egui uses), `list_classes` sees it immediately, bad names are refused with the
+/// egui texts, and starting a lesson for the created class reuses it instead of inserting a second row.
 #[test]
 fn creating_a_class_puts_a_real_row_in_the_list_and_a_lesson_reuses_it() {
     let _db = ScratchDb::new("create_class");

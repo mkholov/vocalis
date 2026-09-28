@@ -42,6 +42,8 @@ fn main() {
             "connect_student_session",
             "disconnect_student_session",
             "set_hand_raised",
+            "submit_test_answers",
+            "submit_assignment_done",
         ]),
     );
     tauri_build::try_build(attributes).expect("failed to run tauri-build codegen");

@@ -43,6 +43,8 @@
     "allow-delete-recording",
     "allow-connect-student-session",
     "allow-disconnect-student-session",
-    "allow-set-hand-raised"
+    "allow-set-hand-raised",
+    "allow-submit-test-answers",
+    "allow-submit-assignment-done"
   ]
 }
