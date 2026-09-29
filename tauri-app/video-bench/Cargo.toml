@@ -18,6 +18,18 @@ publish = false
 name = "video-bench"
 path = "src/main.rs"
 
+# Sequel to the above: that one measured the Tauri IPC transport layer
+# (emit/base64 vs Channel) on top of one fixed capture/encode/decode profile.
+# This one holds the transport question answered and instead measures the
+# *pipeline itself* — real capture, H.264 encode, real UDP packetize/encrypt/
+# send/recv/decrypt/reassemble, H.264 decode — across several resolution/fps
+# profiles, to inform whether raising the shipped 1280px/15fps default is
+# affordable. No Tauri window needed for this one (no IPC/webview question in
+# scope), so it's a plain binary, not a `tauri::Builder` app.
+[[bin]]
+name = "pipeline_bench"
+path = "src/bin/pipeline_bench.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -31,3 +43,8 @@ base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
+# Only `pipeline_bench` uses this (real per-process CPU-time accounting via
+# `getrusage`, to attribute CPU cost to the encode/decode stages specifically
+# rather than just measuring wall-clock time) — not worth a second Cargo.toml
+# given this whole crate is already a throwaway, isolated benchmark.
+libc = "0.2"
