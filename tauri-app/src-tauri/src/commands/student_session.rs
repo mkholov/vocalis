@@ -272,6 +272,12 @@ pub fn connect_student_session<R: tauri::Runtime>(
     let app_state: state::AppState = Arc::new(Mutex::new(state::SharedState::default()));
     let own_name = student_name.clone();
 
+    // DIAGNOSTIC (temporary — see this task's own investigation notes): brackets exactly when a connect
+    // attempt starts and how it resolves, with the real PIN and target address, so a real Windows CI run
+    // shows precisely which attempts get a real rejection vs. a bare timeout, and how long each took.
+    let diag_start = Instant::now();
+    eprintln!("[diag] connect_student_session: starting connect to {addr} as '{own_name}' with pin='{pin}' at t=0ms");
+
     let connect_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let connect_task = {
         let app_state = app_state.clone();
@@ -290,13 +296,16 @@ pub fn connect_student_session<R: tauri::Runtime>(
     let deadline = Instant::now() + CONNECT_TIMEOUT;
     let teacher_name = loop {
         if let Some(name) = app_state.lock().unwrap().connected_teacher.clone() {
+            eprintln!("[diag] connect_student_session: connected to '{name}' at t={}ms", diag_start.elapsed().as_millis());
             break name;
         }
         if let Some(e) = connect_error.lock().unwrap().take() {
+            eprintln!("[diag] connect_student_session: real error '{e}' at t={}ms", diag_start.elapsed().as_millis());
             return Err(e);
         }
         if Instant::now() > deadline {
             connect_task.abort();
+            eprintln!("[diag] connect_student_session: timed out at t={}ms with no error and no connected_teacher", diag_start.elapsed().as_millis());
             return Err("не удалось подключиться к преподавателю (таймаут)".to_string());
         }
         std::thread::sleep(Duration::from_millis(20));

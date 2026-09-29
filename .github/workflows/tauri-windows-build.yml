@@ -64,9 +64,14 @@ jobs:
       # running concurrently with the read-only `list_classes` test races on
       # that same env var and flakes (confirmed locally: 1-in-3ish). These
       # tests are few and fast, so serializing them costs nothing noticeable.
+      # --nocapture (temporary, diagnostic — see this task's own investigation notes on the e9b20c8
+      # regression): shows every test's real output (not just failing ones' captured output), including
+      # the new `[diag] ...` prints and the now-visible `tracing` output from `app`/`common`
+      # (`init_test_tracing` in `tests/command_bridge.rs`), so a real Windows CI run gives the full,
+      # ordered picture of what every teacher/student control-server connection actually did.
       - name: cargo test (Tauri command bridge)
         working-directory: tauri-app/src-tauri
-        run: cargo test --locked -- --test-threads=1
+        run: cargo test --locked -- --test-threads=1 --nocapture
 
       # No extra system packages needed on windows-latest: Tauri v2's Windows
       # webview is WebView2, which ships with (or is auto-installed alongside)

@@ -6430,6 +6430,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-updater",
  "tokio",
+ "tracing-subscriber",
  "uuid",
  "vocalis",
 ]

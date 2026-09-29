@@ -22,8 +22,34 @@ use tauri_app_lib::build_app;
 use tauri::webview::InvokeRequest;
 use tauri::ipc::{CallbackFn, InvokeBody};
 
+/// Diagnostic-only (temporary — see this suite's own investigation notes): with no `tracing` subscriber
+/// registered at all, which was this test binary's state until now, every `tracing::info!`/`warn!` call
+/// throughout `app`/`common` is a silent no-op — including real, already-there ones like "teacher control
+/// server listening on port …" and "student '…' rejected: wrong PIN" (`app/src/teacher/net.rs`). Registers
+/// one, once per process (`Once`-guarded: a global tracing dispatcher can only ever be set once), so a real
+/// Windows CI run's captured output shows the *whole* picture, not just what this file itself prints.
+fn init_test_tracing() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = tracing_subscriber::fmt()
+            .with_test_writer()
+            .with_ansi(false)
+            .with_target(true)
+            .with_thread_ids(true)
+            .with_timer(tracing_subscriber::fmt::time::uptime())
+            .try_init();
+    });
+}
+
+/// Every test builds at least one app through this (not `build_app`/`mock_builder` directly) — see
+/// `init_test_tracing`.
+fn test_app() -> tauri::App<tauri::test::MockRuntime> {
+    init_test_tracing();
+    build_app(mock_builder())
+}
+
 fn invoke(cmd: &str, args: serde_json::Value) -> Result<serde_json::Value, serde_json::Value> {
-    let app = build_app(mock_builder());
+    let app = test_app();
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
     invoke_in(&webview, cmd, args)
 }
@@ -96,7 +122,7 @@ fn sending_an_assignment_reaches_the_student_as_a_real_assignment_offer() {
 
     let _db = ScratchDb::new("send_assignment");
 
-    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_app = test_app();
     let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
     let session_info = teacher_session::start_teacher_session(
         teacher_app.handle().clone(),
@@ -124,7 +150,7 @@ fn sending_an_assignment_reaches_the_student_as_a_real_assignment_offer() {
         tauri::test::get_ipc_response(&teacher_webview, request).map(|b| b.deserialize::<serde_json::Value>().unwrap())
     };
 
-    let student_app = build_app(tauri::test::mock_builder());
+    let student_app = test_app();
     let student_state = student_app.state::<student_session::StudentSessionState>();
     student_session::connect_student_session(
         student_app.handle().clone(),
@@ -201,7 +227,7 @@ fn chat_messages_reach_both_sides_for_real_and_respect_the_chosen_target() {
 
     let _db = ScratchDb::new("chat");
 
-    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_app = test_app();
     let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
     let session_info = teacher_session::start_teacher_session(
         teacher_app.handle().clone(),
@@ -236,7 +262,7 @@ fn chat_messages_reach_both_sides_for_real_and_respect_the_chosen_target() {
         }
     });
 
-    let student_a_app = build_app(tauri::test::mock_builder());
+    let student_a_app = test_app();
     let student_a_state = student_a_app.state::<student_session::StudentSessionState>();
     student_session::connect_student_session(
         student_a_app.handle().clone(),
@@ -254,7 +280,7 @@ fn chat_messages_reach_both_sides_for_real_and_respect_the_chosen_target() {
         }
     });
 
-    let student_b_app = build_app(tauri::test::mock_builder());
+    let student_b_app = test_app();
     let student_b_state = student_b_app.state::<student_session::StudentSessionState>();
     student_session::connect_student_session(
         student_b_app.handle().clone(),
@@ -351,7 +377,7 @@ fn a_student_answering_a_test_reaches_the_teacher_as_a_real_graded_result() {
 
     let _db = ScratchDb::new("submit_test_answers");
 
-    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_app = test_app();
     let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
     let session_info = teacher_session::start_teacher_session(
         teacher_app.handle().clone(),
@@ -379,7 +405,7 @@ fn a_student_answering_a_test_reaches_the_teacher_as_a_real_graded_result() {
         tauri::test::get_ipc_response(&teacher_webview, request).map(|b| b.deserialize::<serde_json::Value>().unwrap())
     };
 
-    let student_app = build_app(tauri::test::mock_builder());
+    let student_app = test_app();
     let student_state = student_app.state::<student_session::StudentSessionState>();
     student_session::connect_student_session(
         student_app.handle().clone(),
@@ -591,7 +617,7 @@ fn creating_a_class_puts_a_real_row_in_the_list_and_a_lesson_reuses_it() {
 
     // Starting a lesson for the created class must reuse its row, not add a duplicate.
     // (One app for start and stop — the session lives in that app's managed state.)
-    let app = build_app(mock_builder());
+    let app = test_app();
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
     let session = invoke_in(&webview, "start_teacher_session", serde_json::json!({"className": "E2E 9А английский"}))
         .expect("start_teacher_session should succeed");
@@ -643,7 +669,7 @@ fn renaming_and_deleting_a_class_follows_the_real_rows_and_cascades() {
     assert_eq!((by_id(b_id)["lessons"].as_i64(), by_id(b_id)["roster"].as_i64()), (Some(1), Some(1)));
 
     // A running lesson pins its class: neither rename nor delete may pull it out from under the session.
-    let app = build_app(mock_builder());
+    let app = test_app();
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
     invoke_in(&webview, "start_teacher_session", serde_json::json!({"className": "E2E 9А"})).expect("start a lesson");
     let err = invoke_in(&webview, "rename_class", serde_json::json!({"id": a_id, "name": "Другое"})).expect_err("rename during a lesson");
@@ -736,7 +762,7 @@ fn start_teacher_session_creates_a_real_class_and_pin() {
     // independent `TeacherSessionState` — every time): idempotency is a
     // property of *one* running app seeing two calls, e.g. a React
     // effect double-invoked under StrictMode, not of two unrelated apps.
-    let app = build_app(tauri::test::mock_builder());
+    let app = test_app();
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
     let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
         let body = match args {
@@ -803,7 +829,7 @@ fn mic_meter_opens_a_named_input_and_reports_real_levels() {
     use std::sync::mpsc;
     use tauri::Listener;
 
-    let app = build_app(mock_builder());
+    let app = test_app();
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
     let (tx, rx) = mpsc::channel::<serde_json::Value>();
     app.listen("mic-level", move |event| {
@@ -841,7 +867,7 @@ fn start_screen_demo_emits_a_real_decoded_jpeg_frame() {
     use std::sync::mpsc;
     use tauri::Listener;
 
-    let app = build_app(tauri::test::mock_builder());
+    let app = test_app();
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
     let call = |cmd: &str| -> Result<serde_json::Value, serde_json::Value> {
         let request = InvokeRequest {
@@ -903,7 +929,7 @@ fn teacher_own_screen_demo_reaches_a_real_connected_student_as_decoded_frames() 
     // out of the developer's real database.
     let _db = ScratchDb::new("screen_demo");
 
-    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_app = test_app();
     let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
     let session_info = teacher_session::start_teacher_session(
         teacher_app.handle().clone(),
@@ -912,7 +938,7 @@ fn teacher_own_screen_demo_reaches_a_real_connected_student_as_decoded_frames() 
     )
     .expect("start_teacher_session should succeed");
 
-    let student_app = build_app(tauri::test::mock_builder());
+    let student_app = test_app();
     let student_state = student_app.state::<student_session::StudentSessionState>();
 
     let (frame_tx, frame_rx) = mpsc::channel::<Instant>();
@@ -1021,13 +1047,13 @@ fn teacher_mic_broadcast_reaches_a_real_connected_student() {
     // out of the developer's real database.
     let _db = ScratchDb::new("mic_broadcast");
 
-    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_app = test_app();
     let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
     let session_info =
         teacher_session::start_teacher_session(teacher_app.handle().clone(), teacher_state.clone(), "E2E класс (аудио)".to_string())
             .expect("start_teacher_session should succeed");
 
-    let student_app = build_app(tauri::test::mock_builder());
+    let student_app = test_app();
     let student_state = student_app.state::<student_session::StudentSessionState>();
     let connected = student_session::connect_student_session(
         student_app.handle().clone(),
@@ -1093,7 +1119,7 @@ fn teacher_listens_in_on_a_real_connected_student() {
     // out of the developer's real database.
     let _db = ScratchDb::new("listen_in");
 
-    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_app = test_app();
     let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
     let session_info = teacher_session::start_teacher_session(
         teacher_app.handle().clone(),
@@ -1111,7 +1137,7 @@ fn teacher_listens_in_on_a_real_connected_student() {
         }
     });
 
-    let student_app = build_app(tauri::test::mock_builder());
+    let student_app = test_app();
     let student_state = student_app.state::<student_session::StudentSessionState>();
     let connected = student_session::connect_student_session(
         student_app.handle().clone(),
@@ -1176,7 +1202,7 @@ fn teacher_and_student_hear_each_other_over_a_real_intercom() {
     // out of the developer's real database.
     let _db = ScratchDb::new("intercom");
 
-    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_app = test_app();
     let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
     let session_info = teacher_session::start_teacher_session(
         teacher_app.handle().clone(),
@@ -1194,7 +1220,7 @@ fn teacher_and_student_hear_each_other_over_a_real_intercom() {
         }
     });
 
-    let student_app = build_app(tauri::test::mock_builder());
+    let student_app = test_app();
     let student_state = student_app.state::<student_session::StudentSessionState>();
     let connected = student_session::connect_student_session(
         student_app.handle().clone(),
@@ -1280,7 +1306,7 @@ fn raising_a_hand_reaches_the_teacher_as_a_real_needs_help_flag() {
 
     let _db = ScratchDb::new("raise_hand");
 
-    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_app = test_app();
     let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
     let session_info = teacher_session::start_teacher_session(
         teacher_app.handle().clone(),
@@ -1301,7 +1327,7 @@ fn raising_a_hand_reaches_the_teacher_as_a_real_needs_help_flag() {
         }
     });
 
-    let student_app = build_app(tauri::test::mock_builder());
+    let student_app = test_app();
     let student_state = student_app.state::<student_session::StudentSessionState>();
     student_session::connect_student_session(
         student_app.handle().clone(),
@@ -1359,7 +1385,7 @@ fn creating_a_group_relays_real_peer_info_to_both_real_students() {
     // out of the developer's real database.
     let _db = ScratchDb::new("groups");
 
-    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_app = test_app();
     let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
     let session_info = teacher_session::start_teacher_session(
         teacher_app.handle().clone(),
@@ -1380,7 +1406,7 @@ fn creating_a_group_relays_real_peer_info_to_both_real_students() {
         }
     });
 
-    let student_a_app = build_app(tauri::test::mock_builder());
+    let student_a_app = test_app();
     let student_a_state = student_a_app.state::<student_session::StudentSessionState>();
     student_session::connect_student_session(
         student_a_app.handle().clone(),
@@ -1392,7 +1418,7 @@ fn creating_a_group_relays_real_peer_info_to_both_real_students() {
     )
     .expect("student A should connect to the real running control server");
 
-    let student_b_app = build_app(tauri::test::mock_builder());
+    let student_b_app = test_app();
     let student_b_state = student_b_app.state::<student_session::StudentSessionState>();
     student_session::connect_student_session(
         student_b_app.handle().clone(),
@@ -1458,7 +1484,7 @@ fn a_real_student_disconnect_clears_their_group_membership_and_leaves_no_ghost_r
 
     let _db = ScratchDb::new("disconnect_cleanup");
 
-    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_app = test_app();
     let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
     let session_info = teacher_session::start_teacher_session(
         teacher_app.handle().clone(),
@@ -1474,7 +1500,7 @@ fn a_real_student_disconnect_clears_their_group_membership_and_leaves_no_ghost_r
         }
     });
 
-    let student_a_app = build_app(tauri::test::mock_builder());
+    let student_a_app = test_app();
     let student_a_state = student_a_app.state::<student_session::StudentSessionState>();
     student_session::connect_student_session(
         student_a_app.handle().clone(),
@@ -1486,7 +1512,7 @@ fn a_real_student_disconnect_clears_their_group_membership_and_leaves_no_ghost_r
     )
     .expect("student A should connect to the real running control server");
 
-    let student_b_app = build_app(tauri::test::mock_builder());
+    let student_b_app = test_app();
     let student_b_state = student_b_app.state::<student_session::StudentSessionState>();
     student_session::connect_student_session(
         student_b_app.handle().clone(),
@@ -1553,7 +1579,7 @@ fn a_real_teacher_side_stop_notifies_the_student_it_actually_disconnected() {
 
     let _db = ScratchDb::new("teacher_disconnect_notice");
 
-    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_app = test_app();
     let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
     let session_info = teacher_session::start_teacher_session(
         teacher_app.handle().clone(),
@@ -1562,7 +1588,7 @@ fn a_real_teacher_side_stop_notifies_the_student_it_actually_disconnected() {
     )
     .expect("start_teacher_session should succeed");
 
-    let student_app = build_app(tauri::test::mock_builder());
+    let student_app = test_app();
     let student_state = student_app.state::<student_session::StudentSessionState>();
     student_session::connect_student_session(
         student_app.handle().clone(),
@@ -1602,7 +1628,7 @@ fn a_stopped_lessons_pin_cannot_reach_a_later_lesson_on_the_same_machine() {
 
     let _db = ScratchDb::new("stale_pin");
 
-    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_app = test_app();
     let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
     let session1 = teacher_session::start_teacher_session(
         teacher_app.handle().clone(),
@@ -1613,7 +1639,7 @@ fn a_stopped_lessons_pin_cannot_reach_a_later_lesson_on_the_same_machine() {
     let old_pin = session1.pin.clone();
 
     // Prove the first lesson's control server is really up: a real connect with its real PIN succeeds.
-    let probe_app = build_app(tauri::test::mock_builder());
+    let probe_app = test_app();
     let probe_state = probe_app.state::<student_session::StudentSessionState>();
     student_session::connect_student_session(
         probe_app.handle().clone(),
@@ -1633,7 +1659,7 @@ fn a_stopped_lessons_pin_cannot_reach_a_later_lesson_on_the_same_machine() {
 
     // Nothing is listening now — even the *correct*, just-used PIN must fail (there is no session left to
     // check it against at all), not merely "a wrong pin against a still-live session".
-    let gone_app = build_app(tauri::test::mock_builder());
+    let gone_app = test_app();
     let gone_state = gone_app.state::<student_session::StudentSessionState>();
     let result = student_session::connect_student_session(
         gone_app.handle().clone(),
@@ -1669,7 +1695,7 @@ fn a_stopped_lessons_pin_cannot_reach_a_later_lesson_on_the_same_machine() {
     // The meaningful case, pinned explicitly rather than left to chance: the *old* PIN, now stale, must be
     // rejected by the *new* lesson's real (almost certainly different) PIN check.
     if old_pin != session2.pin {
-        let late_app = build_app(tauri::test::mock_builder());
+        let late_app = test_app();
         let late_state = late_app.state::<student_session::StudentSessionState>();
         let result = student_session::connect_student_session(
             late_app.handle().clone(),
@@ -1687,7 +1713,7 @@ fn a_stopped_lessons_pin_cannot_reach_a_later_lesson_on_the_same_machine() {
     }
 
     // And the new lesson's own real PIN really works.
-    let real_app = build_app(tauri::test::mock_builder());
+    let real_app = test_app();
     let real_state = real_app.state::<student_session::StudentSessionState>();
     student_session::connect_student_session(
         real_app.handle().clone(),
@@ -1869,7 +1895,7 @@ fn playing_a_material_reaches_a_real_connected_student() {
     let wav_path = std::env::temp_dir().join(format!("vocalis_e2e_material_{}.wav", std::process::id()));
     write_test_wav(&wav_path);
 
-    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_app = test_app();
     let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
     let session_info = teacher_session::start_teacher_session(
         teacher_app.handle().clone(),
@@ -1878,7 +1904,7 @@ fn playing_a_material_reaches_a_real_connected_student() {
     )
     .expect("start_teacher_session should succeed");
 
-    let student_app = build_app(tauri::test::mock_builder());
+    let student_app = test_app();
     let student_state = student_app.state::<student_session::StudentSessionState>();
     student_session::connect_student_session(
         student_app.handle().clone(),
@@ -1952,7 +1978,7 @@ fn student_recordings_save_list_play_back_and_delete() {
 
     let _home = ScratchDb::new("recordings");
 
-    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_app = test_app();
     let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
     let session_info = teacher_session::start_teacher_session(
         teacher_app.handle().clone(),
@@ -1961,7 +1987,7 @@ fn student_recordings_save_list_play_back_and_delete() {
     )
     .expect("start_teacher_session should succeed");
 
-    let student_app = build_app(tauri::test::mock_builder());
+    let student_app = test_app();
     let student_state = student_app.state::<student_session::StudentSessionState>();
     student_session::connect_student_session(
         student_app.handle().clone(),
@@ -2046,7 +2072,7 @@ fn student_recording_captures_the_real_microphone() {
 
     let _home = ScratchDb::new("recordings_mic");
 
-    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_app = test_app();
     let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
     let session_info = teacher_session::start_teacher_session(
         teacher_app.handle().clone(),
@@ -2055,7 +2081,7 @@ fn student_recording_captures_the_real_microphone() {
     )
     .expect("start_teacher_session should succeed");
 
-    let student_app = build_app(tauri::test::mock_builder());
+    let student_app = test_app();
     let student_state = student_app.state::<student_session::StudentSessionState>();
     student_session::connect_student_session(
         student_app.handle().clone(),
@@ -2120,7 +2146,7 @@ fn a_student_can_compare_against_the_reference_and_send_their_recording_to_the_t
     let wav_path = std::env::temp_dir().join(format!("vocalis_e2e_reference_{}.wav", std::process::id()));
     write_test_wav(&wav_path);
 
-    let teacher_app = build_app(tauri::test::mock_builder());
+    let teacher_app = test_app();
     let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
     let session_info = teacher_session::start_teacher_session(
         teacher_app.handle().clone(),
@@ -2129,7 +2155,7 @@ fn a_student_can_compare_against_the_reference_and_send_their_recording_to_the_t
     )
     .expect("start_teacher_session should succeed");
 
-    let student_app = build_app(tauri::test::mock_builder());
+    let student_app = test_app();
     let student_state = student_app.state::<student_session::StudentSessionState>();
     student_session::connect_student_session(
         student_app.handle().clone(),
@@ -2305,7 +2331,7 @@ fn a_real_update_manifest_is_fetched_and_its_signature_really_verified() {
         }
     });
 
-    let app = build_app(tauri::test::mock_builder());
+    let app = test_app();
     let endpoint: tauri::Url = format!("http://127.0.0.1:{port}/latest.json").parse().expect("valid test endpoint URL");
 
     let (update, downloaded) = tauri::async_runtime::block_on(async {

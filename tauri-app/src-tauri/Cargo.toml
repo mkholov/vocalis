@@ -30,9 +30,11 @@ embed-resource = "3"
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 # Auto-update over the school's internet connection when there is one — never required for the app's core
-# LAN-only classroom function, which needs none. See commands/updater.rs's own doc comment for the full
-# design (non-blocking check with a timeout, explicit user confirmation before anything downloads/installs,
-# GitHub Releases as the manifest/artifact host).
+# LAN-only classroom function, which needs none. See src/lib/useUpdater.ts (frontend) and this crate's own
+# lib.rs (plugin registration) for the full design (non-blocking check with a timeout, explicit user
+# confirmation before anything downloads/installs, GitHub Releases as the manifest/artifact host). No
+# commands/updater.rs: the plugin's own auto-registered commands (check/download/install) are called
+# directly from the frontend, same as tauri-plugin-dialog.
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 # Step 7.5 (vocalis_roadmap.md, section 8): the audio materials library needs
@@ -74,6 +76,11 @@ lingua-common = { path = "../../common" }
 # "test" gets `tauri::test` (MockRuntime + real IPC dispatch, no window needed) —
 # see src/lib.rs's `tests` module.
 tauri = { version = "2", features = ["test"] }
+# Diagnostic-only (see tests/command_bridge.rs's `init_test_tracing`): with no subscriber registered at
+# all — the previous state of this test binary — every `tracing::info!`/`warn!` call throughout `app`/
+# `common` (there are real, useful ones already, e.g. "teacher control server listening on port …") is a
+# silent no-op. Same version `vocalis`/`common` already depend on.
+tracing-subscriber = "0.3"
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

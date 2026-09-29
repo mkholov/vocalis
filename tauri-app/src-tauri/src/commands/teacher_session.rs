@@ -253,9 +253,15 @@ pub fn start_teacher_session<R: tauri::Runtime>(
     }
     {
         let app_state = app_state.clone();
+        // DIAGNOSTIC (temporary — see this task's own investigation notes): the real pin this session
+        // will validate connections against, and exactly when the control-server task actually got
+        // spawned (not when it starts *listening*, which is `app/src/teacher/net.rs`'s own
+        // `info!("teacher control server listening on port …")`, now visible too — see
+        // `tests/command_bridge.rs`'s `init_test_tracing`).
+        eprintln!("[diag] start_teacher_session: spawning control server on port {} with pin='{}'", lingua_common::CONTROL_PORT, pin);
         tasks.push(tauri::async_runtime::spawn(async move {
             if let Err(e) = net::run_control_server(app_state, teacher_name).await {
-                eprintln!("[teacher_session] control server stopped: {e:#}");
+                eprintln!("[diag] start_teacher_session: control server task ENDED WITH ERROR (this is the bind/accept-loop failing, not just a student being rejected): {e:#}");
             }
         }));
     }
@@ -353,7 +359,13 @@ pub fn stop_teacher_session(session: State<TeacherSessionState>) {
     if let Some(teacher_session) = guard.as_ref() {
         teacher_session.app_state.lock().unwrap().students.clear();
     }
+    // DIAGNOSTIC (temporary — see this task's own investigation notes): `*guard = None` below is exactly
+    // where `TeacherSession::drop` calls `task.abort()` on the control-server task — logging immediately
+    // before/after brackets how much real wall-clock time passes between "abort requested" and this
+    // function actually returning, to check whether the OS socket is reliably closed by the time it does.
+    eprintln!("[diag] stop_teacher_session: about to drop TeacherSession (issues task.abort() on the control server)");
     *guard = None;
+    eprintln!("[diag] stop_teacher_session: TeacherSession dropped, this call is returning now");
 }
 
 #[derive(Serialize)]
