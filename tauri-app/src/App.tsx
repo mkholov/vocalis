@@ -5,6 +5,7 @@ import { TeacherFlow } from "./screens/TeacherFlow";
 import { StudentFlow } from "./screens/StudentFlow";
 import { TeacherConsole } from "./screens/TeacherConsole";
 import { StudentConsole } from "./screens/StudentConsole";
+import { UpdateBanner } from "./components/UpdateBanner";
 import type { DiscoveredTeacherDto } from "./lib/commands";
 
 type Role = "picker" | "teacher" | "student" | "teacherConsole" | "studentConsole";
@@ -24,54 +25,68 @@ function App() {
   const [connectedTeacher, setConnectedTeacher] = useState<DiscoveredTeacherDto | null>(null);
   const [pin, setPin] = useState("");
 
+  // `UpdateBanner` is mounted unconditionally below, alongside whichever screen is active — a real update
+  // (rare, and only ever real: `useUpdater`'s startup check either finds one or stays silent) matters no
+  // matter which role or step the app happens to be on.
   if (role === "teacherConsole") {
-    return <TeacherConsole className={className} onEnd={() => setRole("picker")} />;
+    return (
+      <>
+        <UpdateBanner />
+        <TeacherConsole className={className} onEnd={() => setRole("picker")} />
+      </>
+    );
   }
   if (role === "studentConsole" && connectedTeacher) {
     return (
-      <StudentConsole
-        studentName={studentName}
-        teacherIp={connectedTeacher.ip}
-        controlPort={connectedTeacher.controlPort}
-        pin={pin}
-        onDisconnect={() => setRole("picker")}
-      />
+      <>
+        <UpdateBanner />
+        <StudentConsole
+          studentName={studentName}
+          teacherIp={connectedTeacher.ip}
+          controlPort={connectedTeacher.controlPort}
+          pin={pin}
+          onDisconnect={() => setRole("picker")}
+        />
+      </>
     );
   }
 
   // The card hangs from a fixed height (`pt-[14vh]`) instead of being centred, so the heading stays put as a
   // flow moves between steps of different height; `overflow-y-auto` covers windows too short for a card.
   return (
-        <main className="relative flex h-screen w-screen items-start justify-center overflow-y-auto bg-[var(--color-app)] px-6 pb-6 pt-[14vh]">
-      {/* Ambient accent glow behind the card — purely decorative. */}
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_35%,rgba(167,139,250,0.12),transparent_60%)]" />
+    <>
+      <UpdateBanner />
+      <main className="relative flex h-screen w-screen items-start justify-center overflow-y-auto bg-[var(--color-app)] px-6 pb-6 pt-[14vh]">
+        {/* Ambient accent glow behind the card — purely decorative. */}
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_35%,rgba(167,139,250,0.12),transparent_60%)]" />
 
-      <AnimatePresence mode="wait">
-        {role === "picker" && <RolePicker key="picker" onPick={setRole} />}
-        {role === "teacher" && (
-          <TeacherFlow
-            key="teacher"
-            onBack={() => setRole("picker")}
-            onStart={(name) => {
-              setClassName(name);
-              setRole("teacherConsole");
-            }}
-          />
-        )}
-        {role === "student" && (
-          <StudentFlow
-            key="student"
-            onBack={() => setRole("picker")}
-            onConnect={(name, teacher, pinCode) => {
-              setStudentName(name);
-              setConnectedTeacher(teacher);
-              setPin(pinCode);
-              setRole("studentConsole");
-            }}
-          />
-        )}
-      </AnimatePresence>
-    </main>
+        <AnimatePresence mode="wait">
+          {role === "picker" && <RolePicker key="picker" onPick={setRole} />}
+          {role === "teacher" && (
+            <TeacherFlow
+              key="teacher"
+              onBack={() => setRole("picker")}
+              onStart={(name) => {
+                setClassName(name);
+                setRole("teacherConsole");
+              }}
+            />
+          )}
+          {role === "student" && (
+            <StudentFlow
+              key="student"
+              onBack={() => setRole("picker")}
+              onConnect={(name, teacher, pinCode) => {
+                setStudentName(name);
+                setConnectedTeacher(teacher);
+                setPin(pinCode);
+                setRole("studentConsole");
+              }}
+            />
+          )}
+        </AnimatePresence>
+      </main>
+    </>
   );
 }
 

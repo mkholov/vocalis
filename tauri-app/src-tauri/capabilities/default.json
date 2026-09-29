@@ -7,6 +7,8 @@
     "core:default",
     "opener:default",
     "dialog:default",
+    "updater:default",
+    "process:allow-restart",
     "allow-list-classes",
     "allow-create-class",
     "allow-rename-class",

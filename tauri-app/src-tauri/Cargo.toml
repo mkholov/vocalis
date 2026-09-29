@@ -29,6 +29,12 @@ embed-resource = "3"
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+# Auto-update over the school's internet connection when there is one — never required for the app's core
+# LAN-only classroom function, which needs none. See commands/updater.rs's own doc comment for the full
+# design (non-blocking check with a timeout, explicit user confirmation before anything downloads/installs,
+# GitHub Releases as the manifest/artifact host).
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 # Step 7.5 (vocalis_roadmap.md, section 8): the audio materials library needs
 # a real absolute file path to hand to `teacher::materials::decode_to_mono_pcm`
 # (the same requirement the egui app's `rfd::FileDialog` meets) — this is

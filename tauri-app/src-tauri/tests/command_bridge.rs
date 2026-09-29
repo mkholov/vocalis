@@ -2247,3 +2247,90 @@ fn a_student_can_compare_against_the_reference_and_send_their_recording_to_the_t
 
     println!("[e2e] real recording delivery: teacher received {} real bytes as {:?}", received_bytes.len(), entry.name);
 }
+
+/// Real, local, no-public-release-needed verification of the update-checking protocol (auto-update
+/// feature): a real `tauri_plugin_updater::Updater` (the exact plugin `lib.rs`'s `build_app` registers,
+/// not a stand-in) fetches a real HTTP manifest and a real signed artifact from a real local TCP server —
+/// nothing here is mocked out. The keypair below is a dedicated, throwaway *test* keypair (generated with
+/// `tauri signer generate`, empty password), unrelated to the real one this project actually signs
+/// releases with (that one lives only as a GitHub Actions secret and in the maintainer's own keychain, per
+/// this task's own report — never in the repo). A leaked test key has no security consequence: it can only
+/// ever "update" a client that was itself told to trust it, which is only this test.
+///
+/// What this proves for real: the manifest JSON gets parsed correctly, the default version comparator
+/// really decides "9.9.9" is newer than whatever `tauri.conf.json` currently says, the artifact really gets
+/// downloaded over a real socket, and — the part that actually matters for security — a real minisign
+/// signature really gets verified against the real bytes, using the exact same code path a real Windows
+/// machine's real update check would run. What it deliberately does NOT do: call `.install()` — that's
+/// Windows-installer-specific (this dev machine is macOS) and destructive (replaces the running binary);
+/// the installer/updater's own real silent-install mechanics are what `tauri-windows-build.yml`'s CI
+/// already exercises for real on a real Windows runner.
+#[test]
+fn a_real_update_manifest_is_fetched_and_its_signature_really_verified() {
+    use std::io::{Read, Write};
+    use tauri_plugin_updater::UpdaterExt;
+
+    // A dedicated test-only minisign keypair — see this test's own doc comment for why reusing the real
+    // release-signing key here would be bad practice even though nothing here is a secret.
+    const TEST_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUzREIxQjZFRkQyNDVEQjAKUldTd1hTVDliaHZiNDFLVUtwblVKQ3BuTWo4V3gvWVRGa0d0a29pTGRTN0E4cW53YUhteVFwWi8K";
+    // `vocalis test update artifact\n`, signed with the matching private key via a real `tauri signer sign`
+    // run — the exact bytes a real download must match, and the exact signature format
+    // (`.sig` file content, verbatim) the real manifest's `platforms.windows-x86_64.signature` field wants.
+    const TEST_ARTIFACT: &[u8] = b"vocalis test update artifact\n";
+    const TEST_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTd1hTVDliaHZiNCtZcnBwK3NMRHBFampzdEcrbU1mbE5FSkVqQXVoakduYTZrbXRXbVlJbGMxaVkxZWNoWHhrYStGd0xsOCtZSGNlRW85cmZWTDRMclF0VmZUSFY2VGdZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwNjczNjI2CWZpbGU6dGVzdC1hcnRpZmFjdC5iaW4KcHdjRWdpczE5c1VkdTdYblFFM2U2bUlaOFNncE5jUVJLdXoxb2tQd3J5UUxZeFovaVQzWjg4N1VWd2x5a2NVNGV4OFBlSTl4SE5iOSt3Uklmckt0QXc9PQo=";
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a real local port for the fake update server");
+    let port = listener.local_addr().unwrap().port();
+
+    let manifest_json = format!(
+        r#"{{"version":"9.9.9","notes":"Тестовое обновление — реальная проверка протокола","pub_date":"2024-01-01T00:00:00Z","platforms":{{"windows-x86_64":{{"signature":"{TEST_SIGNATURE}","url":"http://127.0.0.1:{port}/artifact.bin"}}}}}}"#
+    );
+
+    // A minimal, hand-rolled HTTP/1.1 responder — real bytes over a real socket, just not a whole HTTP
+    // server crate for two fixed responses. Serves exactly two requests (the manifest, then the artifact —
+    // the real order `check()` then `download()` makes them in) and stops.
+    let server = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let Ok((mut stream, _)) = listener.accept() else { return };
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let request_line = String::from_utf8_lossy(&buf[..n]);
+            let path = request_line.lines().next().unwrap_or("").split_whitespace().nth(1).unwrap_or("");
+            let (content_type, body): (&str, &[u8]) =
+                if path.starts_with("/latest.json") { ("application/json", manifest_json.as_bytes()) } else { ("application/octet-stream", TEST_ARTIFACT) };
+            let header = format!("HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+            let _ = stream.write_all(header.as_bytes());
+            let _ = stream.write_all(body);
+            let _ = stream.flush();
+        }
+    });
+
+    let app = build_app(tauri::test::mock_builder());
+    let endpoint: tauri::Url = format!("http://127.0.0.1:{port}/latest.json").parse().expect("valid test endpoint URL");
+
+    let (update, downloaded) = tauri::async_runtime::block_on(async {
+        let updater = app
+            .updater_builder()
+            .endpoints(vec![endpoint])
+            .expect("a non-empty endpoint list should build")
+            .pubkey(TEST_PUBKEY)
+            // Forced rather than left to auto-detect: this test may itself run on macOS (dev machine) or
+            // Windows (CI) — pinning the target to what a real deployed Vocalis actually is makes the test
+            // check exactly the real client's real code path either way, not "whatever OS happens to run
+            // the test suite".
+            .target("windows-x86_64")
+            .build()
+            .expect("building a real Updater with a real endpoint/pubkey should succeed");
+
+        let update = updater.check().await.expect("a real HTTP check against a real local server should succeed").expect("9.9.9 should look newer than this app's own configured version");
+
+        let downloaded = update.download(|_, _| {}, || {}).await.expect("downloading and verifying the real signed artifact should succeed");
+        (update, downloaded)
+    });
+
+    server.join().expect("the fake update server thread should not have panicked");
+
+    assert_eq!(update.version, "9.9.9");
+    assert_eq!(update.body.as_deref(), Some("Тестовое обновление — реальная проверка протокола"));
+    assert_eq!(downloaded, TEST_ARTIFACT, "the real downloaded-and-verified bytes must match exactly what was signed");
+}

@@ -70,78 +70,34 @@ jobs:
 
       # No extra system packages needed on windows-latest: Tauri v2's Windows
       # webview is WebView2, which ships with (or is auto-installed alongside)
-      # the runner image, and the MSI/NSIS bundlers Tauri CLI drives are
-      # fetched by the CLI itself on first use. `vocalis`'s own Windows-only
-      # deps (wasapi, openh264's "source" build) already build clean on this
-      # same runner image for the egui apps in windows-build.yml.
+      # the runner image, and the NSIS bundler Tauri CLI drives is fetched by
+      # the CLI itself on first use. `vocalis`'s own Windows-only deps (wasapi,
+      # openh264's "source" build) already build clean on this same runner
+      # image for the egui apps in windows-build.yml.
       #
-      # Still uses Tauri's own bundler (not just `cargo build --release`)
-      # rather than skip it: `npm run tauri build` is what actually runs
-      # `beforeBuildCommand` (`npm run build`, the frontend dist Tauri embeds
-      # at compile time) for us, and its own NSIS/MSI output is what this
-      # workflow's earlier version used to ship — see installer/vocalis.iss's
-      # own doc comment for why that output isn't what gets shipped anymore
-      # (per-user install, no Program Files, two confusingly-different
-      # installers for one app). The plain release .exe it also produces
-      # along the way (target/release/tauri-app.exe) is real either way — the
-      # same file Tauri's own bundler would have wrapped.
-      - name: npm run tauri build
-        run: npm run tauri build
+      # tauri.conf.json now builds Tauri's own NSIS installer (installMode
+      # "perMachine" — Program Files, admin, real Start Menu/desktop
+      # shortcuts, real uninstaller) instead of a custom Inno Setup script —
+      # see the real reason in this task's own report: tauri-plugin-updater's
+      # silent self-update on Windows only knows how to drive an installer
+      # *Tauri's own bundler* produced (it passes it NSIS-specific `/P
+      # /UPDATE /R` flags), so a third-party installer would have silently
+      # broken auto-update.
+      #
+      # `createUpdaterArtifacts: true` (tauri.conf.json) means `tauri build`
+      # normally also produces a signed `.sig` next to the `.exe` — and
+      # refuses to build at all without a real private key to sign with. This
+      # ordinary build/test job has no business holding that key (it's a
+      # secret, scoped to real releases only — see
+      # tauri-windows-release.yml), so this override turns updater-artifact
+      # creation back off just for this job: it only needs to prove the app
+      # still builds and bundles, not produce something installable/shippable.
+      - name: npm run tauri build (unsigned, build/test only)
+        run: npm run tauri build -- --config "{\"bundle\":{\"createUpdaterArtifacts\":false}}"
 
-      # Single source of truth for the installer's version: read straight out
-      # of tauri.conf.json rather than hardcoding it a second time in
-      # installer/vocalis.iss, so the two can't silently drift apart.
-      - name: Read app version from tauri.conf.json
-        id: app_version
-        shell: pwsh
-        run: |
-          $version = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
-          "version=$version" >> $env:GITHUB_OUTPUT
-
-      # windows-latest ships Chocolatey; Inno Setup isn't preinstalled but is a
-      # standard choco package — this is the same "fetch a well-known package
-      # on the runner" approach windows-build.yml's own comment describes for
-      # why nothing extra is normally needed (this is the one real exception).
-      - name: Install Inno Setup
-        run: choco install innosetup --no-progress -y
-
-      - name: Build installer (Inno Setup)
-        run: iscc /DMyAppVersion=${{ steps.app_version.outputs.version }} installer\vocalis.iss
-
-      # Not a full unattended run of the real product (no window/display
-      # needed, matching this workflow's own "cargo test" step above) — just
-      # proof the installer Inno Setup produced actually installs a real file
-      # to a real path and the uninstaller actually removes it, using Inno
-      # Setup's own documented silent-install switches
-      # (https://jrsoftware.org/ishelp/topic_setupcmdline.htm). `unins000.exe`
-      # is known to re-spawn a copy of itself and return before that copy
-      # finishes (see its own Inno Setup docs) — polling for the file's
-      # removal rather than trusting `-Wait` to mean "done" avoids a flaky
-      # false failure here.
-      - name: Silently test-install the built installer
-        shell: pwsh
-        run: |
-          $setup = (Get-ChildItem "installer\Output\*.exe" | Select-Object -First 1).FullName
-          $testDir = "C:\VocalisInstallTest"
-          Write-Host "Installing $setup -> $testDir"
-          Start-Process -FilePath $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$testDir" -Wait
-          if (!(Test-Path "$testDir\Vocalis.exe")) { throw "Vocalis.exe missing after a silent install — installer did not actually install the app" }
-          if (!(Test-Path "$testDir\unins000.exe")) { throw "no uninstaller after a silent install" }
-          Write-Host "Real silent install OK: $testDir\Vocalis.exe and its uninstaller both present"
-
-      - name: Silently uninstall and verify real removal
-        shell: pwsh
-        run: |
-          $testDir = "C:\VocalisInstallTest"
-          Start-Process -FilePath "$testDir\unins000.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
-          $deadline = (Get-Date).AddSeconds(30)
-          while ((Test-Path "$testDir\Vocalis.exe") -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
-          if (Test-Path "$testDir\Vocalis.exe") { throw "Vocalis.exe still present 30s after a silent uninstall" }
-          Write-Host "Real silent uninstall OK: Vocalis.exe actually removed"
-
-      - name: Upload Vocalis installer
+      - name: Upload the unsigned NSIS installer
         uses: actions/upload-artifact@v4
         with:
-          name: vocalis-windows-setup
-          path: tauri-app/installer/Output/*.exe
+          name: tauri-app-windows-installer
+          path: tauri-app/src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error

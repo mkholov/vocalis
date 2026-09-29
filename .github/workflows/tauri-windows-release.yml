@@ -1,0 +1,136 @@
+name: Tauri app (Windows release)
+
+# Builds and publishes a real GitHub Release for tauri-app/ on a version tag push (vX.Y.Z): the real,
+# signed NSIS installer (tauri.conf.json: installMode "perMachine" — Program Files, the same one
+# tauri-windows-build.yml already builds unsigned on every push, just now actually signed and published
+# somewhere a school can download it from) plus the update manifest (latest.json)
+# tauri-plugin-updater's real endpoint (tauri.conf.json: plugins.updater.endpoints) polls — see
+# src/lib/useUpdater.ts for the client side of this.
+#
+# A separate workflow file rather than a conditional job tacked onto tauri-windows-build.yml: GitHub's
+# push-event `paths` filter is evaluated against the diff of the pushed commit, which is unreliable for a
+# tag pointing at a commit whose own last real change might be several commits back — a release must never
+# be silently skipped over a path-filter quirk, so this workflow has no `paths` filter and no `branches`
+# filter, only `tags`.
+#
+# GitHub Releases (not a dedicated update server) is a deliberate choice, not an assumption: this project's
+# CI already lives entirely on GitHub Actions, the repo is public, Releases are free, permanent (unlike
+# workflow-run artifacts, which expire), and give a stable, versioned download URL
+# (`.../releases/latest/download/latest.json`) without standing up and maintaining anything new — a
+# separate update server would be pure added operational burden for a project this size.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re-)publish a release for, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: tauri-app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Install Rust (stable, MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build output
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "tauri-app/src-tauri -> target"
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tauri-app/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      # Fails loudly rather than silently publishing a release under the wrong version: the tag is what a
+      # school's download link points to, tauri.conf.json's `version` is what the running app and every
+      # update manifest actually compare against — they must always agree, or an update could announce
+      # itself as "available" forever (or never) depending on which way they drifted.
+      - name: Verify the tag matches tauri.conf.json's version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          $confVersion = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $expectedTag = "v$confVersion"
+          if ($tag -ne $expectedTag) {
+            throw "tag '$tag' does not match tauri.conf.json's version '$confVersion' (expected tag '$expectedTag') — bump tauri.conf.json's version and re-tag before releasing"
+          }
+          "version=$confVersion" >> $env:GITHUB_ENV
+          "tag=$tag" >> $env:GITHUB_ENV
+
+      # The real private signing key never touches the repo — it exists only as a GitHub Actions secret
+      # (added by hand in the repo's own Settings -> Secrets, see this task's own report for exactly what
+      # to add) and briefly in this job's environment while the Tauri CLI's bundler uses it to produce a
+      # real .sig alongside the real .exe. tauri-windows-build.yml's own equivalent build step explicitly
+      # does *not* set these — see its own comment — so this secret is only ever live during an actual
+      # release, never on a routine push/PR build.
+      - name: npm run tauri build (signed release build)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri build
+
+      - name: Locate the real signed NSIS installer
+        id: artifact
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem "src-tauri\target\release\bundle\nsis\*.exe" | Select-Object -First 1
+          $sig = Get-ChildItem "src-tauri\target\release\bundle\nsis\*.exe.sig" | Select-Object -First 1
+          if (!$exe -or !$sig) { throw "expected a real signed .exe and .exe.sig under bundle\nsis — is createUpdaterArtifacts still enabled in tauri.conf.json, and did the signing secrets actually get used?" }
+          "exePath=$($exe.FullName)" >> $env:GITHUB_OUTPUT
+          "exeName=$($exe.Name)" >> $env:GITHUB_OUTPUT
+          "sigPath=$($sig.FullName)" >> $env:GITHUB_OUTPUT
+
+      # The exact JSON shape tauri-plugin-updater's client expects (see src/lib/useUpdater.ts and
+      # tauri.conf.json's own `plugins.updater.endpoints`) — version/notes/pub_date plus one signed download
+      # URL per platform. `signature` is the real signed .sig file's own content, verbatim (that file's
+      # first line — "untrusted comment: ..." — is expected as part of it, not stripped).
+      - name: Build the update manifest (latest.json)
+        shell: pwsh
+        run: |
+          $signature = (Get-Content "${{ steps.artifact.outputs.sigPath }}" -Raw).Trim()
+          $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+          $downloadUrl = "https://github.com/${{ github.repository }}/releases/download/$env:tag/${{ steps.artifact.outputs.exeName }}"
+          $manifest = [ordered]@{
+            version   = $env:version
+            notes     = "Vocalis $env:version — https://github.com/${{ github.repository }}/releases/tag/$env:tag"
+            pub_date  = $pubDate
+            platforms = [ordered]@{
+              "windows-x86_64" = [ordered]@{ signature = $signature; url = $downloadUrl }
+            }
+          }
+          $manifest | ConvertTo-Json -Depth 5 | Set-Content -Path "latest.json" -Encoding utf8NoBOM
+          Get-Content latest.json
+
+      # `gh` (GitHub's own CLI) ships preinstalled on every GitHub-hosted runner and is already
+      # authenticated via `GH_TOKEN` here — no third-party release-publishing Action needed for this.
+      # Uploads three files: the real installer a school actually runs, its detached .sig (so the signature
+      # can be inspected/verified independently of latest.json), and latest.json itself (what the real
+      # updater endpoint — `.../releases/latest/download/latest.json` — resolves to).
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release create "$env:tag" "${{ steps.artifact.outputs.exePath }}" "${{ steps.artifact.outputs.sigPath }}" "latest.json" --title "Vocalis $env:version" --notes "Автоматически собрано и подписано в CI. Школа скачивает один файл: ${{ steps.artifact.outputs.exeName }}." --repo "${{ github.repository }}"

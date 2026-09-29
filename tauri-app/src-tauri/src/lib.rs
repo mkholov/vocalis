@@ -19,6 +19,12 @@ pub fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::App<R>
     builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // Auto-update (see src/lib/useUpdater.ts on the frontend side): the plugin's own registered
+        // commands (check/download/install) are called directly from there — no custom Rust wrapper
+        // command needed, same as how tauri-plugin-dialog is used directly above. `pubkey`/`endpoints` live
+        // in tauri.conf.json's `plugins.updater`, not here — nothing else to configure at build_app time.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(commands::teacher_session::TeacherSessionState::default())
         .manage(commands::student_mic::MicMeterState::default())
         .manage(commands::screen_demo::ScreenDemoState::default())
