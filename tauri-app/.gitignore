@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Inno Setup's own build output (installer/vocalis.iss's `OutputDir=Output`) — the
+# built .exe is a CI artifact (see .github/workflows/tauri-windows-build.yml), not
+# something to commit.
+installer/Output
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
