@@ -97,8 +97,17 @@ jobs:
       # tauri-windows-release.yml), so this override turns updater-artifact
       # creation back off just for this job: it only needs to prove the app
       # still builds and bundles, not produce something installable/shippable.
+      #
+      # `--config` takes a path here, not an inline JSON string: an earlier
+      # version tried `--config "{\"bundle\":...}"`, which needs *shell*
+      # escaping for the embedded quotes, and this step's default shell on a
+      # Windows runner is `pwsh`, not bash — the backslash-escaped quotes
+      # never reached `tauri build` as valid JSON, so the step just failed on
+      # argument/JSON parsing before doing anything real. A path (see
+      # `src-tauri/tauri.build-only.conf.json`) sidesteps shell quoting
+      # entirely — same override, portable to any shell.
       - name: npm run tauri build (unsigned, build/test only)
-        run: npm run tauri build -- --config "{\"bundle\":{\"createUpdaterArtifacts\":false}}"
+        run: npm run tauri build -- --config src-tauri/tauri.build-only.conf.json
 
       - name: Upload the unsigned NSIS installer
         uses: actions/upload-artifact@v4
