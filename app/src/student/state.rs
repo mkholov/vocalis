@@ -70,6 +70,12 @@ pub struct SharedState {
     pub connected_teacher: Option<String>,
     pub teacher_addr: Option<IpAddr>,
     pub connecting: bool,
+    /// The class roster this connection's `Welcome` carried (`ServerToClient::Welcome::roster`) — lets a
+    /// student pick themselves from a real list instead of typing a name freehand. Empty until a real
+    /// `Welcome` arrives (see `net::connect_to_teacher`), and also empty if the teacher hasn't entered a
+    /// roster for this class at all — both look the same to a caller, which is fine: either way there's
+    /// nothing to pick from, and typing a name is the only option.
+    pub roster: Vec<String>,
     pub locked_message: Option<String>,
     /// Set alongside `locked_message` when the current lock is test mode —
     /// drives the focus-loss monitoring/resistance loop in `StudentApp::update`.

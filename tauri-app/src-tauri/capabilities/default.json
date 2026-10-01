@@ -48,6 +48,7 @@
     "allow-delete-recording",
     "allow-read-reference-recording",
     "allow-send-recording-to-teacher",
+    "allow-fetch-class-roster",
     "allow-connect-student-session",
     "allow-disconnect-student-session",
     "allow-set-hand-raised",

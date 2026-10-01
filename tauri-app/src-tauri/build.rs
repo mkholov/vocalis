@@ -44,6 +44,7 @@ fn main() {
             "delete_recording",
             "read_reference_recording",
             "send_recording_to_teacher",
+            "fetch_class_roster",
             "connect_student_session",
             "disconnect_student_session",
             "set_hand_raised",

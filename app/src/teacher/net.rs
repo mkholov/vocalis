@@ -69,6 +69,7 @@ async fn handle_student(
     // this freshly generated salt — see `crypto`'s module doc comment.
     let salt = crypto::generate_salt();
     let session_key = crypto::derive_key(&pin, &salt);
+    let roster: Vec<String> = state.lock().unwrap().roster.iter().map(|r| r.full_name.clone()).collect();
 
     write_message(
         &mut write_half,
@@ -76,9 +77,20 @@ async fn handle_student(
             student_id,
             teacher_name: teacher_name.to_string(),
             salt,
+            roster,
         },
     )
     .await?;
+
+    // A pure "give me the roster" probe (see the Tauri bridge's `fetch_class_roster`, which connects with
+    // an empty name purely to read `Welcome.roster` back before the student has picked who they are) —
+    // not a real student joining, so nothing below this point runs for one: no seat, no DB row, no
+    // roster-mismatch chat note, no entry in the live roster panel. The teacher never sees this happen,
+    // and the real UI (egui and Tauri alike) never lets a real connect through with an empty name anyway
+    // (see e.g. `student::app`'s own `name_ready` gate), so this can't collide with a real student.
+    if name.trim().is_empty() {
+        return Ok(());
+    }
 
     {
         let mut guard = state.lock().unwrap();

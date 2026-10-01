@@ -156,6 +156,13 @@ pub enum ServerToClient {
         /// control channel and every UDP audio port tied to this student — is
         /// encrypted under that key.
         salt: crate::Salt,
+        /// The class roster's full names, exactly as the teacher entered them — lets a student pick
+        /// themselves from a list instead of typing a name freehand (a typo, a different capitalization,
+        /// or a shortened name otherwise fragments one real person's history across several unrelated
+        /// rows). Sent on every real `Welcome`, not just a dedicated request, since it was already sitting
+        /// in memory and costs nothing extra to include; a client that doesn't care (the egui app) just
+        /// never reads this field. Empty if the teacher hasn't entered a roster for this class yet.
+        roster: Vec<String>,
     },
     /// Sent instead of `Welcome` when `Hello.pin` didn't match the lesson PIN; the
     /// control connection is closed by the teacher right after.

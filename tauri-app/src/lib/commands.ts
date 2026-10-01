@@ -231,6 +231,16 @@ export function stopOwnScreenDemo(): Promise<void> {
   return invoke("stop_own_screen_demo");
 }
 
+/** Fetches the real class roster for a PIN, over a real but disposable probe connection to the teacher
+ * (see `commands/student_session.rs`'s `fetch_class_roster` for exactly how — reuses the same Hello/Welcome
+ * handshake with a reserved empty name, which the teacher-side handler treats as "just give me the
+ * roster", never a real join: no DB row, no seat, nothing the teacher sees). Lets the student pick
+ * themselves from a real list instead of typing a name freehand. Resolves to `[]` (not an error) if the
+ * teacher hasn't entered a roster for this class — the caller falls back to free text either way. */
+export function fetchClassRoster(teacherIp: string, controlPort: number, pin: string): Promise<string[]> {
+  return invoke<string[]>("fetch_class_roster", { teacherIp, controlPort, pin });
+}
+
 export interface StudentSessionInfo {
   teacherName: string;
 }

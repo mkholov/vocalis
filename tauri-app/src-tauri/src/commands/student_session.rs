@@ -245,6 +245,60 @@ fn run_outbound_mic_thread(
     drop(capture); // explicit: dies on this same thread, where it was created
 }
 
+/// Fetches the real class roster for a PIN, over a real (but disposable) connection to the teacher —
+/// lets the student pick who they are from a list instead of typing a name freehand, before the real
+/// connection in `connect_student_session` below ever happens.
+///
+/// Reuses `student::net::connect_to_teacher` unchanged, with one deliberate twist: it connects with an
+/// *empty* name. `teacher::net::handle_student` (the shared, protected teacher-side handler) treats that
+/// as a pure "give me the roster" probe — sends back `Welcome` (now carrying `roster`, same as any real
+/// connection) and then returns immediately, registering nothing: no seat, no DB row, no roster-mismatch
+/// chat note, no entry the teacher's own live roster panel shows. The teacher never sees this happen. A
+/// real connect can never accidentally take this path — both the egui app and this Tauri console already
+/// refuse to submit an empty name — so this reserved sentinel can't collide with a real student.
+///
+/// Not polled via `connected_teacher` (what `connect_student_session` below watches for) on purpose: the
+/// teacher closes the probe's connection right after sending `Welcome`, and `connect_to_teacher`'s own
+/// cleanup (its receive loop exiting) resets `connected_teacher` back to `None` again — fast enough that a
+/// poll can easily land after that reset without ever observing the brief `Some`. Polling the *task's own
+/// completion* instead has no such race: `roster` is set inside the handshake, well before the function
+/// can return and the task can finish, and (unlike `connected_teacher`) nothing ever resets it back — so
+/// it's safe to read once the short-lived probe task is done, success or (expected) disconnect alike.
+#[tauri::command]
+pub fn fetch_class_roster(teacher_ip: String, control_port: u16, pin: String) -> Result<Vec<String>, String> {
+    let ip: IpAddr = teacher_ip.parse().map_err(|_| format!("invalid teacher IP: {teacher_ip}"))?;
+    let addr = SocketAddr::new(ip, control_port);
+    let probe_state: state::AppState = Arc::new(Mutex::new(state::SharedState::default()));
+
+    let connect_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let probe_task = {
+        let probe_state = probe_state.clone();
+        let connect_error = connect_error.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = net::connect_to_teacher(probe_state, addr, String::new(), pin).await {
+                *connect_error.lock().unwrap() = Some(e.to_string());
+            }
+        })
+    };
+
+    let deadline = Instant::now() + CONNECT_TIMEOUT;
+    loop {
+        if probe_task.inner().is_finished() {
+            break;
+        }
+        if Instant::now() > deadline {
+            probe_task.abort();
+            return Err("не удалось получить список класса (таймаут)".to_string());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    if let Some(e) = connect_error.lock().unwrap().take() {
+        return Err(e);
+    }
+    let roster = probe_state.lock().unwrap().roster.clone();
+    Ok(roster)
+}
+
 /// Connects to a real teacher session over the network — same Hello/Welcome
 /// handshake, same session-key derivation, as the egui student app — then
 /// starts the always-on decoded-frame receiver (`run_screen_demo_receiver`,

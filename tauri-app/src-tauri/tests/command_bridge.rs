@@ -2360,3 +2360,134 @@ fn a_real_update_manifest_is_fetched_and_its_signature_really_verified() {
     assert_eq!(update.body.as_deref(), Some("Тестовое обновление — реальная проверка протокола"));
     assert_eq!(downloaded, TEST_ARTIFACT, "the real downloaded-and-verified bytes must match exactly what was signed");
 }
+
+/// Step 8.x: a student picks themselves from the real class roster instead of typing a name freehand.
+/// Real, two-process, two-"lesson" proof that this actually fixes the identity-fragmentation problem it's
+/// meant to: the exact same picked name, reused across two separate real teacher sessions for the same
+/// class (the same thing reconnecting on a different day would look like), accumulates as *one* person in
+/// `class_stats` — not two near-matching rows the way a freely-typed name with a stray space or different
+/// capitalization could. Also exercises the explicit "я не в списке" fallback end to end: a second student
+/// who types a name that was never on the roster still gets in (the roster check has never been a
+/// connection gate), just flagged `UnrecognizedPending`, exactly as before this feature existed.
+#[test]
+fn a_student_picks_themselves_from_the_real_roster_and_history_accumulates_under_one_identity() {
+    use std::time::Duration;
+    use tauri::Manager;
+    use tauri_app_lib::commands::{student_session, teacher_session};
+    use vocalis::teacher::db;
+    use vocalis::teacher::state::RosterStatus;
+
+    let _db = ScratchDb::new("roster_pick");
+    let class_name = "E2E класс (ростер)";
+
+    // Seed a real roster for this class *before* the lesson starts (same table/columns the egui app's own
+    // roster screen writes to) — `start_teacher_session` loads the roster into memory once, at session
+    // start, exactly like it already does for `materials`/`history`; it never re-reads the DB afterward,
+    // so the class row (and its roster) must exist first for this real session to actually pick it up.
+    {
+        let conn = db::open().expect("open the real (scratch) db");
+        let class_id = db::insert_class(&conn, class_name).expect("insert the class ahead of the lesson");
+        db::insert_roster_student(&conn, class_id, class_name, "Иванов Пётр Сергеевич").expect("insert roster row 1");
+        db::insert_roster_student(&conn, class_id, class_name, "Смирнова Анна").expect("insert roster row 2");
+    }
+
+    // Lesson 1: start the real session (reuses the class row just created, per `start_teacher_session`'s
+    // own "existing class" lookup-by-name), then fetch the roster back over a real, disposable probe.
+    let teacher_app1 = test_app();
+    let teacher_state1 = teacher_app1.state::<teacher_session::TeacherSessionState>();
+    let session1 = teacher_session::start_teacher_session(teacher_app1.handle().clone(), teacher_state1.clone(), class_name.to_string())
+        .expect("start_teacher_session should succeed");
+
+    let roster = student_session::fetch_class_roster("127.0.0.1".to_string(), lingua_common::CONTROL_PORT, session1.pin.clone())
+        .expect("fetch_class_roster should succeed against a real running control server");
+    assert_eq!(roster, vec!["Иванов Пётр Сергеевич".to_string(), "Смирнова Анна".to_string()], "the real roster, in insertion order");
+
+    // The probe must be completely invisible to the teacher — no live student, nothing registered.
+    assert!(
+        teacher_state1.0.lock().unwrap().as_ref().unwrap().app_state.lock().unwrap().students.is_empty(),
+        "a pure roster probe (empty-name Hello) must never register as a live student"
+    );
+
+    // The real student connects, picking their own name from that real list.
+    let student_app1 = test_app();
+    let student_state1 = student_app1.state::<student_session::StudentSessionState>();
+    student_session::connect_student_session(
+        student_app1.handle().clone(),
+        student_state1.clone(),
+        "127.0.0.1".to_string(),
+        lingua_common::CONTROL_PORT,
+        roster[0].clone(),
+        session1.pin.clone(),
+    )
+    .expect("connect_student_session should succeed with the picked roster name");
+
+    // A second student who is *not* on the roster — the explicit manual-entry fallback — must still get
+    // in (roster is soft record-keeping, never a connection gate), just flagged as unrecognized.
+    let student_app_guest = test_app();
+    let student_state_guest = student_app_guest.state::<student_session::StudentSessionState>();
+    student_session::connect_student_session(
+        student_app_guest.handle().clone(),
+        student_state_guest.clone(),
+        "127.0.0.1".to_string(),
+        lingua_common::CONTROL_PORT,
+        "Новенький Ученик".to_string(),
+        session1.pin.clone(),
+    )
+    .expect("connect_student_session should succeed for a student not on the roster (fallback path)");
+
+    {
+        let guard = teacher_state1.0.lock().unwrap();
+        let app_state = guard.as_ref().unwrap().app_state.lock().unwrap();
+        let picked = app_state.students.values().find(|s| s.name == roster[0]).expect("the roster-picked student, under the exact real name");
+        assert_eq!(picked.roster_status, RosterStatus::Matched, "picked straight from the real roster — must match it exactly");
+        let guest = app_state.students.values().find(|s| s.name == "Новенький Ученик").expect("the off-roster student");
+        assert_eq!(guest.roster_status, RosterStatus::UnrecognizedPending, "never on the roster — flagged, not blocked");
+    }
+
+    student_session::disconnect_student_session(student_state1);
+    student_session::disconnect_student_session(student_state_guest);
+    teacher_session::stop_teacher_session(teacher_state1);
+    // Task abort is asynchronous (`JoinHandle::abort` just schedules cancellation) — give the runtime a
+    // moment to actually run it and drop the listener before the next real session binds the same fixed
+    // control port (same reasoning/duration as `a_stopped_lessons_pin_cannot_reach_a_later_lesson_on_the_same_machine`).
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Lesson 2 (same class, a later real session — what reconnecting on a different day looks like): the
+    // roster is unchanged (it belongs to the class, not the lesson), and the student picks the exact same
+    // name again.
+    let teacher_app2 = test_app();
+    let teacher_state2 = teacher_app2.state::<teacher_session::TeacherSessionState>();
+    let session2 = teacher_session::start_teacher_session(teacher_app2.handle().clone(), teacher_state2.clone(), class_name.to_string())
+        .expect("start_teacher_session for the second real lesson should succeed");
+
+    let roster2 = student_session::fetch_class_roster("127.0.0.1".to_string(), lingua_common::CONTROL_PORT, session2.pin.clone())
+        .expect("fetch_class_roster should still see the same real class roster in the second lesson");
+    assert_eq!(roster2, roster, "the roster belongs to the class, not the lesson — unchanged across real sessions");
+
+    let student_app2 = test_app();
+    let student_state2 = student_app2.state::<student_session::StudentSessionState>();
+    student_session::connect_student_session(
+        student_app2.handle().clone(),
+        student_state2.clone(),
+        "127.0.0.1".to_string(),
+        lingua_common::CONTROL_PORT,
+        roster2[0].clone(),
+        session2.pin.clone(),
+    )
+    .expect("connect_student_session should succeed in the second real session");
+    student_session::disconnect_student_session(student_state2);
+    teacher_session::stop_teacher_session(teacher_state2);
+
+    // The real payoff: `class_stats` must see *one* accumulated person across both real sessions, not two
+    // near-matching rows — exactly what picking from the roster (instead of free-typing a name that could
+    // drift by a space or a capital letter between the two "days") is for.
+    let stats = invoke("class_stats", serde_json::json!({"className": class_name})).expect("class_stats should succeed");
+    assert_eq!(stats["lessons"], 2, "two real lessons for this class");
+    let students = stats["students"].as_array().expect("a students array");
+    let picked_student = students.iter().find(|s| s["name"] == roster[0]).expect("the roster-picked student's accumulated history");
+    assert_eq!(picked_student["lessons"], 2, "attended both real sessions under the one stable, roster-picked name");
+    assert!(
+        !students.iter().any(|s| s["name"] != roster[0] && s["name"] != "Новенький Ученик"),
+        "no stray fragmented rows — only the two real identities that actually connected, got: {students:?}"
+    );
+}

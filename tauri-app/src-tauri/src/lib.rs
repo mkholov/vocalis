@@ -69,6 +69,7 @@ pub fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::App<R>
             commands::student_recording::delete_recording,
             commands::student_recording::read_reference_recording,
             commands::student_recording::send_recording_to_teacher,
+            commands::student_session::fetch_class_roster,
             commands::student_session::connect_student_session,
             commands::student_session::disconnect_student_session,
             commands::student_session::set_hand_raised,

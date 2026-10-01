@@ -87,8 +87,12 @@ impl Drop for Intercom {
 pub struct TeacherSession {
     // Read directly by `start_own_screen_demo`/`stop_own_screen_demo` (the
     // student roster, `screen_demo` field) in addition to being cloned into
-    // the spawned tasks below.
-    app_state: state::AppState,
+    // the spawned tasks below. `pub` (not private) for the same reason
+    // `StudentSession.app_state` is: the real E2E test in `tests/command_bridge.rs` needs to read a real
+    // connected student's `name`/`roster_status` directly — there's no event exposing `roster_status` to
+    // the frontend yet, so there's nothing else to observe this through (see its own doc comment).
+    #[allow(dead_code)]
+    pub app_state: state::AppState,
     pin: String,
     class_name: String,
     tasks: Vec<tauri::async_runtime::JoinHandle<()>>,
@@ -222,9 +226,15 @@ pub fn start_teacher_session<R: tauri::Runtime>(
     let lesson_row_id = db::insert_lesson(&conn, class_id, &class_name).map_err(|e| e.to_string())?;
     let history = db::load_history_summary(&conn, class_id).unwrap_or_default();
     // Real, persisted library (step 7.5) — loaded the same way `history`
-    // above is, not left empty like the still-unbuilt assignments/roster
-    // tabs below.
+    // above is, not left empty like the still-unbuilt assignments tab below.
     let materials = db::list_materials(&conn).unwrap_or_default();
+    // Real class roster (step 8.x — connecting students pick themselves from this instead of typing a
+    // name; see `student_session.rs`'s `fetch_class_roster`). Previously always `Vec::new()` here — the
+    // comment above it used to say "still-unbuilt roster tab", which was true for the UI but meant the
+    // *in-memory* roster this session actually checks connections against was always empty regardless of
+    // what a teacher had entered through the egui app or any future Tauri roster screen. Loaded the same
+    // way `materials`/`history` are.
+    let roster = db::list_roster(&conn, class_id).unwrap_or_default();
     let pin = state::generate_pin();
 
     let app_state: state::AppState = Arc::new(Mutex::new(state::SharedState::new(
@@ -237,7 +247,7 @@ pub fn start_teacher_session<R: tauri::Runtime>(
         history,
         materials,
         Vec::new(),
-        Vec::new(),
+        roster,
     )));
 
     let mut tasks = Vec::new();

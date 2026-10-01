@@ -86,8 +86,8 @@ pub async fn connect_to_teacher(
     )
     .await?;
     let welcome: ServerToClient = read_message(&mut read_half).await?;
-    let (teacher_name, salt) = match welcome {
-        ServerToClient::Welcome { teacher_name, salt, .. } => (teacher_name, salt),
+    let (teacher_name, salt, roster) = match welcome {
+        ServerToClient::Welcome { teacher_name, salt, roster, .. } => (teacher_name, salt, roster),
         ServerToClient::Rejected { reason } => anyhow::bail!(reason),
         _ => anyhow::bail!("expected Welcome as first server message"),
     };
@@ -107,6 +107,7 @@ pub async fn connect_to_teacher(
         guard.to_server = Some(tx.clone());
         guard.pin = pin;
         guard.session_key = Some(session_key);
+        guard.roster = roster;
     }
     info!("connected to teacher '{teacher_name}'");
 
