@@ -5,11 +5,23 @@ import { Button } from "./ui/Button";
 
 const RADIUS = 30;
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
-const PRESETS_MIN = [1, 5, 10, 15];
+// 1/5/15 for short activities (unchanged — a quick exercise or a listening clip is still just a few
+// minutes), 45/60/90 for a real lesson: a standard class period, an explicit 60 as a boundary check (an
+// hour is exactly where `formatTime` below switches from mm:ss to h:mm:ss — worth having as a one-tap
+// preset, not just reachable by typing), and 90 for a сдвоенный урок (a double period).
+const PRESETS_MIN = [1, 5, 15, 45, 60, 90];
+const DEFAULT_MINUTES = 45;
 
 function formatTime(totalSeconds: number) {
-  const m = Math.floor(totalSeconds / 60);
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
   const s = totalSeconds % 60;
+  // mm:ss under an hour (unchanged from before — "05:00" reads better than "0:05:00" for a short
+  // activity), h:mm:ss from an hour up — "45:00" would still technically be unambiguous at 45 minutes,
+  // but "90:00" for a double lesson reads like an error, not ninety minutes; "1:30:00" doesn't.
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
@@ -19,8 +31,8 @@ function formatTime(totalSeconds: number) {
  * state — nothing here is broadcast to students yet (that's a later step,
  * once there's a real session to broadcast it over). */
 export function LessonTimer() {
-  const [totalSeconds, setTotalSeconds] = useState(5 * 60);
-  const [remaining, setRemaining] = useState(5 * 60);
+  const [totalSeconds, setTotalSeconds] = useState(DEFAULT_MINUTES * 60);
+  const [remaining, setRemaining] = useState(DEFAULT_MINUTES * 60);
   const [running, setRunning] = useState(false);
 
   useEffect(() => {
@@ -42,6 +54,11 @@ export function LessonTimer() {
   const done = remaining === 0;
   const urgent = !done && remaining <= totalSeconds * 0.1;
   const ringColor = done ? "var(--color-status-danger)" : urgent ? "var(--color-status-warn)" : "var(--color-accent)"; // theme::DANGER / WARN / ACCENT
+  // "45:00" fits the 64px dial fine at text-sm; "1:30:00" (the h:mm:ss form `formatTime` switches to past
+  // an hour) is two characters longer and visibly overflows the ring at that size — confirmed by actually
+  // rendering it, not just estimating width. Dropping to text-[11px] for that case is enough to fit it
+  // cleanly without shrinking every other duration's (larger, more legible) label.
+  const hasHourDigit = remaining >= 3600;
 
   function setPreset(minutes: number) {
     setRunning(false);
@@ -72,7 +89,12 @@ export function LessonTimer() {
             transition={{ duration: 0.4, ease: "linear" }}
           />
         </svg>
-        <div className="absolute inset-0 flex items-center justify-center font-mono text-sm font-semibold tabular-nums">
+        <div
+          className={
+            "absolute inset-0 flex items-center justify-center font-mono font-semibold tabular-nums " +
+            (hasHourDigit ? "text-[11px]" : "text-sm")
+          }
+        >
           {formatTime(remaining)}
         </div>
       </div>
