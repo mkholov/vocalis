@@ -138,16 +138,31 @@ jobs:
           if ($udp -notmatch "Vocalis UDP 47990 47992-47998") { throw "UDP firewall rule missing after install. netsh output:`n$udp" }
           Write-Host "Real firewall rules confirmed present after a real silent install."
 
+      # NSIS's own uninstaller can't delete its own running .exe, so the standard pattern (which Tauri's
+      # bundled uninstaller follows) is to copy itself into %TEMP% and re-launch from there — the
+      # *original* process (the one `-Wait` actually waits on) exits almost immediately, well before the
+      # re-launched copy has actually finished running NSIS_HOOK_POSTUNINSTALL's netsh delete calls. A
+      # fixed sleep after `-Wait` is therefore a guess at how long that takes, not a real check; this polls
+      # the actual thing being verified (the rules genuinely gone) up to a generous deadline instead.
       - name: Silently uninstall and verify the real firewall rules were removed
         shell: pwsh
         run: |
           $uninstaller = Get-ChildItem -Path "C:\Program Files\Vocalis" -Filter "*ninstall*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $uninstaller) { throw "no uninstaller found under C:\Program Files\Vocalis" }
           Start-Process -FilePath $uninstaller.FullName -ArgumentList "/S" -Wait
-          Start-Sleep -Seconds 3
 
-          $tcp = netsh advfirewall firewall show rule name="Vocalis TCP 47991" 2>&1 | Out-String
-          if ($tcp -match "Vocalis TCP 47991") { throw "TCP firewall rule still present after uninstall. netsh output:`n$tcp" }
-          $udp = netsh advfirewall firewall show rule name="Vocalis UDP 47990 47992-47998" 2>&1 | Out-String
-          if ($udp -match "Vocalis UDP 47990 47992-47998") { throw "UDP firewall rule still present after uninstall. netsh output:`n$udp" }
+          $deadline = (Get-Date).AddSeconds(60)
+          $tcpGone = $false
+          $udpGone = $false
+          $tcp = ""
+          $udp = ""
+          while ((Get-Date) -lt $deadline -and -not ($tcpGone -and $udpGone)) {
+            $tcp = netsh advfirewall firewall show rule name="Vocalis TCP 47991" 2>&1 | Out-String
+            $tcpGone = $tcp -notmatch "Vocalis TCP 47991"
+            $udp = netsh advfirewall firewall show rule name="Vocalis UDP 47990 47992-47998" 2>&1 | Out-String
+            $udpGone = $udp -notmatch "Vocalis UDP 47990 47992-47998"
+            if (-not ($tcpGone -and $udpGone)) { Start-Sleep -Seconds 2 }
+          }
+          if (-not $tcpGone) { throw "TCP firewall rule still present 60s after a silent uninstall. netsh output:`n$tcp" }
+          if (-not $udpGone) { throw "UDP firewall rule still present 60s after a silent uninstall. netsh output:`n$udp" }
           Write-Host "Real firewall rules confirmed removed after a real silent uninstall."
