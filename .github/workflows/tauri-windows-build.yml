@@ -130,13 +130,19 @@ jobs:
           Write-Host "Installing $exe"
           Start-Process -FilePath $exe -ArgumentList "/S" -Wait
 
-          if (!(Test-Path "C:\Program Files\Vocalis")) { throw "install directory not found after a silent install" }
+          if (!(Test-Path "C:\Program Files\Vocalis")) { Write-Error "install directory not found after a silent install"; exit 1 }
 
           $tcp = netsh advfirewall firewall show rule name="Vocalis TCP 47991" 2>&1 | Out-String
-          if ($tcp -notmatch "Vocalis TCP 47991") { throw "TCP firewall rule missing after install. netsh output:`n$tcp" }
+          if ($tcp -notmatch "Vocalis TCP 47991") { Write-Error "TCP firewall rule missing after install. netsh output:`n$tcp"; exit 1 }
           $udp = netsh advfirewall firewall show rule name="Vocalis UDP 47990 47992-47998" 2>&1 | Out-String
-          if ($udp -notmatch "Vocalis UDP 47990 47992-47998") { throw "UDP firewall rule missing after install. netsh output:`n$udp" }
+          if ($udp -notmatch "Vocalis UDP 47990 47992-47998") { Write-Error "UDP firewall rule missing after install. netsh output:`n$udp"; exit 1 }
           Write-Host "Real firewall rules confirmed present after a real silent install."
+          # GitHub Actions' pwsh shell exits the step with $LASTEXITCODE if nothing else sets it, and that
+          # still holds whatever a *native* command (here, the `netsh show rule` calls above) last left it
+          # as — true even though the PowerShell-level checks above already passed. Pin the real exit code
+          # explicitly instead of leaving it to whichever netsh call happened to run last.
+          $LASTEXITCODE = 0
+          exit 0
 
       # NSIS's own uninstaller can't delete its own running .exe, so the standard pattern (which Tauri's
       # bundled uninstaller follows) is to copy itself into %TEMP% and re-launch from there — the
@@ -148,7 +154,7 @@ jobs:
         shell: pwsh
         run: |
           $uninstaller = Get-ChildItem -Path "C:\Program Files\Vocalis" -Filter "*ninstall*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $uninstaller) { throw "no uninstaller found under C:\Program Files\Vocalis" }
+          if (-not $uninstaller) { Write-Error "no uninstaller found under C:\Program Files\Vocalis"; exit 1 }
           Start-Process -FilePath $uninstaller.FullName -ArgumentList "/S" -Wait
 
           $deadline = (Get-Date).AddSeconds(60)
@@ -163,6 +169,12 @@ jobs:
             $udpGone = $udp -notmatch "Vocalis UDP 47990 47992-47998"
             if (-not ($tcpGone -and $udpGone)) { Start-Sleep -Seconds 2 }
           }
-          if (-not $tcpGone) { throw "TCP firewall rule still present 60s after a silent uninstall. netsh output:`n$tcp" }
-          if (-not $udpGone) { throw "UDP firewall rule still present 60s after a silent uninstall. netsh output:`n$udp" }
+          if (-not $tcpGone) { Write-Error "TCP firewall rule still present 60s after a silent uninstall. netsh output:`n$tcp"; exit 1 }
+          if (-not $udpGone) { Write-Error "UDP firewall rule still present 60s after a silent uninstall. netsh output:`n$udp"; exit 1 }
           Write-Host "Real firewall rules confirmed removed after a real silent uninstall."
+          # Same reasoning as the install-side step above: pin the exit code to our own verification
+          # result, not to whichever netsh invocation happened to run last (a "rule not found" netsh call —
+          # exactly the state we want here — itself exits 1, which pwsh's default wrapper would otherwise
+          # surface as a step failure despite every check above actually passing).
+          $LASTEXITCODE = 0
+          exit 0
