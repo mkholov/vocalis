@@ -1,0 +1,84 @@
+name: Diagnose flaky PIN round-trip (temporary)
+
+# Temporary, standalone diagnostic job — not part of the real build pipeline (tauri-windows-build.yml is
+# untouched by this file). Purpose: reproduce, on a real windows-latest runner, the reported flake ("Неверный
+# PIN-код урока" / timeouts on ~16 of the teacher<->student PIN round-trip tests in
+# tauri-app/src-tauri/tests/command_bridge.rs, passing again on retry) by running the same real suite many
+# times in a row and capturing every run's full --nocapture output (the [diag] markers + now-visible
+# `tracing` output — see that file's own `init_test_tracing` doc comment) as an artifact, so a real failure's
+# actual log is in hand instead of a guess. Manually triggered only; delete once the investigation is done.
+
+on:
+  # workflow_dispatch would be the natural trigger for an on-demand diagnostic job, but there's no
+  # GitHub token/`gh` auth available in this environment to fire one via the API — so this runs on push,
+  # scoped to just this file, and is re-triggered by deliberately touching it (a comment bump is enough).
+  push:
+    branches: [main]
+    paths: [".github/workflows/diag-flaky-pin-roundtrip.yml"]
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: "How many times to repeat the suite"
+        default: "15"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  repro:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: tauri-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable, MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build output
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "tauri-app/src-tauri -> target"
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tauri-app/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      # Runs the real suite N times in a row in the *same* process-per-run (fresh `cargo test` invocation
+      # each time, same compiled test binary after the first build) — keeps going past a failure so more
+      # than one data point can be collected in a single job, and every run's full output is kept, not just
+      # the first failure's.
+      - name: Repeat cargo test (Tauri command bridge) N times
+        working-directory: tauri-app/src-tauri
+        shell: pwsh
+        run: |
+          $total = [int]"${{ github.event.inputs.runs || '15' }}"
+          $failures = 0
+          for ($i = 1; $i -le $total; $i++) {
+            Write-Host "`n=== Run $i/$total ==="
+            cargo test --locked -- --test-threads=1 --nocapture 2>&1 | Tee-Object -FilePath "repro-run-$i.log"
+            if ($LASTEXITCODE -ne 0) {
+              $failures++
+              Write-Host "Run $i FAILED (exit $LASTEXITCODE)"
+            } else {
+              Write-Host "Run $i passed"
+            }
+          }
+          Write-Host "`nTotal failures: $failures / $total"
+
+      - name: Upload every run's log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repro-logs
+          path: tauri-app/src-tauri/repro-run-*.log
