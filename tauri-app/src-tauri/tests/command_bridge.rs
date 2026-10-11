@@ -2491,3 +2491,64 @@ fn a_student_picks_themselves_from_the_real_roster_and_history_accumulates_under
         "no stray fragmented rows — only the two real identities that actually connected, got: {students:?}"
     );
 }
+
+/// Real risk for a school deployment, not a hypothetical one: LAN discovery (`discover_teachers`) is a UDP
+/// broadcast, and school Wi-Fi commonly enables client/AP isolation, which makes an access point drop
+/// broadcast *and* unicast traffic between its own clients — a student on such a network would never see
+/// any teacher in the list, through no fault of this app's. This test proves the real fallback actually
+/// works end to end: a real teacher session, a real control-port lookup (the same one the manual-entry UI
+/// reads instead of hardcoding `47991`), and a real student connecting with a manually-typed IP —
+/// `discover_teachers`/`run_discovery_listener` are never called anywhere in this test, simulating exactly
+/// the scenario where LAN broadcast never reaches the student at all.
+#[test]
+fn a_student_connects_by_manually_typed_ip_without_any_discovery() {
+    use tauri::Manager;
+    use tauri_app_lib::commands::{network, student_session, teacher_session};
+
+    let _db = ScratchDb::new("manual_ip");
+
+    let teacher_app = test_app();
+    let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
+    let session = teacher_session::start_teacher_session(teacher_app.handle().clone(), teacher_state.clone(), "E2E класс (ручной IP)".to_string())
+        .expect("start_teacher_session should succeed");
+
+    // Real local-IP detection — what a teacher actually reads out to a student in this scenario. Any
+    // machine capable of running this test suite at all has a real network stack, so this should find at
+    // least the default-route guess.
+    assert!(!session.local_ips.is_empty(), "local_network_ips should find at least one real candidate IP on this machine");
+    for ip in &session.local_ips {
+        assert!(ip.parse::<std::net::Ipv4Addr>().is_ok(), "{ip:?} should be a real, parseable IPv4 address");
+    }
+
+    // The real control port, read exactly the way the manual-connect UI reads it (`commands/network.rs`'s
+    // `control_port`) — not a hardcoded guess on the frontend.
+    let port = network::control_port();
+    assert_eq!(port, lingua_common::CONTROL_PORT);
+
+    // The actual point: connect using a manually typed IP (loopback here, standing in for "an IP a teacher
+    // read out loud"), calling `connect_student_session` directly — `discover_teachers` never runs in this
+    // test at all.
+    let student_app = test_app();
+    let student_state = student_app.state::<student_session::StudentSessionState>();
+    let info = student_session::connect_student_session(
+        student_app.handle().clone(),
+        student_state.clone(),
+        "127.0.0.1".to_string(),
+        port,
+        "E2E ученик (ручной IP)".to_string(),
+        session.pin.clone(),
+    )
+    .expect("connect_student_session should succeed via a manually typed IP, with no discovery involved");
+    assert_eq!(info.teacher_name, "Tauri (тест)");
+
+    // The teacher really sees this student as a normal, fully registered connection — manual-IP entry
+    // isn't a degraded path, it's the exact same Hello/Welcome handshake as a discovered connect.
+    {
+        let guard = teacher_state.0.lock().unwrap();
+        let app_state = guard.as_ref().unwrap().app_state.lock().unwrap();
+        assert!(app_state.students.values().any(|s| s.name == "E2E ученик (ручной IP)"), "the manually-connected student should be a real, visible connection");
+    }
+
+    student_session::disconnect_student_session(student_state);
+    teacher_session::stop_teacher_session(teacher_state);
+}

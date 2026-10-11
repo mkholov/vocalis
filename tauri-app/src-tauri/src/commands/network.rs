@@ -47,3 +47,14 @@ pub async fn discover_teachers(timeout_ms: u64) -> Result<Vec<DiscoveredTeacherD
     listener.abort();
     Ok(found)
 }
+
+/// The fixed TCP control port every teacher session listens on (`lingua_common::CONTROL_PORT`) — a real
+/// discovered teacher's own `controlPort` already comes with its sighting, but the manual "ввести адрес
+/// вручную" fallback (`StudentFlow.tsx`, for when LAN broadcast discovery can't reach a student at all —
+/// e.g. school Wi-Fi with client/AP isolation) only ever has an IP to go on, never a discovery packet to
+/// read a port out of. Exposed as a real command rather than hardcoded on the frontend so there's one
+/// source of truth for it, not two that could silently drift apart.
+#[tauri::command]
+pub fn control_port() -> u16 {
+    lingua_common::CONTROL_PORT
+}

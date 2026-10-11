@@ -71,6 +71,11 @@ uuid = { version = "1", features = ["v4"] }
 # `commands/db.rs` can take a `&rusqlite::Connection` for the class rename/delete statements.
 rusqlite = "0.40"
 lingua-common = { path = "../../common" }
+# Lists this machine's real network interface IPv4 addresses (`commands/teacher_session.rs`'s
+# `local_network_ips`) — a teacher reads one out to students whose LAN discovery can't reach them (school
+# Wi-Fi with client/AP isolation silently drops the broadcast `discover_teachers` depends on). Pure Rust,
+# no system library dependency, works on all three targets this project ships for.
+if-addrs = "0.15"
 
 [dev-dependencies]
 # "test" gets `tauri::test` (MockRuntime + real IPC dispatch, no window needed) —

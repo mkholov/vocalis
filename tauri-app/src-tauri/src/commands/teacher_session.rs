@@ -151,6 +151,55 @@ pub struct TeacherSessionInfo {
     pub pin: String,
     pub control_port: u16,
     pub class_name: String,
+    /// This machine's candidate LAN IPv4 addresses — see `local_network_ips`'s own doc comment for why a
+    /// teacher needs to read one of these out at all (LAN discovery silently fails under Wi-Fi client/AP
+    /// isolation, a real school-network risk this has no way to detect from in here). First entry is the
+    /// best guess; the rest are every other real candidate, for the case that guess is wrong.
+    pub local_ips: Vec<String>,
+}
+
+/// Candidate LAN IPv4 addresses for this machine, for a teacher to read out to students whose
+/// `discover_teachers` broadcast can't reach them — the real risk this exists for is Wi-Fi client/AP
+/// isolation, common on school networks, which makes an access point drop broadcast *and* unicast traffic
+/// between its own clients entirely. Nothing in this app can detect that from inside the process (it would
+/// need another device on the same AP to test against), so a manual IP+PIN fallback is the mitigation, and
+/// this is what makes that fallback actually usable — a teacher who has to dictate an IP by hand still
+/// needs to know what it is.
+///
+/// First entry is this machine's best guess at "the one that actually reaches the LAN": the source address
+/// the OS itself would pick for a default-route socket, found via the standard trick of "connecting" a UDP
+/// socket (no packet is actually sent — UDP `connect` just records a route and asks the OS to resolve it,
+/// so this works even fully offline) and reading back `local_addr()`. The rest are every other real,
+/// non-loopback IPv4 address this machine has — Wi-Fi *and* Ethernet *and* any VPN/Docker/virtual adapter
+/// — listed because this process has no way to know which adapter is actually on the *same* LAN segment as
+/// a given student's machine, only that the first guess usually is. A teacher with more than one candidate
+/// here just reads out more than one; a student tries whichever one actually connects.
+fn local_network_ips() -> Vec<String> {
+    let mut ips = Vec::new();
+
+    if let Ok(probe) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        if probe.connect("8.8.8.8:80").is_ok() {
+            if let Ok(addr) = probe.local_addr() {
+                ips.push(addr.ip().to_string());
+            }
+        }
+    }
+
+    if let Ok(interfaces) = if_addrs::get_if_addrs() {
+        for iface in interfaces {
+            if iface.is_loopback() {
+                continue;
+            }
+            if let std::net::IpAddr::V4(v4) = iface.ip() {
+                let s = v4.to_string();
+                if !ips.contains(&s) {
+                    ips.push(s);
+                }
+            }
+        }
+    }
+
+    ips
 }
 
 #[derive(Serialize, Clone)]
@@ -206,6 +255,7 @@ pub fn start_teacher_session<R: tauri::Runtime>(
             pin: existing.pin.clone(),
             control_port: lingua_common::CONTROL_PORT,
             class_name: existing.class_name.clone(),
+            local_ips: local_network_ips(),
         });
     }
 
@@ -327,7 +377,8 @@ pub fn start_teacher_session<R: tauri::Runtime>(
         }));
     }
 
-    let info = TeacherSessionInfo { pin: pin.clone(), control_port: lingua_common::CONTROL_PORT, class_name: class_name.clone() };
+    let info =
+        TeacherSessionInfo { pin: pin.clone(), control_port: lingua_common::CONTROL_PORT, class_name: class_name.clone(), local_ips: local_network_ips() };
     *guard = Some(TeacherSession {
         app_state,
         pin,

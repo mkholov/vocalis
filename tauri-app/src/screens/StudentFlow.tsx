@@ -1,10 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowLeft, Check, Loader2, UserRound } from "lucide-react";
+import { ArrowLeft, Check, Loader2, Pencil, UserRound } from "lucide-react";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { TextField } from "../components/ui/TextField";
-import { discoverTeachers, fetchClassRoster, type DiscoveredTeacherDto } from "../lib/commands";
+import { controlPort, discoverTeachers, fetchClassRoster, type DiscoveredTeacherDto } from "../lib/commands";
+
+// A loose but real IPv4 sanity check (each octet 0-255) — not trying to also accept IPv6/hostnames here;
+// `discover_teachers`/`connect_student_session` only ever deal in IPv4 LAN addresses today (see
+// `common/protocol.rs`'s `DiscoveryAnnounce`), so a teacher reading out an IP from `IpHero` always has one
+// of these to dictate.
+const IPV4_RE = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
 
 interface Props {
   onBack: () => void;
@@ -40,6 +46,27 @@ export function StudentFlow({ onBack, onConnect }: Props) {
   const [rosterTarget, setRosterTarget] = useState<{ teacher: DiscoveredTeacherDto; pin: string; roster: string[] } | null>(null);
   const [pendingTeacherKey, setPendingTeacherKey] = useState<string | null>(null);
   const [rosterError, setRosterError] = useState<string | undefined>();
+
+  // Manual "ввести адрес учителя вручную" fallback — real risk, not a hypothetical one: LAN discovery is a
+  // UDP broadcast, and school Wi-Fi commonly enables client/AP isolation, which makes an access point drop
+  // broadcast (and unicast) traffic between its own clients entirely. When that's the case the teacher list
+  // above stays empty forever, with nothing in this app able to tell the difference between "isolation" and
+  // "nobody's started a lesson yet" — so this is offered as a real, always-visible option, not hidden
+  // behind "only once discovery has had time to fail". `cPort` is fetched once, lazily, only when the
+  // manual form is actually opened — no point asking the backend for it on every mount of this screen.
+  const [manualMode, setManualMode] = useState(false);
+  const [manualIp, setManualIp] = useState("");
+  const [cPort, setCPort] = useState<number | null>(null);
+  const manualIpTrimmed = manualIp.trim();
+  const manualIpValid = IPV4_RE.test(manualIpTrimmed);
+  const manualIpError = touched && manualMode && !manualIpValid ? "Введите IP-адрес преподавателя (например, 192.168.1.14)" : undefined;
+
+  useEffect(() => {
+    if (!manualMode || cPort !== null) return;
+    controlPort()
+      .then((p) => setCPort(p))
+      .catch(() => {}); // falls back to the disabled-button state below — "Подключиться" just never enables
+  }, [manualMode, cPort]);
 
   useEffect(() => {
     cancelled.current = false;
@@ -88,6 +115,16 @@ export function StudentFlow({ onBack, onConnect }: Props) {
     } finally {
       setPendingTeacherKey(null);
     }
+  }
+
+  // Builds a `DiscoveredTeacherDto`-shaped target out of the hand-typed IP (real control port, fetched
+  // from the backend — see `cPort`'s own doc comment above) and feeds it through the exact same
+  // `pickTeacher` flow a discovered teacher's own "Подключиться" button uses — real roster probe, real
+  // rejection-on-wrong-PIN, no separate/duplicated connect logic for this path.
+  function pickManual() {
+    setTouched(true);
+    if (!manualIpValid || cPort === null) return;
+    pickTeacher({ ip: manualIpTrimmed, controlPort: cPort, teacherName: "Преподаватель (IP указан вручную)" });
   }
 
   if (rosterTarget) {
@@ -176,6 +213,45 @@ export function StudentFlow({ onBack, onConnect }: Props) {
             )}
           </AnimatePresence>
         </div>
+
+        {!manualMode ? (
+          <button
+            type="button"
+            onClick={() => setManualMode(true)}
+            className="mt-4 inline-flex items-center gap-1.5 text-sm text-[var(--color-text-muted)] underline-offset-2 hover:text-accent-text hover:underline"
+          >
+            <Pencil size={13} />
+            Не нашли преподавателя в списке? Ввести адрес вручную
+          </button>
+        ) : (
+          <div className="mt-4 flex flex-col gap-3 rounded-xl border border-[var(--color-border-subtle)] p-4">
+            <p className="text-xs text-[var(--color-text-muted)]">
+              Преподаватель может продиктовать свой IP-адрес — он виден у него на экране рядом с PIN.
+            </p>
+            <TextField
+              label="IP-адрес преподавателя"
+              autoFocus
+              value={manualIp}
+              onChange={(e) => setManualIp(e.target.value.trim())}
+              onBlur={() => setTouched(true)}
+              error={manualIpError}
+              placeholder="192.168.1.14"
+              className="font-mono"
+            />
+            <div className="flex items-center gap-3">
+              <Button
+                className="px-3 py-1.5 text-sm"
+                disabled={!pinValid || !manualIpValid || cPort === null || Boolean(pendingTeacherKey)}
+                onClick={pickManual}
+              >
+                {pendingTeacherKey === `${manualIpTrimmed}:${cPort}` ? <Loader2 size={15} className="animate-spin" /> : "Подключиться по IP"}
+              </Button>
+              <Button variant="ghost" className="px-3 py-1.5 text-sm" onClick={() => setManualMode(false)}>
+                Отмена
+              </Button>
+            </div>
+          </div>
+        )}
 
         <div className="mt-6">
           <Button type="button" variant="ghost" onClick={onBack}>

@@ -37,6 +37,7 @@ pub fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::App<R>
             commands::db::class_stats,
             commands::audio::list_audio_devices,
             commands::network::discover_teachers,
+            commands::network::control_port,
             commands::video::capture_screen_preview,
             commands::teacher_session::start_teacher_session,
             commands::teacher_session::stop_teacher_session,

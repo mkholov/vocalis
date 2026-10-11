@@ -36,6 +36,7 @@ export interface LiveStudent extends MockStudent {
  */
 export function useLiveClassroom(className: string) {
   const [pin, setPin] = useState<string | null>(null);
+  const [localIps, setLocalIps] = useState<string[]>([]);
   const [error, setError] = useState<string | undefined>();
   const [realStudents, setRealStudents] = useState<LiveStudent[]>([]);
   const idsRef = useRef(new Map<string, number>());
@@ -49,6 +50,7 @@ export function useLiveClassroom(className: string) {
       .then((info) => {
         if (cancelled) return;
         setPin(info.pin);
+        setLocalIps(info.localIps);
         return listen<StudentLevelDto[]>("student-levels", (event) => {
           const mapped: LiveStudent[] = event.payload.map((s) => {
             let numericId = idsRef.current.get(s.id);
@@ -88,7 +90,7 @@ export function useLiveClassroom(className: string) {
     };
   }, [className]);
 
-  return { pin, error, realStudents };
+  return { pin, localIps, error, realStudents };
 }
 
 /** What `useLiveClassroom` returns — the console hands this to the class grid. */

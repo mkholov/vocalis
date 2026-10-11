@@ -16,6 +16,7 @@
     "allow-class-stats",
     "allow-list-audio-devices",
     "allow-discover-teachers",
+    "allow-control-port",
     "allow-capture-screen-preview",
     "allow-start-teacher-session",
     "allow-stop-teacher-session",

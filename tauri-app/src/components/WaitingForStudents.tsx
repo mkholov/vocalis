@@ -1,15 +1,17 @@
 import { motion } from "framer-motion";
-import { PinHero } from "./PinDisplay";
+import { IpHero, PinHero } from "./PinDisplay";
 
 interface Props {
   pin: string | null;
+  /** This machine's candidate LAN IPs — see `IpHero`'s own doc comment for why they're shown here at all. */
+  localIps: string[];
   /** Set when the session itself could not start — then "waiting for students" would be a lie. */
   error?: string;
 }
 
 /** Shown above the (empty) seat grid while nobody is connected: the lesson PIN, large, and what to do
  * with it. Not shown once a real student is in. */
-export function WaitingForStudents({ pin, error }: Props) {
+export function WaitingForStudents({ pin, localIps, error }: Props) {
   return (
     <motion.div
       layout
@@ -35,6 +37,7 @@ export function WaitingForStudents({ pin, error }: Props) {
           <p className="max-w-md text-sm text-[var(--color-text-muted)]">
             Ученик открывает Vocalis, выбирает вас в списке преподавателей и вводит этот PIN.
           </p>
+          <IpHero ips={localIps} />
         </>
       ) : (
         <div className="flex items-center gap-2 text-sm text-[var(--color-text-muted)]">

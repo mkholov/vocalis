@@ -8,7 +8,7 @@ import { LessonTimer } from "../components/LessonTimer";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { WaitingForStudents } from "../components/WaitingForStudents";
-import { PinChip } from "../components/PinDisplay";
+import { IpChip, PinChip } from "../components/PinDisplay";
 import type { MockStudent } from "../lib/mockClassroom";
 import type { LiveClassroom, LiveStudent } from "../lib/useLiveClassroom";
 import { useScreenDemo } from "../lib/useScreenDemo";
@@ -365,8 +365,10 @@ export function TeacherClassGrid({ className, live, onEnd }: Props) {
             ) : (
               <span className="flex items-center gap-2"><span className="h-2 w-2 rounded-full border border-current" />Никто не подключён</span>
             )}
-            {/* While nobody's connected the waiting banner below already shows the PIN, large. */}
+            {/* While nobody's connected the waiting banner below already shows the PIN (and the IP
+                fallback) large — this is for a late-joining student once that banner's gone. */}
             {live.pin && usingLiveData && <PinChip pin={live.pin} />}
+            {live.pin && usingLiveData && <IpChip ips={live.localIps} />}
           </p>
           {live.error && <p className="text-xs text-danger-text">Реальная сессия недоступна: {live.error}</p>}
           {broadcastError && <p className="text-xs text-danger-text">Не удалось начать показ: {broadcastError}</p>}
@@ -556,7 +558,7 @@ export function TeacherClassGrid({ className, live, onEnd }: Props) {
         </AnimatePresence>
 
         <AnimatePresence initial={false}>
-          {!usingLiveData && <WaitingForStudents key="waiting" pin={live.pin} error={live.error} />}
+          {!usingLiveData && <WaitingForStudents key="waiting" pin={live.pin} localIps={live.localIps} error={live.error} />}
         </AnimatePresence>
 
         <motion.div

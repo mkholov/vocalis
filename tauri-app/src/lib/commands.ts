@@ -145,6 +145,14 @@ export function discoverTeachers(timeoutMs: number): Promise<DiscoveredTeacherDt
   return invoke<DiscoveredTeacherDto[]>("discover_teachers", { timeoutMs });
 }
 
+/** The fixed TCP control port every teacher session listens on — for the manual "ввести адрес вручную"
+ * connect path (`StudentFlow.tsx`), which only ever has an IP typed in, never a discovery packet to read a
+ * port out of. See `commands/network.rs`'s own `control_port` for why this is a real command rather than a
+ * hardcoded `47991` here. */
+export function controlPort(): Promise<number> {
+  return invoke<number>("control_port");
+}
+
 export interface AudioDevicesDto {
   inputDevices: string[];
   outputDevices: string[];
@@ -161,6 +169,11 @@ export interface TeacherSessionInfo {
   pin: string;
   controlPort: number;
   className: string;
+  /** This machine's candidate LAN IPv4 addresses, best guess first — for a teacher to read out to a
+   * student whose LAN discovery can't reach them (school Wi-Fi with client/AP isolation is the real case
+   * this exists for). See `commands/teacher_session.rs`'s `local_network_ips`. Can be empty (no usable
+   * network interface found) — the UI should just not show an IP in that case, not pretend one exists. */
+  localIps: string[];
 }
 
 export function startTeacherSession(className: string): Promise<TeacherSessionInfo> {

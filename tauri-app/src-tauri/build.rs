@@ -12,6 +12,7 @@ fn main() {
             "class_stats",
             "list_audio_devices",
             "discover_teachers",
+            "control_port",
             "capture_screen_preview",
             "start_teacher_session",
             "stop_teacher_session",
