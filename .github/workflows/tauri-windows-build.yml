@@ -115,3 +115,39 @@ jobs:
           name: tauri-app-windows-installer
           path: tauri-app/src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
+
+      # Step 9 ("режим кабинета"): `installer-hooks.nsh` adds two Windows Firewall rules on install and
+      # removes them on uninstall (so a student's first real lesson never hits Windows' own "разрешить
+      # доступ?" prompt). Real proof this works — a real silent install, a real `netsh` lookup against the
+      # real Windows Firewall this runner has, not a read of the .nsh source and a guess. Matched on the
+      # rule's own name *appearing in* `netsh`'s real output, not on its exit code — that code's "not
+      # found" semantics aren't reliably documented across Windows versions, but the rule's name only ever
+      # appears in the output if `show rule` actually found and printed it.
+      - name: Silently install and verify the real firewall rules were added
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem "src-tauri\target\release\bundle\nsis\*.exe" | Select-Object -First 1).FullName
+          Write-Host "Installing $exe"
+          Start-Process -FilePath $exe -ArgumentList "/S" -Wait
+
+          if (!(Test-Path "C:\Program Files\Vocalis")) { throw "install directory not found after a silent install" }
+
+          $tcp = netsh advfirewall firewall show rule name="Vocalis TCP 47991" 2>&1 | Out-String
+          if ($tcp -notmatch "Vocalis TCP 47991") { throw "TCP firewall rule missing after install. netsh output:`n$tcp" }
+          $udp = netsh advfirewall firewall show rule name="Vocalis UDP 47990 47992-47998" 2>&1 | Out-String
+          if ($udp -notmatch "Vocalis UDP 47990 47992-47998") { throw "UDP firewall rule missing after install. netsh output:`n$udp" }
+          Write-Host "Real firewall rules confirmed present after a real silent install."
+
+      - name: Silently uninstall and verify the real firewall rules were removed
+        shell: pwsh
+        run: |
+          $uninstaller = Get-ChildItem -Path "C:\Program Files\Vocalis" -Filter "*ninstall*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $uninstaller) { throw "no uninstaller found under C:\Program Files\Vocalis" }
+          Start-Process -FilePath $uninstaller.FullName -ArgumentList "/S" -Wait
+          Start-Sleep -Seconds 3
+
+          $tcp = netsh advfirewall firewall show rule name="Vocalis TCP 47991" 2>&1 | Out-String
+          if ($tcp -match "Vocalis TCP 47991") { throw "TCP firewall rule still present after uninstall. netsh output:`n$tcp" }
+          $udp = netsh advfirewall firewall show rule name="Vocalis UDP 47990 47992-47998" 2>&1 | Out-String
+          if ($udp -match "Vocalis UDP 47990 47992-47998") { throw "UDP firewall rule still present after uninstall. netsh output:`n$udp" }
+          Write-Host "Real firewall rules confirmed removed after a real silent uninstall."

@@ -76,6 +76,18 @@ lingua-common = { path = "../../common" }
 # Wi-Fi with client/AP isolation silently drops the broadcast `discover_teachers` depends on). Pure Rust,
 # no system library dependency, works on all three targets this project ships for.
 if-addrs = "0.15"
+# "Режим кабинета" (`device_role.rs`): a pinned teacher/student role for a school lab machine, set via a
+# real `--set-role=...` CLI mode handled in `main.rs` *before* Tauri/the webview start. `rfd` (already in
+# the dependency tree via `vocalis`'s own egui file picker, just not yet a direct dependency of this crate)
+# gives that CLI mode a real native dialog for success/failure feedback — this exe is windows_subsystem =
+# "windows" in release builds, so plain console output wouldn't reliably reach whoever ran the command.
+rfd = "0.15"
+# Registers/unregisters the app in HKEY_LOCAL_MACHINE's Run key (`WindowsEnableMode::System` — applies to
+# every Windows account on the machine, not just whichever one was logged in when `--set-role=student`
+# ran) so a student lab machine's PIN screen is already up by the time anyone logs in. Writing HKLM
+# requires the same admin elevation `--set-role` already needs to touch its own Program-Files-installed
+# role file, so this can't be triggered by a non-admin account either.
+auto-launch = "0.6"
 
 [dev-dependencies]
 # "test" gets `tauri::test` (MockRuntime + real IPC dispatch, no window needed) —

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AnimatePresence } from "framer-motion";
 import { RolePicker } from "./screens/RolePicker";
 import { TeacherFlow } from "./screens/TeacherFlow";
@@ -6,9 +6,9 @@ import { StudentFlow } from "./screens/StudentFlow";
 import { TeacherConsole } from "./screens/TeacherConsole";
 import { StudentConsole } from "./screens/StudentConsole";
 import { UpdateBanner } from "./components/UpdateBanner";
-import type { DiscoveredTeacherDto } from "./lib/commands";
+import { getDeviceRole, type DiscoveredTeacherDto } from "./lib/commands";
 
-type Role = "picker" | "teacher" | "student" | "teacherConsole" | "studentConsole";
+type Role = "loading" | "picker" | "teacher" | "student" | "teacherConsole" | "studentConsole";
 
 // Steps 3-7 of the Tauri migration (vocalis_roadmap.md, section 8): auth/
 // connect for both roles (step 3), then the teacher console (steps 4-5) or
@@ -19,11 +19,37 @@ type Role = "picker" | "teacher" | "student" | "teacherConsole" | "studentConsol
 // `connect_student_session` dial happens once `StudentConsole` mounts, using
 // the teacher/pin this component threads through below.
 function App() {
-  const [role, setRole] = useState<Role>("picker");
+  const [role, setRole] = useState<Role>("loading");
+  // "Режим кабинета" (step 9): once set, every "go back to the start" action below targets this instead of
+  // the generic picker — a student lab machine's "Отключиться"/"Назад" must never be able to land on
+  // "Учитель/Ученик" at all, not even transiently, or a curious kid could tap the wrong one. `null` means
+  // "not pinned" (today's behavior: the picker is the real home screen). See `lib/commands.ts`'s
+  // `getDeviceRole` and `src-tauri/src/device_role.rs` for how this actually gets set — never from in here.
+  const [pinnedRole, setPinnedRole] = useState<"teacher" | "student" | null>(null);
   const [className, setClassName] = useState("");
   const [studentName, setStudentName] = useState("");
   const [connectedTeacher, setConnectedTeacher] = useState<DiscoveredTeacherDto | null>(null);
   const [pin, setPin] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    getDeviceRole()
+      .then((pinned) => {
+        if (cancelled) return;
+        setPinnedRole(pinned);
+        setRole(pinned ?? "picker");
+      })
+      .catch(() => {
+        if (!cancelled) setRole("picker"); // couldn't read the pin — same safe fallback as "not pinned"
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Where every "start over" action returns to — the pinned role's own flow if this machine has one,
+  // otherwise the real picker, exactly like before "режим кабинета" existed.
+  const homeRole: Role = pinnedRole ?? "picker";
 
   // `UpdateBanner` is mounted unconditionally below, alongside whichever screen is active — a real update
   // (rare, and only ever real: `useUpdater`'s startup check either finds one or stays silent) matters no
@@ -32,7 +58,7 @@ function App() {
     return (
       <>
         <UpdateBanner />
-        <TeacherConsole className={className} onEnd={() => setRole("picker")} />
+        <TeacherConsole className={className} onEnd={() => setRole(homeRole)} />
       </>
     );
   }
@@ -45,10 +71,18 @@ function App() {
           teacherIp={connectedTeacher.ip}
           controlPort={connectedTeacher.controlPort}
           pin={pin}
-          onDisconnect={() => setRole("picker")}
+          onDisconnect={() => setRole(homeRole)}
         />
       </>
     );
+  }
+
+  // Briefly shown only while `getDeviceRole` is still in flight — real, not simulated: a pinned machine
+  // must never flash the picker before snapping to its real role. Short enough in practice (one local IPC
+  // round trip, no network) that this is barely visible, but it's still the honest "don't know yet" state
+  // rather than guessing "picker" and possibly flipping away from it a frame later.
+  if (role === "loading") {
+    return <div className="h-screen w-screen bg-[var(--color-app)]" />;
   }
 
   // The card hangs from a fixed height (`pt-[14vh]`) instead of being centred, so the heading stays put as a
@@ -65,7 +99,7 @@ function App() {
           {role === "teacher" && (
             <TeacherFlow
               key="teacher"
-              onBack={() => setRole("picker")}
+              onBack={() => setRole(homeRole)}
               onStart={(name) => {
                 setClassName(name);
                 setRole("teacherConsole");
@@ -75,7 +109,7 @@ function App() {
           {role === "student" && (
             <StudentFlow
               key="student"
-              onBack={() => setRole("picker")}
+              onBack={() => setRole(homeRole)}
               onConnect={(name, teacher, pinCode) => {
                 setStudentName(name);
                 setConnectedTeacher(teacher);

@@ -10,6 +10,7 @@ fn main() {
             "rename_class",
             "delete_class",
             "class_stats",
+            "get_device_role",
             "list_audio_devices",
             "discover_teachers",
             "control_port",

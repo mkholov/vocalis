@@ -6,6 +6,7 @@
 
 pub mod audio;
 pub mod db;
+pub mod device_role;
 pub mod network;
 pub mod screen_demo;
 pub mod screen_frame;

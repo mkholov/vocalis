@@ -2552,3 +2552,84 @@ fn a_student_connects_by_manually_typed_ip_without_any_discovery() {
     student_session::disconnect_student_session(student_state);
     teacher_session::stop_teacher_session(teacher_state);
 }
+
+/// Step 9 ("режим кабинета"): a lab machine's whole point is the next class can just sit down and start —
+/// real proof, not an assumption, that once a lesson ends the *backend* side of "the student screen goes
+/// back to the PIN entry and a fresh connect to the next lesson works" is actually sound. The React side
+/// (`StudentConsole.tsx`'s own auto-return effect, `useStudentSession`'s cleanup calling
+/// `disconnect_student_session`) is a thin, unconditional wrapper around exactly these same two real
+/// commands — this test exercises the one part that could actually fail silently: whether the backend
+/// really tears down cleanly enough for the *next* real connect (different PIN, same or different class)
+/// to succeed, not just whether the first disconnect notice arrives.
+#[test]
+fn after_a_real_teacher_stop_the_student_can_really_reconnect_to_a_fresh_lesson() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use tauri::{Listener, Manager};
+    use tauri_app_lib::commands::{student_session, teacher_session};
+
+    let _db = ScratchDb::new("reconnect_after_stop");
+    let class_name = "E2E класс (кабинет)";
+
+    // Lesson 1: connect for real.
+    let teacher_app1 = test_app();
+    let teacher_state1 = teacher_app1.state::<teacher_session::TeacherSessionState>();
+    let session1 = teacher_session::start_teacher_session(teacher_app1.handle().clone(), teacher_state1.clone(), class_name.to_string())
+        .expect("start_teacher_session should succeed");
+
+    let student_app = test_app();
+    let student_state = student_app.state::<student_session::StudentSessionState>();
+    student_session::connect_student_session(
+        student_app.handle().clone(),
+        student_state.clone(),
+        "127.0.0.1".to_string(),
+        lingua_common::CONTROL_PORT,
+        "E2E ученик (кабинет)".to_string(),
+        session1.pin.clone(),
+    )
+    .expect("student should connect to the real first lesson");
+
+    let (tx, rx) = mpsc::channel::<()>();
+    student_app.listen("teacher-disconnected", move |_event| {
+        let _ = tx.send(());
+    });
+
+    // Real stop — what "the teacher ended the lesson" actually is, not a simulated flag.
+    teacher_session::stop_teacher_session(teacher_state1);
+    rx.recv_timeout(Duration::from_secs(5))
+        .expect("a real \"teacher-disconnected\" event should reach the student — this is what StudentConsole's own auto-return effect waits on");
+
+    // What `useStudentSession`'s cleanup does once `StudentConsole` unmounts (the auto-return having fired)
+    // — real cleanup, not a no-op, before the student screen is back at PIN entry.
+    student_session::disconnect_student_session(student_state);
+    // Task abort is asynchronous (`JoinHandle::abort` just schedules cancellation) — give the runtime a
+    // moment to actually run it and drop the listener before the next real lesson binds the same fixed
+    // control port (same reasoning as the other same-port-reuse tests in this file).
+    std::thread::sleep(Duration::from_millis(300));
+
+    // The next class: a brand new real lesson (same class — a lab machine's whole point — with a real,
+    // different PIN) really starts...
+    let teacher_app2 = test_app();
+    let teacher_state2 = teacher_app2.state::<teacher_session::TeacherSessionState>();
+    let session2 = teacher_session::start_teacher_session(teacher_app2.handle().clone(), teacher_state2.clone(), class_name.to_string())
+        .expect("start_teacher_session for the next real lesson should succeed");
+    assert_ne!(session2.pin, session1.pin, "a real new lesson gets a real new PIN, not a stale reused one");
+
+    // ...and a student (what "ввод PIN снова доступен" becomes once the UI is back at StudentFlow) really
+    // connects to it, with the new PIN, with no leftover state from the first lesson in the way.
+    let student_app2 = test_app();
+    let student_state2 = student_app2.state::<student_session::StudentSessionState>();
+    let info = student_session::connect_student_session(
+        student_app2.handle().clone(),
+        student_state2.clone(),
+        "127.0.0.1".to_string(),
+        lingua_common::CONTROL_PORT,
+        "E2E ученик (кабинет, новый урок)".to_string(),
+        session2.pin.clone(),
+    )
+    .expect("a fresh connect to the next real lesson, with its real new PIN, should succeed cleanly after the previous one ended");
+    assert_eq!(info.teacher_name, "Tauri (тест)");
+
+    student_session::disconnect_student_session(student_state2);
+    teacher_session::stop_teacher_session(teacher_state2);
+}

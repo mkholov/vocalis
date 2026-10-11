@@ -19,6 +19,15 @@ export function listClasses(): Promise<ClassDto[]> {
   return invoke<ClassDto[]>("list_classes");
 }
 
+/** "Режим кабинета" (`device_role.rs`): the role pinned to *this machine's installation*, if any —
+ * `"teacher"`, `"student"`, or `null` for "not pinned, show the Учитель/Ученик picker like always". Purely
+ * read-only from here on purpose: nothing in the running app's own UI can ever set or change this, only
+ * `--set-role` run elevated, outside the app (see that module's own doc comment for the whole design and
+ * why). `App.tsx` calls this once on startup, before ever rendering the role picker. */
+export function getDeviceRole(): Promise<"teacher" | "student" | null> {
+  return invoke<"teacher" | "student" | null>("get_device_role");
+}
+
 /** Real `db::insert_class`. Rejects with a ready-to-show Russian message (empty or already-taken name). */
 export function createClass(name: string): Promise<ClassDto> {
   return invoke<ClassDto>("create_class", { name });

@@ -11,6 +11,9 @@
 // which is the only kind of test executable `build.rs` can attach a Windows
 // manifest to — can reach the commands and the real `build_app` wiring.
 pub mod commands;
+// `pub` so `main.rs` can call `device_role::handle_cli` before Tauri/the webview ever start — see that
+// module's own doc comment for the whole "режим кабинета" design.
+pub mod device_role;
 
 /// Shared between the real entry point and the integration tests so both
 /// register the exact same commands the same way — generic over `Runtime` so
@@ -35,6 +38,7 @@ pub fn build_app<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::App<R>
             commands::db::rename_class,
             commands::db::delete_class,
             commands::db::class_stats,
+            commands::device_role::get_device_role,
             commands::audio::list_audio_devices,
             commands::network::discover_teachers,
             commands::network::control_port,

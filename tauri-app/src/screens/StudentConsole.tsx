@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Check, CircleHelp, FlaskConical, Hand, Headphones, Link2, Lock, Mic, MessageSquare, MicOff, Monitor, Play, Radio, Send, Square, ThumbsUp, Trash2, Upload, WifiOff, X, type LucideIcon } from "lucide-react";
 import { Button } from "../components/ui/Button";
@@ -77,6 +77,17 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
   const voice = useRecordings();
   const reference = useReference();
   const teacherLabel = session.teacherName ?? "подключение…";
+
+  // Step 9 ("режим кабинета"): a lab machine's whole point is that the next class can just sit down and
+  // start — nobody should have to notice the lesson ended and click "Отключиться" by hand for that to be
+  // true. The banner below still shows for a beat (real, useful feedback: "yes, this is why you're back at
+  // the PIN screen"), then `onDisconnect` fires on its own. Not instant: an abrupt cut the moment the
+  // connection drops would read as the app crashing, not as "the lesson is over".
+  useEffect(() => {
+    if (!session.disconnected) return;
+    const timer = setTimeout(onDisconnect, 2500);
+    return () => clearTimeout(timer);
+  }, [session.disconnected, onDisconnect]);
   const [listening, setListening] = useState(false);
   const [partner, setPartner] = useState<string | null>(null);
   const [demoActive, setDemoActive] = useState(false);
@@ -157,7 +168,7 @@ export function StudentConsole({ studentName, teacherIp, controlPort, pin, onDis
                   key="disconnected"
                   color="var(--color-status-danger)"
                   icon={<WifiOff size={16} />}
-                  text="Соединение с преподавателем потеряно — урок завершён или пропала сеть. Чтобы продолжить, отключитесь и подключитесь заново."
+                  text="Соединение с преподавателем потеряно — урок завершён или пропала сеть. Возвращаемся к подключению…"
                 />
               )}
               {micLocked && <StatusBanner key="mic" color="var(--color-status-danger)" icon={<MicOff size={16} />} text="Микрофон заблокирован преподавателем" />}
