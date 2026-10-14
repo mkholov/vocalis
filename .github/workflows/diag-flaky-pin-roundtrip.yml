@@ -7,6 +7,10 @@ name: Diagnose flaky PIN round-trip (temporary)
 # times in a row and capturing every run's full --nocapture output (the [diag] markers + now-visible
 # `tracing` output — see that file's own `init_test_tracing` doc comment) as an artifact, so a real failure's
 # actual log is in hand instead of a guess. Manually triggered only; delete once the investigation is done.
+#
+# Attempt 3: blind repetition of the whole suite (2x15 clean runs) didn't reproduce the flake, so a new,
+# denser stress test (stress_back_to_back_teacher_sessions_on_the_same_fixed_control_port, command_bridge.rs)
+# was added to hammer the suspected race directly — this push retriggers this job to run it on real CI.
 
 on:
   # workflow_dispatch would be the natural trigger for an on-demand diagnostic job, but there's no
