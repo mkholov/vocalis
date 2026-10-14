@@ -58,6 +58,15 @@ jobs:
       # each time, same compiled test binary after the first build) — keeps going past a failure so more
       # than one data point can be collected in a single job, and every run's full output is kept, not just
       # the first failure's.
+      #
+      # No GitHub token is available in this environment, so plain log files (uploaded as an artifact
+      # below) can't actually be read back without auth — but a public repo's check-run *annotations*
+      # (`GET /repos/{owner}/{repo}/check-runs/{id}/annotations`) ARE readable unauthenticated. So on a
+      # real failure this also emits a `::error::` workflow command carrying a bounded excerpt (the last
+      # `[diag]`/tracing/panic-relevant lines from that run's own log) — that becomes a real, API-readable
+      # annotation, which is how this investigation actually gets its evidence. The job itself now also
+      # exits non-zero when any inner run failed, so the run's own top-level conclusion is a trustworthy
+      # signal too (previously this script never surfaced failures to the step's own exit code at all).
       - name: Repeat cargo test (Tauri command bridge) N times
         working-directory: tauri-app/src-tauri
         shell: pwsh
@@ -70,11 +79,19 @@ jobs:
             if ($LASTEXITCODE -ne 0) {
               $failures++
               Write-Host "Run $i FAILED (exit $LASTEXITCODE)"
+              $excerpt = (Get-Content "repro-run-$i.log" | Select-String -Pattern '\[diag\]|FAILED|panicked|assertion|Неверный|rejected|listening on port|connected to|test result' | Select-Object -Last 40) -join "`n"
+              if ($excerpt.Length -gt 3800) { $excerpt = $excerpt.Substring($excerpt.Length - 3800) }
+              $escaped = $excerpt -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+              Write-Host "::error::Run $i/$total FAILED (exit $LASTEXITCODE) -- excerpt:%0A$escaped"
             } else {
               Write-Host "Run $i passed"
             }
           }
           Write-Host "`nTotal failures: $failures / $total"
+          if ($failures -gt 0) {
+            Write-Host "::error::TOTAL FAILURES: $failures / $total repeated runs"
+            exit 1
+          }
 
       - name: Upload every run's log
         if: always()
