@@ -2633,3 +2633,46 @@ fn after_a_real_teacher_stop_the_student_can_really_reconnect_to_a_fresh_lesson(
     student_session::disconnect_student_session(student_state2);
     teacher_session::stop_teacher_session(teacher_state2);
 }
+
+/// DIAGNOSTIC-ONLY, TEMPORARY (see this task's own investigation notes on the flaky-on-Windows PIN
+/// round-trip — "Неверный PIN-код урока" / timeouts, never reproduced on macOS): two full 15x repeats of
+/// this whole suite on real windows-latest CI came back clean, with no failure. The ambient suite's
+/// natural spacing between a `start_teacher_session`/`stop_teacher_session` pair and the next one (real DB
+/// opens/inserts, roster loads, etc. happening in between) apparently gives the runtime enough real
+/// wall-clock time to actually finish processing the previous session's `task.abort()` before the next one
+/// binds the same fixed `CONTROL_PORT`. This instead hammers exactly that one race window, back-to-back,
+/// with no other work and no sleep in between, to get far more attempts per unit of CI time than the
+/// ambient suite's own natural pacing ever could — removed once this investigation concludes either way.
+#[test]
+fn stress_back_to_back_teacher_sessions_on_the_same_fixed_control_port() {
+    use tauri::Manager;
+    use tauri_app_lib::commands::{student_session, teacher_session};
+
+    let _db = ScratchDb::new("stress_port_race");
+
+    for i in 0..40 {
+        let teacher_app = test_app();
+        let teacher_state = teacher_app.state::<teacher_session::TeacherSessionState>();
+        let session = teacher_session::start_teacher_session(teacher_app.handle().clone(), teacher_state.clone(), format!("Стресс {i}"))
+            .unwrap_or_else(|e| panic!("round {i}: start_teacher_session failed: {e}"));
+
+        let student_app = test_app();
+        let student_state = student_app.state::<student_session::StudentSessionState>();
+        let info = student_session::connect_student_session(
+            student_app.handle().clone(),
+            student_state.clone(),
+            "127.0.0.1".to_string(),
+            lingua_common::CONTROL_PORT,
+            format!("Стресс-ученик {i}"),
+            session.pin.clone(),
+        );
+        match &info {
+            Ok(connected) => assert_eq!(connected.teacher_name, "Tauri (тест)", "round {i}: connected but to the wrong teacher"),
+            Err(e) => panic!("round {i}: connect_student_session failed with pin='{}': {e}", session.pin),
+        }
+
+        student_session::disconnect_student_session(student_state);
+        teacher_session::stop_teacher_session(teacher_state);
+        // Deliberately NO sleep here — that's the whole point of this test.
+    }
+}
