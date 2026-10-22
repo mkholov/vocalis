@@ -10,7 +10,11 @@ name: Diagnose flaky PIN round-trip (temporary)
 #
 # Attempt 3: blind repetition of the whole suite (2x15 clean runs) didn't reproduce the flake, so a new,
 # denser stress test (stress_back_to_back_teacher_sessions_on_the_same_fixed_control_port, command_bridge.rs)
-# was added to hammer the suspected race directly — this push retriggers this job to run it on real CI.
+# was added to hammer the suspected race directly — this reproduced it for real (os error 10048 /
+# WSAEADDRINUSE on the control server's bind, immediately followed by a student rejected with a stale PIN
+# from the still-live previous session). Fixed in teacher_session.rs (TeacherSession::drop and
+# start_teacher_session now both poll for the real, observable readiness/release signal instead of
+# guessing with a sleep). This push bumps the repeat count to 20 to get the confirmation run.
 
 on:
   # workflow_dispatch would be the natural trigger for an on-demand diagnostic job, but there's no
@@ -23,7 +27,7 @@ on:
     inputs:
       runs:
         description: "How many times to repeat the suite"
-        default: "15"
+        default: "20"
 
 permissions:
   contents: read
@@ -75,7 +79,7 @@ jobs:
         working-directory: tauri-app/src-tauri
         shell: pwsh
         run: |
-          $total = [int]"${{ github.event.inputs.runs || '15' }}"
+          $total = [int]"${{ github.event.inputs.runs || '20' }}"
           $failures = 0
           for ($i = 1; $i -le $total; $i++) {
             Write-Host "`n=== Run $i/$total ==="
