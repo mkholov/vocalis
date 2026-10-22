@@ -133,6 +133,32 @@ impl Drop for TeacherSession {
         if let Some(task) = &self.playback_task {
             task.abort();
         }
+
+        // FIX (root cause of the flaky Windows CI PIN round-trip — see this task's own investigation
+        // notes; confirmed on real windows-latest CI with the control-server task logging a real bind
+        // failure, `os error 10048` / WSAEADDRINUSE, immediately followed by a student being rejected with
+        // a stale PIN from the *previous* session, which hadn't actually released the port yet):
+        // `task.abort()` above only *requests* cancellation — tokio only actually drops an aborted task's
+        // future (and, with it, `teacher::net::run_control_server`'s bound `TcpListener`) the next time its
+        // runtime polls it, which can be any amount of real wall-clock time after this function returns.
+        // All tests share one process, one `tauri::async_runtime`, and the same fixed `CONTROL_PORT`
+        // (`--test-threads=1`), so without waiting here, the *next* `start_teacher_session` can race this
+        // teardown. Poll for the real, authoritative OS-level signal that the port is actually free — a
+        // successful bind-and-immediately-release — instead of guessing with a fixed sleep.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if std::net::TcpListener::bind(("0.0.0.0", lingua_common::CONTROL_PORT)).is_ok() {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                eprintln!(
+                    "[diag] TeacherSession::drop: port {} still bound 5s after task.abort() — giving up waiting",
+                    lingua_common::CONTROL_PORT
+                );
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 }
 
@@ -324,6 +350,36 @@ pub fn start_teacher_session<R: tauri::Runtime>(
                 eprintln!("[diag] start_teacher_session: control server task ENDED WITH ERROR (this is the bind/accept-loop failing, not just a student being rejected): {e:#}");
             }
         }));
+    }
+
+    // FIX (see this task's own investigation notes, and `TeacherSession::drop`'s matching comment): the
+    // control-server task above is only *spawned* here, not actually bound and accepting yet —
+    // `net::run_control_server`'s own `TcpListener::bind(...).await` happens whenever the async runtime
+    // next polls that task, which this function never used to wait for. A student connecting before that
+    // bind actually happens can land on a stale previous listener (if `TeacherSession::drop`'s own wait,
+    // above, somehow still lost the race) or simply find nothing there yet. Poll a real TCP connect against
+    // the port this session just asked to listen on and only return once one actually succeeds (then drop
+    // it immediately) — the real, externally-observable signal that this session's own listener is now the
+    // one answering, not a guessed sleep.
+    {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let probe = std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::from(([127, 0, 0, 1], lingua_common::CONTROL_PORT)),
+                std::time::Duration::from_millis(100),
+            );
+            if probe.is_ok() {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                eprintln!(
+                    "[diag] start_teacher_session: control server still not accepting on port {} after 5s — giving up waiting",
+                    lingua_common::CONTROL_PORT
+                );
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
     {
         let app = app.clone();

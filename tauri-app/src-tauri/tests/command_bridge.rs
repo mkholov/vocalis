@@ -1653,9 +1653,8 @@ fn a_stopped_lessons_pin_cannot_reach_a_later_lesson_on_the_same_machine() {
     student_session::disconnect_student_session(probe_state);
 
     teacher_session::stop_teacher_session(teacher_state.clone());
-    // Task abort is asynchronous (`JoinHandle::abort` just schedules cancellation) — give the runtime a
-    // moment to actually run it and drop the listener before probing the now-closed port.
-    std::thread::sleep(Duration::from_millis(300));
+    // No sleep needed here: `TeacherSession::drop` (triggered by `stop_teacher_session` above) now blocks
+    // until the control port is actually confirmed free (polls a real re-bind) before returning.
 
     // Nothing is listening now — even the *correct*, just-used PIN must fail (there is no session left to
     // check it against at all), not merely "a wrong pin against a still-live session".
@@ -2447,10 +2446,8 @@ fn a_student_picks_themselves_from_the_real_roster_and_history_accumulates_under
     student_session::disconnect_student_session(student_state1);
     student_session::disconnect_student_session(student_state_guest);
     teacher_session::stop_teacher_session(teacher_state1);
-    // Task abort is asynchronous (`JoinHandle::abort` just schedules cancellation) — give the runtime a
-    // moment to actually run it and drop the listener before the next real session binds the same fixed
-    // control port (same reasoning/duration as `a_stopped_lessons_pin_cannot_reach_a_later_lesson_on_the_same_machine`).
-    std::thread::sleep(Duration::from_millis(300));
+    // No sleep needed here: `TeacherSession::drop` now blocks until the control port is actually confirmed
+    // free before returning, so the next real session below can't race this teardown.
 
     // Lesson 2 (same class, a later real session — what reconnecting on a different day looks like): the
     // roster is unchanged (it belongs to the class, not the lesson), and the student picks the exact same
@@ -2602,10 +2599,8 @@ fn after_a_real_teacher_stop_the_student_can_really_reconnect_to_a_fresh_lesson(
     // What `useStudentSession`'s cleanup does once `StudentConsole` unmounts (the auto-return having fired)
     // — real cleanup, not a no-op, before the student screen is back at PIN entry.
     student_session::disconnect_student_session(student_state);
-    // Task abort is asynchronous (`JoinHandle::abort` just schedules cancellation) — give the runtime a
-    // moment to actually run it and drop the listener before the next real lesson binds the same fixed
-    // control port (same reasoning as the other same-port-reuse tests in this file).
-    std::thread::sleep(Duration::from_millis(300));
+    // No sleep needed here: `TeacherSession::drop` (triggered by `stop_teacher_session` above) now blocks
+    // until the control port is actually confirmed free before returning.
 
     // The next class: a brand new real lesson (same class — a lab machine's whole point — with a real,
     // different PIN) really starts...
@@ -2634,15 +2629,16 @@ fn after_a_real_teacher_stop_the_student_can_really_reconnect_to_a_fresh_lesson(
     teacher_session::stop_teacher_session(teacher_state2);
 }
 
-/// DIAGNOSTIC-ONLY, TEMPORARY (see this task's own investigation notes on the flaky-on-Windows PIN
-/// round-trip — "Неверный PIN-код урока" / timeouts, never reproduced on macOS): two full 15x repeats of
-/// this whole suite on real windows-latest CI came back clean, with no failure. The ambient suite's
-/// natural spacing between a `start_teacher_session`/`stop_teacher_session` pair and the next one (real DB
-/// opens/inserts, roster loads, etc. happening in between) apparently gives the runtime enough real
-/// wall-clock time to actually finish processing the previous session's `task.abort()` before the next one
-/// binds the same fixed `CONTROL_PORT`. This instead hammers exactly that one race window, back-to-back,
-/// with no other work and no sleep in between, to get far more attempts per unit of CI time than the
-/// ambient suite's own natural pacing ever could — removed once this investigation concludes either way.
+/// Regression test for a real Windows-only flake ("Неверный PIN-код урока" / timeouts, confirmed on real
+/// windows-latest CI with the control server's bind failing with `os error 10048` — WSAEADDRINUSE —
+/// immediately followed by a student landing on the *previous* session's still-live control server and
+/// being rejected with its stale PIN): `start_teacher_session` used to return as soon as the control-server
+/// task was *spawned*, not once it was actually bound/listening, and `TeacherSession::drop` used to only
+/// call `task.abort()` (which just schedules cancellation) without waiting for the listener to actually
+/// release `CONTROL_PORT`. Both are now fixed by polling the real, observable signal instead of guessing
+/// with a sleep (see `start_teacher_session`'s and `TeacherSession::drop`'s own comments in
+/// `commands/teacher_session.rs`). Kept permanently — this hammers that exact handoff, back-to-back with
+/// no sleep in between, far harder than the rest of the suite's naturally-spaced tests ever do.
 #[test]
 fn stress_back_to_back_teacher_sessions_on_the_same_fixed_control_port() {
     use tauri::Manager;
