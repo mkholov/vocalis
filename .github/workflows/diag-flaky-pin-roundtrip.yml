@@ -14,7 +14,13 @@ name: Diagnose flaky PIN round-trip (temporary)
 # WSAEADDRINUSE on the control server's bind, immediately followed by a student rejected with a stale PIN
 # from the still-live previous session). Fixed in teacher_session.rs (TeacherSession::drop and
 # start_teacher_session now both poll for the real, observable readiness/release signal instead of
-# guessing with a sleep). This push bumps the repeat count to 20 to get the confirmation run.
+# guessing with a sleep).
+#
+# Attempt 4: the first confirmation run (20x) still showed 3/20 failing with the identical signature —
+# v1's fix polled a probe *bind* as the "port is free" signal in TeacherSession::drop, which turned out
+# not to be symmetric with how the real listener's own bind behaves on Windows. v2 (commit 343024f) polls
+# a real *connect* instead, until one is actually refused. This push retriggers the 20x confirmation
+# against that corrected fix.
 
 on:
   # workflow_dispatch would be the natural trigger for an on-demand diagnostic job, but there's no
