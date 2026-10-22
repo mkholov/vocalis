@@ -143,16 +143,29 @@ impl Drop for TeacherSession {
         // runtime polls it, which can be any amount of real wall-clock time after this function returns.
         // All tests share one process, one `tauri::async_runtime`, and the same fixed `CONTROL_PORT`
         // (`--test-threads=1`), so without waiting here, the *next* `start_teacher_session` can race this
-        // teardown. Poll for the real, authoritative OS-level signal that the port is actually free — a
-        // successful bind-and-immediately-release — instead of guessing with a fixed sleep.
+        // teardown.
+        //
+        // v1 of this fix polled a probe *bind* as the "port is free" signal — but real CI still
+        // reproduced the identical stale-PIN race afterward, meaning a bare bind-and-release here could
+        // spuriously "succeed" (Windows' own bind semantics aren't guaranteed symmetric with how
+        // `net::run_control_server`'s real listener bind behaves) even while the previous session's
+        // listener was genuinely still alive. Polling a real *connect* instead, until one is actually
+        // refused, is the authoritative, symmetric counterpart to `start_teacher_session`'s own "poll
+        // until a connect succeeds" check below — a refused connect can only mean the OS has no listening
+        // socket on this port anymore, with no bind-option ambiguity involved.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            if std::net::TcpListener::bind(("0.0.0.0", lingua_common::CONTROL_PORT)).is_ok() {
+            let still_listening = std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::from(([127, 0, 0, 1], lingua_common::CONTROL_PORT)),
+                std::time::Duration::from_millis(100),
+            )
+            .is_ok();
+            if !still_listening {
                 break;
             }
             if std::time::Instant::now() > deadline {
                 eprintln!(
-                    "[diag] TeacherSession::drop: port {} still bound 5s after task.abort() — giving up waiting",
+                    "[diag] TeacherSession::drop: port {} still answering 5s after task.abort() — giving up waiting",
                     lingua_common::CONTROL_PORT
                 );
                 break;
